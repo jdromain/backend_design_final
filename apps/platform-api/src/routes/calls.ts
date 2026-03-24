@@ -10,13 +10,13 @@ const logger = createLogger({ service: "platform-api", module: "callRoutes" });
 const isProduction = (process.env.NODE_ENV ?? "development") === "production";
 const devNoOp = undefined;
 
-function mapOutcome(outcome: string | undefined | null): "completed" | "handoff" | "dropped" | "systemFailed" {
+function mapOutcome(outcome: string | undefined | null): "completed" | "handoff" | "dropped" | "systemFailed" | "pending" {
   switch (outcome) {
     case "handled": return "completed";
     case "transferred": return "handoff";
     case "abandoned": return "dropped";
     case "failed": return "systemFailed";
-    default: return "completed";
+    default: return "pending";
   }
 }
 

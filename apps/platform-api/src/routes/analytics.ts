@@ -168,31 +168,46 @@ export function registerAnalyticsRoutes(app: FastifyInstance, configStore: Confi
     const tenantId = request.auth?.tenant_id ?? (request.query as any).tenantId;
     if (!tenantId) return sendError(reply, 400, "missing_tenant", "tenantId required");
 
-    const result = await query(
+    const agg = (await query(
       `SELECT
-         agent_config_id,
          COUNT(*)::int AS total_calls,
          COUNT(*) FILTER (WHERE outcome = 'handled')::int AS handled,
          COUNT(*) FILTER (WHERE outcome = 'transferred')::int AS escalated,
          COUNT(*) FILTER (WHERE outcome = 'failed')::int AS failed,
          AVG(duration_sec)::int AS avg_duration
        FROM calls
-       WHERE tenant_id = $1 AND agent_config_id IS NOT NULL
-       GROUP BY agent_config_id`,
+       WHERE tenant_id = $1`,
+      [tenantId]
+    )).rows[0] ?? { total_calls: 0, handled: 0, escalated: 0, failed: 0, avg_duration: 0 };
+
+    const intentsResult = await query(
+      `SELECT classified_intent AS name, COUNT(*)::int AS count
+       FROM calls
+       WHERE tenant_id = $1 AND classified_intent IS NOT NULL
+       GROUP BY classified_intent ORDER BY count DESC LIMIT 5`,
       [tenantId]
     );
 
-    const agents = result.rows.map((r: any) => ({
-      agentId: r.agent_config_id,
-      agentName: r.agent_config_id,
-      totalCalls: r.total_calls,
-      handledRate: r.total_calls > 0 ? r.handled / r.total_calls : 0,
-      escalationRate: r.total_calls > 0 ? r.escalated / r.total_calls : 0,
-      failureRate: r.total_calls > 0 ? r.failed / r.total_calls : 0,
-      avgDuration: r.avg_duration ?? 0,
+    const total = agg.total_calls || 1;
+    const topIntents = intentsResult.rows.map((r: any) => ({
+      name: r.name,
+      count: r.count,
+      percentage: Math.round((r.count / total) * 1000) / 10,
     }));
 
-    sendData(reply, agents);
+    const snapshot = await configStore.getSnapshot(tenantId);
+    const agentName = snapshot.agentConfig?.name ?? "Rezovo Agent";
+
+    sendData(reply, {
+      name: agentName,
+      version: `v${snapshot.version}`,
+      totalCalls: agg.total_calls,
+      handledRate: total > 0 ? Math.round((agg.handled / total) * 1000) / 10 : 0,
+      escalationRate: total > 0 ? Math.round((agg.escalated / total) * 1000) / 10 : 0,
+      failureRate: total > 0 ? Math.round((agg.failed / total) * 1000) / 10 : 0,
+      avgDuration: agg.avg_duration ?? 0,
+      topIntents,
+    });
   });
 
   app.get("/analytics/insights", { preHandler }, async (request: FastifyRequest, reply: FastifyReply) => {

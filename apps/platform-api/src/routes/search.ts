@@ -13,7 +13,7 @@ export function registerSearchRoutes(app: FastifyInstance) {
     const tenantId = request.auth?.tenant_id ?? (request.query as any).tenantId;
     const q = ((request.query as any).q ?? "").trim();
     if (!tenantId) return sendError(reply, 400, "missing_tenant", "tenantId required");
-    if (!q) return sendData(reply, { calls: [], contacts: [], followUps: [], workflows: [], documents: [], users: [] });
+    if (!q) return sendData(reply, { calls: [], contacts: [], followUps: [], workflows: [], kbDocs: [], users: [], agents: [], integrations: [] });
 
     const pattern = `%${q}%`;
 
@@ -61,8 +61,10 @@ export function registerSearchRoutes(app: FastifyInstance) {
       contacts: contacts.rows,
       followUps: followUps.rows,
       workflows: workflows.rows,
-      documents: documents.rows,
+      kbDocs: documents.rows,
       users: users.rows,
+      agents: [],
+      integrations: [],
     });
   });
 }

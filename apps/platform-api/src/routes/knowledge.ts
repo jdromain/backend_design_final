@@ -28,20 +28,21 @@ export function registerKnowledgeRoutes(app: FastifyInstance) {
       [tenantId]
     );
 
-    sendData(reply, result.rows.map((r: any) => {
+    const documents = result.rows.map((r: any) => {
       const meta = r.metadata ?? {};
       return {
         id: r.id,
+        namespace: r.namespace,
         name: meta.name ?? meta.filename ?? r.doc_id,
         type: meta.type ?? "txt",
-        size: meta.sizeBytes ?? 0,
-        status: mapKbStatus(r.status),
-        collection: r.namespace,
+        sizeBytes: meta.sizeBytes ?? 0,
+        status: mapKbStatus(r.status) === "ready" ? "ready"
+              : mapKbStatus(r.status) === "failed" ? "failed" : "chunking",
         chunks: r.embedded_chunks ?? 0,
-        usedByAgents: [],
-        createdAt: r.created_at,
-        updatedAt: r.updated_at,
+        ingestedAt: r.ingested_at ?? r.created_at,
+        updatedAt: r.updated_at ?? r.created_at,
       };
-    }));
+    });
+    sendData(reply, { documents });
   });
 }
