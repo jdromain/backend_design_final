@@ -1,0 +1,35 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg15
+    container_name: rezovo-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: rezovo
+      POSTGRES_USER: rezovo
+      POSTGRES_PASSWORD: rezovo_local
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Auto-run schema on first start
+      - ./supabase/setup_complete.sql:/docker-entrypoint-initdb.d/01_schema.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rezovo"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: rezovo-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  pgdata:

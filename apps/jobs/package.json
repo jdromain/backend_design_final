@@ -1,0 +1,19 @@
+{
+  "name": "@rezovo/jobs",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "build": "tsc -b",
+    "lint": "echo \"lint not yet configured\"",
+    "test": "echo \"tests not yet configured\""
+  },
+  "dependencies": {
+    "@rezovo/core-types": "workspace:*",
+    "@rezovo/event-bus": "workspace:*",
+    "@rezovo/logging": "workspace:*",
+    "@rezovo/utils": "workspace:*",
+    "@rezovo/vector-store": "workspace:*",
+    "pg": "^8.11.3",
+    "@types/pg": "^8.10.9"
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "name": "@rezovo/logging",
+  "version": "0.0.1",
+  "private": false,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "lint": "echo \"lint not yet configured\"",
+    "test": "echo \"tests not yet configured\""
+  }
+}
+

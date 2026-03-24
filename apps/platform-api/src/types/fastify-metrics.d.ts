@@ -1,0 +1,9 @@
+declare module "fastify-metrics";
+
+
+
+
+
+
+
+

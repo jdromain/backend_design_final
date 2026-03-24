@@ -1,0 +1,76 @@
+# Go-based RTP bridge (placeholder - replace with actual Go implementation)
+# This is a minimal example - you'll need to implement the actual RTP bridge in Go
+
+FROM golang:1.21-alpine AS builder
+
+WORKDIR /app
+
+# Install dependencies
+RUN apk add --no-cache git
+
+# Copy go module files (create these if you have a Go RTP bridge)
+# COPY go.mod go.sum ./
+# RUN go mod download
+
+# For now, create a simple health check server
+RUN cat > main.go << 'EOF'
+package main
+
+import (
+    "fmt"
+    "log"
+    "net/http"
+    "os"
+)
+
+func healthHandler(w http.ResponseWriter, r *http.Request) {
+    w.WriteHeader(http.StatusOK)
+    w.Write([]byte("OK"))
+}
+
+func main() {
+    port := os.Getenv("PORT")
+    if port == "" {
+        port = "8081"
+    }
+
+    http.HandleFunc("/health", healthHandler)
+    
+    log.Printf("RTP Bridge starting on port %s", port)
+    log.Printf("NOTE: This is a placeholder. Implement actual RTP bridge logic.")
+    
+    if err := http.ListenAndServe(":"+port, nil); err != nil {
+        log.Fatal(err)
+    }
+}
+EOF
+
+# Build the binary
+RUN go build -o rtp-bridge main.go
+
+# Production stage
+FROM alpine:latest
+
+# Install runtime dependencies
+RUN apk add --no-cache ca-certificates wget
+
+# Copy binary from builder
+COPY --from=builder /app/rtp-bridge /usr/local/bin/rtp-bridge
+
+# Set environment
+ENV PORT=8081
+
+# Expose ports
+EXPOSE 8081
+EXPOSE 10000/udp
+
+# Health check
+HEALTHCHECK --interval=10s --timeout=3s --start-period=30s --retries=3 \
+  CMD wget -q -O /dev/null http://localhost:8081/health || exit 1
+
+# Run the application
+CMD ["rtp-bridge"]
+
+
+
+

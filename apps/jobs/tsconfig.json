@@ -1,0 +1,16 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src"
+  },
+  "include": ["src"],
+  "references": [
+    { "path": "../../packages/core-types" },
+    { "path": "../../packages/event-bus" },
+    { "path": "../../packages/logging" },
+    { "path": "../../packages/utils" },
+    { "path": "../../packages/vector-store" }
+  ]
+}
+

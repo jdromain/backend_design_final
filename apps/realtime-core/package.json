@@ -1,0 +1,28 @@
+{
+  "name": "@rezovo/realtime-core",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "build": "tsc -b",
+    "start": "node dist/index.js",
+    "dev": "ts-node --project tsconfig.json src/index.ts",
+    "lint": "echo \"lint not yet configured\"",
+    "test": "echo \"tests not yet configured\""
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "@openai/agents": "^0.1.0",
+    "@openai/guardrails": "^0.1.0",
+    "@rezovo/core-types": "workspace:*",
+    "@rezovo/event-bus": "workspace:*",
+    "@rezovo/logging": "workspace:*",
+    "@rezovo/utils": "workspace:*",
+    "@rezovo/voice-elevenlabs": "workspace:*",
+    "openai": "^4.75.0",
+    "ws": "^8.19.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.1"
+  }
+}
