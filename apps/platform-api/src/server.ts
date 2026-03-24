@@ -17,45 +17,67 @@ import { canStartCallHandler, registerUsageIngest } from "./billingQuota";
 import { toolCallHandler } from "./toolbus";
 import { kbRetrieveHandler, kbIngestHandler, kbStatusHandler } from "./kb";
 import { authHook, loginHandler } from "./auth/jwt";
+import { isClerkEnabled } from "./auth/clerk";
 import { AnalyticsStore } from "./analytics/store";
 import { registerAnalyticsConsumer } from "./analytics/consumer";
-import { analyticsRoutes } from "./analytics/routes";
-import { calendlyWebhookHandler } from "./webhooks/calendly";
 import { PersistenceStore } from "./persistence/store";
 import { registerTwilioRoutes } from "./routes/twilio";
 import { registerCallRoutes } from "./routes/calls";
 import { credentialsRoutes } from "./credentials/routes";
-import { runHealthChecks } from "./health/checks";
+import { runHealthChecks, getSystemHealthData } from "./health/checks";
+import { ping } from "./persistence/dbClient";
+import { sendData } from "./lib/responses";
 import { env } from "./env";
 import WebSocket from "ws";
 
-// In testing/dev mode, skip auth entirely
+// New route modules
+import { registerAnalyticsRoutes } from "./routes/analytics";
+import { registerAgentRoutes } from "./routes/agents";
+import { registerPhoneLineRoutes } from "./routes/phoneLines";
+import { registerToolRoutes } from "./routes/tools";
+import { registerBillingRoutes } from "./routes/billing";
+import { registerActionsRoutes } from "./routes/actions";
+import { registerNotificationRoutes } from "./routes/notifications";
+import { registerActivityRoutes } from "./routes/activity";
+import { registerIncidentRoutes } from "./routes/incidents";
+import { registerOnboardingRoutes } from "./routes/onboarding";
+import { registerTeamRoutes } from "./routes/team";
+import { registerDeveloperRoutes } from "./routes/developer";
+import { registerKnowledgeRoutes } from "./routes/knowledge";
+import { registerSearchRoutes } from "./routes/search";
+import { clerkSyncHandler } from "./webhooks/clerkSync";
+import { calendlyWebhookHandler } from "./webhooks/calendly";
+
 const isProduction = env.NODE_ENV === "production";
-const devNoOp = undefined; // No preHandler = no auth
+const devNoOp = undefined;
 
 const logger = createLogger({ service: "platform-api", module: "http" });
 
 export function buildServer(eventBus: EventBusClient): FastifyInstance<any, any, any, any, TypeBoxTypeProvider> {
   const app = fastify().withTypeProvider<TypeBoxTypeProvider>();
-  
-  // Enable CORS for frontend
+
+  // CORS -- env-driven origins + localhost defaults
+  const corsOrigins: string[] = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://10.0.0.212:3000",
+  ];
+  if (env.CORS_ORIGINS) {
+    corsOrigins.push(...env.CORS_ORIGINS.split(",").map((o) => o.trim()).filter(Boolean));
+  }
+
   app.register(fastifyCors, {
-    origin: [
-      'http://localhost:3000',
-      'http://127.0.0.1:3000',
-      'http://10.0.0.212:3000' // Network address from start script
-    ],
+    origin: corsOrigins,
     credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH']
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
   });
 
-  // Parse form data from Twilio webhooks
   app.register(fastifyFormbody);
-  
+
   const persistence = new PersistenceStore();
   const configStore = new ConfigStore(persistence);
   const analyticsStore = new AnalyticsStore();
-  // Hydrate analytics from persistence on startup.
+
   persistence
     .loadAnalytics()
     .then((records) => analyticsStore.hydrateCalls(records))
@@ -66,14 +88,13 @@ export function buildServer(eventBus: EventBusClient): FastifyInstance<any, any,
     .catch(() => undefined);
   registerAnalyticsConsumer(eventBus, analyticsStore);
 
-  // Expose eventBus to request handlers that need to emit without re-plumbing.
   (app as any).eventsBus = eventBus;
 
   app.register(fastifyRateLimit, {
     max: 100,
     timeWindow: "1 minute",
     hook: "onRequest",
-    keyGenerator: (req: FastifyRequest) => `${req.headers["x-tenant-id"] ?? "anon"}::${req.ip}`
+    keyGenerator: (req: FastifyRequest) => `${req.headers["x-tenant-id"] ?? "anon"}::${req.ip}`,
   });
   app.register(fastifyUnderPressure, {
     maxEventLoopDelay: 250,
@@ -81,28 +102,25 @@ export function buildServer(eventBus: EventBusClient): FastifyInstance<any, any,
     maxRssBytes: 512 * 1024 * 1024,
     pressureHandler: (_req: FastifyRequest, reply: FastifyReply) => {
       reply.status(503).send({ error: "overloaded" });
-    }
-  });
-  
-  // Prometheus metrics endpoint
-  app.get("/metrics", async () => {
-    return promRegister.metrics();
+    },
   });
 
-  // Simple health endpoint (fast, for load balancers)
-  app.get("/health", async () => {
-    const services: Record<string, string> = {};
-    const persistenceReady = await persistence.isReady();
-    services.persistence = persistenceReady ? "ok" : "error";
-    services.redis = env.REDIS_ENABLED ? "ok" : "disabled";
-    services.kafka = env.KAFKA_ENABLED ? "ok" : "disabled";
-    return {
-      status: Object.values(services).every((status) => status === "ok" || status === "disabled") ? "ok" : "degraded",
-      services
-    };
+  // Prometheus metrics
+  app.get("/metrics", async () => promRegister.metrics());
+
+  // Health -- UI shape (SystemHealthData)
+  app.get("/health", async (_request, reply) => {
+    const data = await getSystemHealthData();
+    sendData(reply, data);
   });
 
-  // Comprehensive health check endpoint (includes external services)
+  // Fast liveness probe (DB ping only)
+  app.get("/ready", async (_request, reply) => {
+    const ok = await ping();
+    reply.status(ok ? 200 : 503).send({ ready: ok });
+  });
+
+  // Detailed health -- ops shape (unchanged)
   app.get("/health/detailed", {
     schema: {
       description: "Detailed health check including all external dependencies",
@@ -114,194 +132,182 @@ export function buildServer(eventBus: EventBusClient): FastifyInstance<any, any,
             status: Type.String(),
             latencyMs: Type.Optional(Type.Number()),
             message: Type.Optional(Type.String()),
-            details: Type.Optional(Type.Record(Type.String(), Type.Any()))
+            details: Type.Optional(Type.Record(Type.String(), Type.Any())),
           })),
-          timestamp: Type.String()
-        })
-      }
-    }
-  }, async () => {
-    return await runHealthChecks();
+          timestamp: Type.String(),
+        }),
+      },
+    },
+  }, async () => runHealthChecks());
+
+  // Auth -- dev-only login route
+  if (!isClerkEnabled) {
+    app.post("/auth/login", loginHandler);
+  }
+
+  // Clerk webhook
+  app.post("/webhooks/clerk", clerkSyncHandler);
+
+  // Config endpoints
+  app.get("/config/schema", {
+    schema: { querystring: Type.Object({ lob: Type.Optional(Type.String()) }) },
+    preHandler: isProduction ? authHook(["admin", "editor"]) : devNoOp,
+  }, async (request) => {
+    const { lob } = request.query as { lob?: string };
+    return { lob: lob ?? "default", schema: getSchema(lob) };
   });
-  
-  app.post("/auth/login", loginHandler);
 
-  app.get(
-    "/config/schema",
-    {
-      schema: {
-        querystring: Type.Object({
-          lob: Type.Optional(Type.String())
-        })
-      },
-      preHandler: isProduction ? authHook(["admin", "editor"]) : devNoOp
+  app.get("/config/templates", {
+    schema: { querystring: Type.Object({ lob: Type.Optional(Type.String()) }) },
+    preHandler: isProduction ? authHook(["admin", "editor"]) : devNoOp,
+  }, async (request) => {
+    const { lob } = request.query as { lob?: string };
+    return { lob: lob ?? "default", templates: getTemplates(lob) };
+  });
+
+  app.get("/config/snapshot", {
+    schema: {
+      querystring: Type.Object({
+        tenantId: Type.String(),
+        lob: Type.Optional(Type.String()),
+      }),
     },
-    async (request) => {
-      const { lob } = request.query as { lob?: string };
-      return { lob: lob ?? "default", schema: getSchema(lob) };
-    }
-  );
+    preHandler: isProduction ? authHook(["admin", "editor", "viewer"]) : devNoOp,
+  }, async (request) => {
+    const { tenantId, lob } = request.query as { tenantId: string; lob?: string };
+    return await configStore.getSnapshot(tenantId, lob ?? "default");
+  });
 
-  app.get(
-    "/config/templates",
-    {
-      schema: {
-        querystring: Type.Object({
-          lob: Type.Optional(Type.String())
-        })
-      },
-      preHandler: isProduction ? authHook(["admin", "editor"]) : devNoOp
+  app.post("/config/validate", {
+    schema: {
+      body: Type.Object({
+        lob: Type.Optional(Type.String()),
+        config: Type.Record(Type.String(), Type.Any()),
+      }),
     },
-    async (request) => {
-      const { lob } = request.query as { lob?: string };
-      return { lob: lob ?? "default", templates: getTemplates(lob) };
-    }
-  );
+    preHandler: isProduction ? authHook(["admin", "editor"]) : devNoOp,
+  }, async (request, reply) => {
+    const { lob, config } = request.body as { lob?: string; config: unknown };
+    const result = validateConfig({ lob, config: config as any });
+    reply.status(result.ok ? 200 : 400);
+    return result;
+  });
 
-  app.get(
-    "/config/snapshot",
-    {
-      schema: {
-        querystring: Type.Object({
-          tenantId: Type.String(),
-          lob: Type.Optional(Type.String())
-        })
-      },
-      preHandler: isProduction ? authHook(["admin", "editor", "viewer"]) : devNoOp
+  app.post("/config/publish", {
+    schema: {
+      body: Type.Object({
+        tenantId: Type.String(),
+        lob: Type.Optional(Type.String()),
+        version: Type.Number(),
+        entity: Type.Union([
+          Type.Literal("PhoneNumber"),
+          Type.Literal("AgentConfig"),
+          Type.Literal("Plan"),
+          Type.Literal("Business"),
+        ]),
+        entity_id: Type.String(),
+        status: Type.Union([Type.Literal("draft"), Type.Literal("published")]),
+        config: Type.Optional(Type.Record(Type.String(), Type.Any())),
+      }),
     },
-    async (request) => {
-      const { tenantId, lob } = request.query as { tenantId: string; lob?: string };
-      return await configStore.getSnapshot(tenantId, lob ?? "default");
-    }
-  );
+    preHandler: isProduction ? authHook(["admin", "editor"]) : devNoOp,
+  }, async (request, reply) => {
+    const body = request.body as {
+      tenantId: string;
+      lob?: string;
+      version: number;
+      entity: "PhoneNumber" | "AgentConfig" | "Plan" | "Business";
+      entity_id: string;
+      status: "draft" | "published";
+      config?: unknown;
+    };
 
-  app.post(
-    "/config/validate",
-    {
-      schema: {
-        body: Type.Object({
-          lob: Type.Optional(Type.String()),
-          config: Type.Record(Type.String(), Type.Any())
-        })
-      },
-      preHandler: isProduction ? authHook(["admin", "editor"]) : devNoOp
-    },
-    async (request, reply) => {
-      const { lob, config } = request.body as { lob?: string; config: unknown };
-      const result = validateConfig({ lob, config: config as any });
-      reply.status(result.ok ? 200 : 400);
-      return result;
-    }
-  );
-
-  app.post(
-    "/config/publish",
-    {
-      schema: {
-        body: Type.Object({
-          tenantId: Type.String(),
-          lob: Type.Optional(Type.String()),
-          version: Type.Number(),
-          entity: Type.Union([
-            Type.Literal("PhoneNumber"),
-            Type.Literal("AgentConfig"),
-            Type.Literal("Plan"),
-            Type.Literal("Business")
-          ]),
-          entity_id: Type.String(),
-          status: Type.Union([Type.Literal("draft"), Type.Literal("published")]),
-          config: Type.Optional(Type.Record(Type.String(), Type.Any()))
-        })
-      },
-      preHandler: isProduction ? authHook(["admin", "editor"]) : devNoOp
-    },
-    async (request, reply) => {
-      const body = request.body as {
-        tenantId: string;
-        lob?: string;
-        version: number;
-        entity: "PhoneNumber" | "AgentConfig" | "Plan" | "Business";
-        entity_id: string;
-        status: "draft" | "published";
-        config?: unknown;
-      };
-
-      if (body.config) {
-        const validation = validateConfig({ lob: body.lob, config: body.config as any });
-        if (!validation.ok) {
-          reply.status(400);
-          return validation;
-        }
-        const stored = configStore.upsertConfig({
-          tenantId: body.tenantId,
-          lob: body.lob,
-          agentConfig: (body.config as any).agentConfig,
-          phoneNumbers: (body.config as any).phoneNumbers,
-          plan: (body.config as any).plan,
-          status: body.status
-        });
-        body.version = stored.version;
-      } else {
-        configStore.publishConfig({
-          tenantId: body.tenantId,
-          lob: body.lob,
-          version: body.version,
-          status: body.status
-        });
+    if (body.config) {
+      const validation = validateConfig({ lob: body.lob, config: body.config as any });
+      if (!validation.ok) {
+        reply.status(400);
+        return validation;
       }
-
-      const envelope = buildConfigChangedEvent({
+      const stored = configStore.upsertConfig({
+        tenantId: body.tenantId,
+        lob: body.lob,
+        agentConfig: (body.config as any).agentConfig,
+        phoneNumbers: (body.config as any).phoneNumbers,
+        plan: (body.config as any).plan,
+        status: body.status,
+      });
+      body.version = stored.version;
+    } else {
+      configStore.publishConfig({
         tenantId: body.tenantId,
         lob: body.lob,
         version: body.version,
-        entity: body.entity,
-        entity_id: body.entity_id,
-        status: body.status
+        status: body.status,
       });
-
-      await withTimeout(eventBus.publish(envelope), 500, "publish ConfigChanged");
-      return { ok: true, event_id: envelope.event_id };
     }
-  );
 
-  // Billing quota and usage ingest — internal service calls, no auth in dev
-  app.post("/billing-quota/can-start-call", { 
-    preHandler: isProduction ? authHook(["admin", "editor", "viewer"]) : devNoOp, 
-    handler: canStartCallHandler 
-  });
-  app.post("/usage/ingest", { 
-    preHandler: isProduction ? authHook(["admin", "editor", "viewer"]) : devNoOp, 
-    handler: registerUsageIngest(eventBus) 
+    const envelope = buildConfigChangedEvent({
+      tenantId: body.tenantId,
+      lob: body.lob,
+      version: body.version,
+      entity: body.entity,
+      entity_id: body.entity_id,
+      status: body.status,
+    });
+
+    await withTimeout(eventBus.publish(envelope), 500, "publish ConfigChanged");
+    return { ok: true, event_id: envelope.event_id };
   });
 
-  // Toolbus and KB endpoints — internal service calls, no auth in dev
+  // Billing quota and usage ingest -- internal service calls
+  app.post("/billing-quota/can-start-call", {
+    preHandler: isProduction ? authHook(["admin", "editor", "viewer"]) : devNoOp,
+    handler: canStartCallHandler,
+  });
+  app.post("/usage/ingest", {
+    preHandler: isProduction ? authHook(["admin", "editor", "viewer"]) : devNoOp,
+    handler: registerUsageIngest(eventBus),
+  });
+
+  // Toolbus and KB endpoints -- internal service calls
   app.post("/tool/call", {
     preHandler: isProduction ? authHook(["admin", "editor"]) : devNoOp,
-    handler: toolCallHandler(eventBus)
+    handler: toolCallHandler(eventBus),
   });
   app.post("/kb/retrieve", { preHandler: isProduction ? authHook(["admin", "editor", "viewer"]) : devNoOp, handler: kbRetrieveHandler });
   app.post("/kb/docs", {
     preHandler: isProduction ? authHook(["admin", "editor"]) : devNoOp,
-    handler: (req, reply) => kbIngestHandler(eventBus, req as any, reply)
+    handler: (req, reply) => kbIngestHandler(eventBus, req as any, reply),
   });
   app.get("/kb/status", { preHandler: isProduction ? authHook(["admin", "editor", "viewer"]) : devNoOp, handler: kbStatusHandler });
 
-  // Analytics routes
-  const analytics = analyticsRoutes(analyticsStore);
-  app.get("/analytics/calls", { preHandler: isProduction ? authHook(["admin", "editor", "viewer"]) : devNoOp, handler: analytics.calls });
-  app.get("/analytics/tools", { preHandler: isProduction ? authHook(["admin", "editor", "viewer"]) : devNoOp, handler: analytics.tools });
-
-  // Credentials management routes
+  // Credentials management
   credentialsRoutes(app as any);
 
   // Webhooks
   app.post("/webhooks/calendly", (req, reply) => calendlyWebhookHandler(eventBus, req as any, reply));
 
-  // Call lifecycle routes (calls, transcript, events, phone-numbers)
+  // Call lifecycle routes (internal write + UI read)
   registerCallRoutes(app as any);
 
-  // Twilio routes (voice + status webhooks)
+  // Twilio routes
   registerTwilioRoutes(app as any);
+
+  // --- New UI-facing route modules ---
+  registerAnalyticsRoutes(app as any, configStore);
+  registerAgentRoutes(app as any, configStore);
+  registerPhoneLineRoutes(app as any);
+  registerToolRoutes(app as any, configStore);
+  registerBillingRoutes(app as any);
+  registerActionsRoutes(app as any);
+  registerNotificationRoutes(app as any);
+  registerActivityRoutes(app as any);
+  registerIncidentRoutes(app as any);
+  registerOnboardingRoutes(app as any);
+  registerTeamRoutes(app as any);
+  registerDeveloperRoutes(app as any);
+  registerKnowledgeRoutes(app as any);
+  registerSearchRoutes(app as any);
 
   app.setErrorHandler((error, _request, reply) => {
     logger.error("platform-api error", { error: (error as Error).message });
@@ -310,4 +316,3 @@ export function buildServer(eventBus: EventBusClient): FastifyInstance<any, any,
 
   return app;
 }
-

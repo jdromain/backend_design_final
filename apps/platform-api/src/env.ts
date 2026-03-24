@@ -1,26 +1,14 @@
-/**
- * env.ts — MUST be the first import in src/index.ts
- *
- * Loads .env from the app directory and validates all required variables.
- * Exports a typed `env` object so the rest of the codebase never calls
- * process.env directly for critical values.
- */
-
 import { resolve } from "path";
 import { config } from "dotenv";
 
-// Load .env from apps/platform-api/.env
-// __dirname resolves to dist/ after build, so we go up one level.
 const envPath = resolve(__dirname, "../.env");
 const result = config({ path: envPath });
 
 if (result.error && process.env.NODE_ENV !== "production") {
   console.error(`[env] Failed to load .env from ${envPath}: ${result.error.message}`);
-  console.error("[env] Create apps/platform-api/.env — see apps/platform-api/.env.example");
+  console.error("[env] Create apps/platform-api/.env -- see apps/platform-api/.env.example");
   process.exit(1);
 }
-
-// ─── Validation ───
 
 function required(name: string): string {
   const value = process.env[name];
@@ -41,21 +29,26 @@ function optionalBool(name: string, fallback: boolean): boolean {
   return v === "true";
 }
 
-// ─── Typed env object ───
-
 export const env = {
-  // Server
   PORT: parseInt(optional("PORT", "3001"), 10),
   NODE_ENV: optional("NODE_ENV", "development") as "development" | "production" | "test",
 
-  // Database (Postgres + pgvector — replaces Supabase)
   DATABASE_URL: optional("DATABASE_URL", "postgresql://rezovo:rezovo_local@localhost:5432/rezovo"),
   DB_POOL_MAX: parseInt(optional("DB_POOL_MAX", "5"), 10),
   DB_SSL: optionalBool("DB_SSL", false),
 
   // Clerk
-  CLERK_PUBLISHABLE_KEY: optional("CLERK_PUBLISHABLE_KEY", ""),
+  CLERK_AUTH_ENABLED: optionalBool("CLERK_AUTH_ENABLED", false),
   CLERK_SECRET_KEY: optional("CLERK_SECRET_KEY", ""),
+  CLERK_PUBLISHABLE_KEY: optional("CLERK_PUBLISHABLE_KEY", ""),
+  CLERK_JWT_AUDIENCE: optional("CLERK_JWT_AUDIENCE", ""),
+  CLERK_JWT_ISSUER: optional("CLERK_JWT_ISSUER", ""),
+  CLERK_JWT_PUBLIC_KEY: optional("CLERK_JWT_PUBLIC_KEY", ""),
+  CLERK_DEFAULT_TENANT_ID: optional("CLERK_DEFAULT_TENANT_ID", "test-tenant"),
+  REZOVO_CLERK_SYNC_SECRET: optional("REZOVO_CLERK_SYNC_SECRET", ""),
+
+  // CORS
+  CORS_ORIGINS: optional("CORS_ORIGINS", ""),
 
   // Redis
   REDIS_ENABLED: optionalBool("REDIS_ENABLED", false),
@@ -83,13 +76,12 @@ export const env = {
   REALTIME_CORE_URL: optional("REALTIME_CORE_URL", "http://localhost:3002"),
   PLATFORM_API_URL: optional("PLATFORM_API_URL", "http://localhost:3001"),
 
-  // Calendly (PAT for testing; OAuth tokens per-tenant in production)
+  // Calendly
   CALENDLY_ACCESS_TOKEN: optional("CALENDLY_ACCESS_TOKEN", ""),
   CALENDLY_EVENT_TYPE_URI: optional("CALENDLY_EVENT_TYPE_URI", ""),
   CALENDLY_TIMEZONE: optional("CALENDLY_TIMEZONE", "America/New_York"),
 } as const;
 
-// Validate conditionally required vars
 if (env.REDIS_ENABLED && !env.REDIS_URL) {
   console.error("[env] REDIS_ENABLED=true but REDIS_URL is not set");
   process.exit(1);

@@ -14,6 +14,7 @@ services:
       - pgdata:/var/lib/postgresql/data
       # Auto-run schema on first start
       - ./supabase/setup_complete.sql:/docker-entrypoint-initdb.d/01_schema.sql
+      - ./supabase/002_ui_tables.sql:/docker-entrypoint-initdb.d/02_ui_tables.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U rezovo"]
       interval: 5s

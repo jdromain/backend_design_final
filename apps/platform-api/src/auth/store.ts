@@ -7,5 +7,6 @@ export async function findUserByEmail(email: string): Promise<AuthUser | undefin
   return client.findByEmail(email);
 }
 
-
-
+export async function findUserByClerkId(clerkId: string): Promise<AuthUser | undefined> {
+  return client.findByClerkId(clerkId);
+}

@@ -1,21 +1,51 @@
-/**
- * routes/calls.ts
- *
- * Internal REST endpoints for call lifecycle persistence.
- * Called by realtime-core at call-start and call-end to write into the
- * `calls`, `call_transcript`, and `call_events` tables.
- */
-
 import { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { createLogger } from "@rezovo/logging";
 import { callStore, CallRecord, TranscriptEntry, CallEvent } from "../persistence/callStore";
+import { query } from "../persistence/dbClient";
+import { sendData, sendError } from "../lib/responses";
+import { authHook } from "../auth/jwt";
 
 const logger = createLogger({ service: "platform-api", module: "callRoutes" });
 
+const isProduction = (process.env.NODE_ENV ?? "development") === "production";
+const devNoOp = undefined;
+
+function mapOutcome(outcome: string | undefined | null): "completed" | "handoff" | "dropped" | "systemFailed" {
+  switch (outcome) {
+    case "handled": return "completed";
+    case "transferred": return "handoff";
+    case "abandoned": return "dropped";
+    case "failed": return "systemFailed";
+    default: return "completed";
+  }
+}
+
+function capitalizeFirst(s: string | undefined | null): string | undefined {
+  if (!s) return undefined;
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+function mapLiveState(status: string): "ringing" | "active" | "at_risk" | "handoff_requested" | "error" {
+  switch (status) {
+    case "ringing":
+    case "initiated":
+      return "ringing";
+    case "in_progress":
+      return "active";
+    case "transferred":
+      return "handoff_requested";
+    case "failed":
+      return "error";
+    default:
+      return "active";
+  }
+}
+
 export function registerCallRoutes(app: FastifyInstance) {
-  /**
-   * POST /calls/start — Create or update a call record at the start of a call
-   */
+  // ----------------------------------------------------------------
+  // Internal write routes (realtime-core contract, unchanged)
+  // ----------------------------------------------------------------
+
   app.post("/calls/start", async (request: FastifyRequest, reply: FastifyReply) => {
     const body = request.body as Partial<CallRecord>;
     if (!body.callId || !body.tenantId || !body.phoneNumber || !body.callerNumber) {
@@ -38,7 +68,6 @@ export function registerCallRoutes(app: FastifyInstance) {
 
     await callStore.upsertCall(record);
 
-    // Log the start event
     await callStore.insertEvent({
       callId: record.callId,
       tenantId: record.tenantId,
@@ -54,9 +83,6 @@ export function registerCallRoutes(app: FastifyInstance) {
     return reply.status(201).send({ ok: true, callId: record.callId });
   });
 
-  /**
-   * POST /calls/end — Finalize a call record with outcomes, transcript, and usage
-   */
   app.post("/calls/end", async (request: FastifyRequest, reply: FastifyReply) => {
     const body = request.body as {
       callId: string;
@@ -87,17 +113,16 @@ export function registerCallRoutes(app: FastifyInstance) {
       return reply.status(400).send({ error: "missing required fields: callId, tenantId" });
     }
 
-    // Update the call record with final data
     const update: CallRecord = {
       callId: body.callId,
       tenantId: body.tenantId,
-      phoneNumber: "", // Will be filled from existing record
-      callerNumber: "", // Will be filled from existing record
+      phoneNumber: "",
+      callerNumber: "",
       status: body.outcome === "transferred" ? "transferred"
             : body.outcome === "abandoned" ? "abandoned"
             : body.outcome === "failed" ? "failed"
             : "completed",
-      startedAt: "", // Preserved from original
+      startedAt: "",
       endedAt: new Date().toISOString(),
       durationSec: body.durationSec,
       endReason: body.endReason,
@@ -113,7 +138,6 @@ export function registerCallRoutes(app: FastifyInstance) {
       sttSeconds: body.sttSeconds,
     };
 
-    // Get existing record to preserve start fields
     const existing = await callStore.getCall(body.callId);
     if (existing) {
       update.phoneNumber = existing.phoneNumber;
@@ -127,9 +151,8 @@ export function registerCallRoutes(app: FastifyInstance) {
 
     await callStore.upsertCall(update);
 
-    // Insert transcript if provided
     if (body.transcript && body.transcript.length > 0) {
-      const entries: TranscriptEntry[] = body.transcript.map(t => ({
+      const entries: TranscriptEntry[] = body.transcript.map((t) => ({
         callId: body.callId,
         tenantId: body.tenantId,
         sequence: t.sequence,
@@ -142,7 +165,6 @@ export function registerCallRoutes(app: FastifyInstance) {
       await callStore.insertTranscriptBatch(entries);
     }
 
-    // Log the end event
     await callStore.insertEvent({
       callId: body.callId,
       tenantId: body.tenantId,
@@ -160,17 +182,11 @@ export function registerCallRoutes(app: FastifyInstance) {
       callId: body.callId,
       outcome: body.outcome,
       durationSec: body.durationSec,
-      intent: body.classifiedIntent,
-      turns: body.turnCount,
-      transcriptLines: body.transcript?.length ?? 0,
     });
 
     return reply.send({ ok: true });
   });
 
-  /**
-   * POST /calls/event — Log a mid-call event (intent classified, tool called, etc.)
-   */
   app.post("/calls/event", async (request: FastifyRequest, reply: FastifyReply) => {
     const body = request.body as CallEvent;
     if (!body.callId || !body.tenantId || !body.eventType) {
@@ -180,34 +196,197 @@ export function registerCallRoutes(app: FastifyInstance) {
     return reply.send({ ok: true });
   });
 
-  /**
-   * GET /calls/:callId — Get a call record with its transcript
-   */
-  app.get("/calls/:callId", async (request: FastifyRequest, reply: FastifyReply) => {
-    const { callId } = request.params as { callId: string };
-    const call = await callStore.getCall(callId);
-    if (!call) {
-      return reply.status(404).send({ error: "call not found" });
-    }
-    const transcript = await callStore.getTranscript(callId);
-    return { call, transcript };
-  });
+  // ----------------------------------------------------------------
+  // UI read routes (auth'd, { data } envelope)
+  // ----------------------------------------------------------------
 
-  /**
-   * GET /calls?tenantId=... — List calls for a tenant
-   */
-  app.get("/calls", async (request: FastifyRequest, reply: FastifyReply) => {
-    const { tenantId } = request.query as { tenantId?: string };
+  app.get("/calls", {
+    preHandler: isProduction ? authHook(["admin", "editor", "viewer"]) : devNoOp,
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const tenantId = request.auth?.tenant_id ?? (request.query as any).tenantId;
     if (!tenantId) {
-      return reply.status(400).send({ error: "tenantId query parameter required" });
+      return sendError(reply, 400, "missing_tenant", "tenantId required");
     }
+
     const calls = await callStore.getCallsByTenant(tenantId);
-    return { calls, count: calls.length };
+
+    const toolEventRows = calls.length > 0
+      ? (await query(
+          `SELECT call_id, payload FROM call_events
+           WHERE tenant_id = $1 AND event_type = 'tool_called'`,
+          [tenantId]
+        )).rows
+      : [];
+
+    const toolsByCall = new Map<string, { name: string; success: boolean }[]>();
+    for (const row of toolEventRows) {
+      const tools = toolsByCall.get(row.call_id) ?? [];
+      const p = row.payload ?? {};
+      tools.push({
+        name: p.toolName ?? p.tool_name ?? "unknown",
+        success: p.result !== "error" && p.result !== "failed",
+      });
+      toolsByCall.set(row.call_id, tools);
+    }
+
+    const mapped = calls.map((c) => {
+      const tools = toolsByCall.get(c.callId) ?? [];
+      return {
+        callId: c.callId,
+        startedAt: c.startedAt,
+        endedAt: c.endedAt,
+        callerNumber: c.callerNumber,
+        phoneLineId: c.phoneNumber,
+        phoneLineNumber: c.phoneNumber,
+        agentId: c.agentConfigId ?? "default",
+        agentName: c.agentConfigId ?? "Rezovo Agent",
+        intent: capitalizeFirst(c.classifiedIntent) as any,
+        direction: c.direction ?? "inbound",
+        durationMs: (c.durationSec ?? 0) * 1000,
+        result: mapOutcome(c.outcome),
+        endReason: c.endReason,
+        turnCount: c.turnCount,
+        toolsUsed: tools,
+        toolErrors: tools.filter((t) => !t.success).length,
+      };
+    });
+
+    sendData(reply, mapped);
   });
 
-  /**
-   * GET /phone-numbers — List all phone numbers (optionally filtered by tenant)
-   */
+  app.get("/calls/live", {
+    preHandler: isProduction ? authHook(["admin", "editor", "viewer"]) : devNoOp,
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const tenantId = request.auth?.tenant_id ?? (request.query as any).tenantId;
+    if (!tenantId) {
+      return sendError(reply, 400, "missing_tenant", "tenantId required");
+    }
+
+    const result = await query(
+      `SELECT * FROM calls WHERE tenant_id = $1 AND status IN ('initiated','ringing','in_progress')
+       ORDER BY started_at DESC`,
+      [tenantId]
+    );
+
+    const liveCalls = await Promise.all(
+      result.rows.map(async (row: any) => {
+        const callId = row.call_id;
+
+        const transcriptRows = (await query(
+          "SELECT * FROM call_transcript WHERE call_id = $1 ORDER BY sequence",
+          [callId]
+        )).rows;
+
+        const eventRows = (await query(
+          "SELECT * FROM call_events WHERE call_id = $1 ORDER BY occurred_at",
+          [callId]
+        )).rows;
+
+        const nowMs = Date.now();
+        const startMs = new Date(row.started_at).getTime();
+
+        return {
+          callId,
+          callerNumber: row.caller_number,
+          agentName: row.agent_config_id ?? "Rezovo Agent",
+          agentVersion: String(row.agent_config_ver ?? 1),
+          intent: capitalizeFirst(row.classified_intent) as any,
+          state: mapLiveState(row.status),
+          direction: row.direction ?? "inbound",
+          startedAt: row.started_at,
+          durationSeconds: Math.floor((nowMs - startMs) / 1000),
+          lastEvent: eventRows.length > 0 ? eventRows[eventRows.length - 1].event_type : "call_started",
+          riskFlags: [] as string[],
+          timeline: eventRows.map((e: any) => ({
+            id: e.id,
+            type: e.event_type,
+            timestamp: e.occurred_at,
+            description: e.event_type.replace(/_/g, " "),
+            details: e.payload?.description ?? undefined,
+          })),
+          transcript: transcriptRows.map((t: any) => ({
+            id: t.id,
+            role: t.speaker === "user" ? "caller" : "agent",
+            text: t.text,
+            timestamp: t.spoken_at,
+          })),
+          tools: eventRows
+            .filter((e: any) => e.event_type === "tool_called")
+            .map((e: any) => ({
+              id: e.id,
+              name: e.payload?.toolName ?? "unknown",
+              status: e.payload?.result === "error" ? "failed" : "success",
+              latency: e.payload?.latencyMs,
+              timestamp: e.occurred_at,
+            })),
+          tags: [] as string[],
+        };
+      })
+    );
+
+    sendData(reply, liveCalls);
+  });
+
+  app.get("/calls/:id/timeline", {
+    preHandler: isProduction ? authHook(["admin", "editor", "viewer"]) : devNoOp,
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const { id } = request.params as { id: string };
+    const eventRows = (await query(
+      "SELECT * FROM call_events WHERE call_id = $1 ORDER BY occurred_at",
+      [id]
+    )).rows;
+
+    const timeline = eventRows.map((e: any) => ({
+      id: e.id,
+      type: e.event_type,
+      timestamp: e.occurred_at,
+      description: e.event_type.replace(/_/g, " "),
+      details: e.payload?.description ?? undefined,
+    }));
+
+    sendData(reply, timeline);
+  });
+
+  app.get("/calls/:id/transcript", {
+    preHandler: isProduction ? authHook(["admin", "editor", "viewer"]) : devNoOp,
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const { id } = request.params as { id: string };
+    const entries = await callStore.getTranscript(id);
+
+    const transcript = entries.map((t, idx) => ({
+      id: `${t.callId}-${idx}`,
+      role: t.speaker === "user" ? "caller" : "agent",
+      text: t.text,
+      timestamp: t.spokenAt,
+    }));
+
+    sendData(reply, transcript);
+  });
+
+  app.get("/calls/:id/tools", {
+    preHandler: isProduction ? authHook(["admin", "editor", "viewer"]) : devNoOp,
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const { id } = request.params as { id: string };
+    const eventRows = (await query(
+      "SELECT * FROM call_events WHERE call_id = $1 AND event_type = 'tool_called' ORDER BY occurred_at",
+      [id]
+    )).rows;
+
+    const tools = eventRows.map((e: any) => ({
+      id: e.id,
+      name: e.payload?.toolName ?? e.payload?.tool_name ?? "unknown",
+      status: e.payload?.result === "error" || e.payload?.result === "failed" ? "failed" : "success",
+      latency: e.payload?.latencyMs,
+      timestamp: e.occurred_at,
+      input: e.payload?.input,
+      output: e.payload?.output,
+      error: e.payload?.error,
+    }));
+
+    sendData(reply, tools);
+  });
+
+  // Keep existing phone-numbers route (internal, backward compat)
   app.get("/phone-numbers", async (request: FastifyRequest, reply: FastifyReply) => {
     const { tenantId } = request.query as { tenantId?: string };
     const numbers = tenantId

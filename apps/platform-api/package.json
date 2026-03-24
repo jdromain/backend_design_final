@@ -10,22 +10,24 @@
     "test": "echo \"tests not yet configured\""
   },
   "dependencies": {
-    "dotenv": "^16.4.5",
-    "pg": "^8.13.0",
+    "@clerk/clerk-sdk-node": "^5.1.0",
     "@fastify/cors": "^10.0.0",
     "@fastify/formbody": "^8.0.0",
     "@fastify/rate-limit": "^10.0.0",
+    "@fastify/type-provider-typebox": "^4.0.0",
     "@fastify/under-pressure": "^9.0.0",
     "@rezovo/core-types": "workspace:*",
     "@rezovo/event-bus": "workspace:*",
     "@rezovo/logging": "workspace:*",
     "@rezovo/utils": "workspace:*",
     "@rezovo/vector-store": "workspace:*",
-    "@fastify/type-provider-typebox": "^4.0.0",
     "@sinclair/typebox": "^0.32.34",
+    "dotenv": "^16.4.5",
     "fastify": "^5.0.0",
-    "prom-client": "^15.1.0",
     "jsonwebtoken": "^9.0.2",
+    "pg": "^8.13.0",
+    "prom-client": "^15.1.0",
+    "twilio": "^5.4.0",
     "ws": "^8.16.0"
   },
   "devDependencies": {

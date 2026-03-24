@@ -1,59 +1,97 @@
-import { promises as fs } from "fs";
-import path = require("path");
-
+import { createLogger } from "@rezovo/logging";
+import { query } from "../persistence/dbClient";
 import { AuthUser } from "./types";
 
-type StoredUser = AuthUser & { passwordHash?: string };
-
-const DATA_DIR = path.join(process.cwd(), "data");
-const USERS_FILE = "users.json";
-
-async function readUsers(): Promise<StoredUser[]> {
-  try {
-    const buf = await fs.readFile(path.join(DATA_DIR, USERS_FILE), "utf-8");
-    return JSON.parse(buf) as StoredUser[];
-  } catch {
-    return seedUsers();
-  }
-}
-
-async function writeUsers(users: StoredUser[]): Promise<void> {
-  await fs.mkdir(DATA_DIR, { recursive: true });
-  await fs.writeFile(path.join(DATA_DIR, USERS_FILE), JSON.stringify(users, null, 2));
-}
-
-async function seedUsers(): Promise<StoredUser[]> {
-  const seed: StoredUser[] = [
-    {
-      userId: "user-1",
-      tenantId: "tenant-default",
-      email: "admin@example.com",
-      roles: ["admin"]
-    },
-    {
-      userId: "user-2",
-      tenantId: "tenant-default",
-      email: "editor@example.com",
-      roles: ["editor"]
-    }
-  ];
-  await writeUsers(seed);
-  return seed;
-}
+const logger = createLogger({ service: "platform-api", module: "authStore" });
 
 export class AuthStoreClient {
-  private cache: StoredUser[] | null = null;
-
-  private async load(): Promise<StoredUser[]> {
-    if (this.cache) return this.cache;
-    this.cache = await readUsers();
-    return this.cache;
+  async findByEmail(email: string): Promise<AuthUser | undefined> {
+    try {
+      const result = await query(
+        "SELECT id, tenant_id, email, roles, name FROM users WHERE LOWER(email) = LOWER($1) AND status = 'active'",
+        [email]
+      );
+      if (result.rows.length === 0) return undefined;
+      const row = result.rows[0];
+      return {
+        userId: row.id,
+        tenantId: row.tenant_id,
+        email: row.email,
+        roles: row.roles ?? ["viewer"],
+      };
+    } catch (err) {
+      logger.warn("findByEmail failed", { error: (err as Error).message });
+      return undefined;
+    }
   }
 
-  async findByEmail(email: string): Promise<AuthUser | undefined> {
-    const users = await this.load();
-    return users.find((u) => u.email.toLowerCase() === email.toLowerCase());
+  async findByClerkId(clerkId: string): Promise<AuthUser | undefined> {
+    try {
+      const result = await query(
+        "SELECT id, tenant_id, email, roles, name FROM users WHERE clerk_id = $1 AND status = 'active'",
+        [clerkId]
+      );
+      if (result.rows.length === 0) return undefined;
+      const row = result.rows[0];
+      return {
+        userId: row.id,
+        tenantId: row.tenant_id,
+        email: row.email,
+        roles: row.roles ?? ["viewer"],
+      };
+    } catch (err) {
+      logger.warn("findByClerkId failed", { error: (err as Error).message });
+      return undefined;
+    }
+  }
+
+  async listByTenant(tenantId: string): Promise<AuthUser[]> {
+    try {
+      const result = await query(
+        "SELECT id, tenant_id, email, roles, name FROM users WHERE tenant_id = $1 AND status = 'active'",
+        [tenantId]
+      );
+      return result.rows.map((row: any) => ({
+        userId: row.id,
+        tenantId: row.tenant_id,
+        email: row.email,
+        roles: row.roles ?? ["viewer"],
+      }));
+    } catch (err) {
+      logger.warn("listByTenant failed", { error: (err as Error).message });
+      return [];
+    }
+  }
+
+  async upsertUser(user: {
+    id: string;
+    tenantId: string;
+    email: string;
+    roles?: string[];
+    clerkId?: string;
+    name?: string;
+  }): Promise<void> {
+    try {
+      await query(
+        `INSERT INTO users (id, tenant_id, email, roles, clerk_id, name, status, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, 'active', now())
+         ON CONFLICT (email) DO UPDATE SET
+           tenant_id = COALESCE(EXCLUDED.tenant_id, users.tenant_id),
+           roles = COALESCE(EXCLUDED.roles, users.roles),
+           clerk_id = COALESCE(EXCLUDED.clerk_id, users.clerk_id),
+           name = COALESCE(EXCLUDED.name, users.name),
+           updated_at = now()`,
+        [
+          user.id,
+          user.tenantId,
+          user.email,
+          user.roles ?? ["viewer"],
+          user.clerkId ?? null,
+          user.name ?? null,
+        ]
+      );
+    } catch (err) {
+      logger.warn("upsertUser failed", { error: (err as Error).message });
+    }
   }
 }
-
-

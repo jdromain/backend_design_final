@@ -6,9 +6,12 @@ import { env } from "../env";
 
 import { AuthRole, AuthUser } from "./types";
 import { findUserByEmail } from "./store";
+import { isClerkEnabled, verifyClerkToken } from "./clerk";
+import { AuthStoreClient } from "./storeClient";
 
 const logger = createLogger({ service: "platform-api", module: "auth" });
 const JWT_SECRET = env.JWT_SECRET;
+const authStore = new AuthStoreClient();
 
 export function issueToken(user: AuthUser): string {
   return jwt.sign(
@@ -16,7 +19,7 @@ export function issueToken(user: AuthUser): string {
       sub: user.userId,
       tenant_id: user.tenantId,
       email: user.email,
-      roles: user.roles
+      roles: user.roles,
     },
     JWT_SECRET,
     { expiresIn: "12h" }
@@ -51,21 +54,43 @@ export function authHook(allowedRoles?: AuthRole[]) {
     const token = header.slice("Bearer ".length);
 
     try {
-      const decoded = jwt.verify(token, JWT_SECRET) as jwt.JwtPayload;
-      (request as any).auth = decoded;
+      if (isClerkEnabled) {
+        const claims = await verifyClerkToken(token);
+        const user =
+          (await authStore.findByClerkId(claims.sub)) ??
+          (await authStore.findByEmail(claims.email));
+
+        if (!user) {
+          reply.status(403).send({ error: "user not found in system" });
+          return;
+        }
+
+        request.auth = {
+          sub: user.userId,
+          tenant_id: user.tenantId,
+          email: user.email,
+          roles: user.roles,
+        };
+      } else {
+        const decoded = jwt.verify(token, JWT_SECRET) as jwt.JwtPayload;
+        request.auth = {
+          sub: decoded.sub as string,
+          tenant_id: decoded.tenant_id as string,
+          email: decoded.email as string,
+          roles: (decoded.roles as AuthRole[]) ?? [],
+        };
+      }
+
       if (allowedRoles && allowedRoles.length > 0) {
-        const roles: string[] = Array.isArray(decoded.roles) ? decoded.roles : [];
+        const roles = request.auth.roles;
         const ok = allowedRoles.some((r) => roles.includes(r));
         if (!ok) {
           reply.status(403).send({ error: "forbidden" });
         }
       }
     } catch (err) {
-      logger.warn("jwt verify failed", { error: (err as Error).message });
+      logger.warn("auth verification failed", { error: (err as Error).message });
       reply.status(401).send({ error: "unauthorized" });
     }
   };
 }
-
-
-

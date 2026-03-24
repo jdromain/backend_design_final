@@ -1,0 +1,68 @@
+import { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
+import { query } from "../persistence/dbClient";
+import { sendData, sendError } from "../lib/responses";
+import { authHook } from "../auth/jwt";
+
+const isProduction = (process.env.NODE_ENV ?? "development") === "production";
+const devNoOp = undefined;
+
+export function registerSearchRoutes(app: FastifyInstance) {
+  app.get("/search", {
+    preHandler: isProduction ? authHook(["admin", "editor", "viewer"]) : devNoOp,
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const tenantId = request.auth?.tenant_id ?? (request.query as any).tenantId;
+    const q = ((request.query as any).q ?? "").trim();
+    if (!tenantId) return sendError(reply, 400, "missing_tenant", "tenantId required");
+    if (!q) return sendData(reply, { calls: [], contacts: [], followUps: [], workflows: [], documents: [], users: [] });
+
+    const pattern = `%${q}%`;
+
+    const [calls, contacts, followUps, workflows, documents, users] = await Promise.all([
+      query(
+        `SELECT call_id, caller_number, classified_intent, started_at FROM calls
+         WHERE tenant_id = $1 AND (caller_number ILIKE $2 OR classified_intent ILIKE $2 OR summary ILIKE $2)
+         LIMIT 10`,
+        [tenantId, pattern]
+      ),
+      query(
+        `SELECT id, name, phone, email FROM contacts
+         WHERE tenant_id = $1 AND (name ILIKE $2 OR phone ILIKE $2 OR email ILIKE $2)
+         LIMIT 10`,
+        [tenantId, pattern]
+      ),
+      query(
+        `SELECT id, type, status, notes FROM follow_ups
+         WHERE tenant_id = $1 AND (type ILIKE $2 OR notes ILIKE $2)
+         LIMIT 10`,
+        [tenantId, pattern]
+      ),
+      query(
+        `SELECT id, name, trigger_key FROM workflows
+         WHERE tenant_id = $1 AND (name ILIKE $2 OR trigger_key ILIKE $2)
+         LIMIT 10`,
+        [tenantId, pattern]
+      ),
+      query(
+        `SELECT id, doc_id, namespace FROM kb_documents
+         WHERE tenant_id = $1 AND (doc_id ILIKE $2 OR namespace ILIKE $2)
+         LIMIT 10`,
+        [tenantId, pattern]
+      ),
+      query(
+        `SELECT id, name, email FROM users
+         WHERE tenant_id = $1 AND (name ILIKE $2 OR email ILIKE $2)
+         LIMIT 10`,
+        [tenantId, pattern]
+      ),
+    ]);
+
+    sendData(reply, {
+      calls: calls.rows,
+      contacts: contacts.rows,
+      followUps: followUps.rows,
+      workflows: workflows.rows,
+      documents: documents.rows,
+      users: users.rows,
+    });
+  });
+}
