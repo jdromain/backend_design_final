@@ -13,7 +13,7 @@ function mapOutcome(pg: string | null): string {
     case "transferred": return "handoff";
     case "abandoned": return "dropped";
     case "failed": return "systemFailed";
-    default: return "completed";
+    default: return "pending";
   }
 }
 
@@ -33,10 +33,10 @@ export function registerAnalyticsRoutes(app: FastifyInstance, configStore: Confi
       [tenantId]
     );
 
-    const buckets = new Map<string, { time: string; completed: number; handoff: number; dropped: number; systemFailed: number }>();
+    const buckets = new Map<string, { time: string; pending: number; completed: number; handoff: number; dropped: number; systemFailed: number }>();
     for (const row of result.rows) {
       const t = new Date(row.time).toISOString();
-      const bucket = buckets.get(t) ?? { time: t, completed: 0, handoff: 0, dropped: 0, systemFailed: 0 };
+      const bucket = buckets.get(t) ?? { time: t, pending: 0, completed: 0, handoff: 0, dropped: 0, systemFailed: 0 };
       const key = mapOutcome(row.outcome) as keyof typeof bucket;
       if (typeof bucket[key] === "number") {
         (bucket as any)[key] += row.count;
