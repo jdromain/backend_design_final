@@ -38,8 +38,8 @@ Create a `.env.local` file with:
 # platform-api (used by lib/api.ts and /dev-login)
 NEXT_PUBLIC_API_URL=http://localhost:3001
 
-# Tenant id for API query params (must match DB / auth; default tenant-default)
-# NEXT_PUBLIC_DEFAULT_TENANT_ID=tenant-default
+# Tenant id for API query params — use test-tenant for seeded demo (see supabase/002_ui_tables.sql)
+# NEXT_PUBLIC_DEFAULT_TENANT_ID=test-tenant
 
 # Optional: Clerk — if unset/empty, the app does not enforce Clerk on dashboard routes
 # (JWT dev login works without a Clerk session). Set both to use Clerk sign-in + protect().

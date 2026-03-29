@@ -1,7 +1,7 @@
 import { assertMockSafety } from "./_env-check"
 import { getMockNotifications } from "@/data/mock/notifications"
 import type { Notification } from "@/types/api"
-import { get } from "@/lib/api-client"
+import { get, resolveTenantIdForQuery } from "@/lib/api-client"
 
 assertMockSafety()
 
@@ -30,5 +30,6 @@ function normalizeNotification(n: {
 
 export async function getNotifications(): Promise<Notification[]> {
   if (useMocks) return getMockNotifications().map(normalizeNotification)
-  return get<Notification[]>("/notifications")
+  const tenantId = encodeURIComponent(resolveTenantIdForQuery())
+  return get<Notification[]>(`/notifications?tenantId=${tenantId}`)
 }

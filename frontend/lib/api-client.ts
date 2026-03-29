@@ -1,4 +1,7 @@
-import { setAuthToken as syncAuthTokenFromApiModule } from "./api";
+import {
+  setAuthToken as syncAuthTokenFromApiModule,
+  DEFAULT_TENANT_ID,
+} from "./api";
 
 const BASE_URL =
   process.env.NEXT_PUBLIC_API_URL ??
@@ -83,6 +86,30 @@ async function resolveAuthToken(): Promise<string | null> {
     }
   }
   return getStoredToken();
+}
+
+/**
+ * `tenantId` query param for platform-api routes that accept
+ * `request.auth?.tenant_id ?? query.tenantId` (e.g. when dev optional auth
+ * did not attach claims). Prefers `tenant_id` from the stored JWT when present.
+ */
+export function resolveTenantIdForQuery(): string {
+  const token = getStoredToken();
+  if (token) {
+    try {
+      const parts = token.split(".");
+      if (parts.length >= 2) {
+        const b64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+        const json = atob(b64);
+        const payload = JSON.parse(json) as { tenant_id?: string };
+        const tid = payload.tenant_id;
+        if (typeof tid === "string" && tid.length > 0) return tid;
+      }
+    } catch {
+      /* fall through */
+    }
+  }
+  return DEFAULT_TENANT_ID;
 }
 
 // ============================================================================
