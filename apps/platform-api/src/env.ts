@@ -5,9 +5,15 @@ const envPath = resolve(__dirname, "../.env");
 const result = config({ path: envPath });
 
 if (result.error && process.env.NODE_ENV !== "production") {
-  console.error(`[env] Failed to load .env from ${envPath}: ${result.error.message}`);
-  console.error("[env] Create apps/platform-api/.env -- see apps/platform-api/.env.example");
-  process.exit(1);
+  if (process.env.VITEST === "true") {
+    console.warn(
+      `[env] Vitest: no .env at ${envPath} (${result.error.message}) — using process.env only`
+    );
+  } else {
+    console.error(`[env] Failed to load .env from ${envPath}: ${result.error.message}`);
+    console.error("[env] Create apps/platform-api/.env -- see apps/platform-api/.env.example");
+    process.exit(1);
+  }
 }
 
 function required(name: string): string {

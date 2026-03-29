@@ -1,14 +1,13 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { query } from "../persistence/dbClient";
 import { sendData, sendError } from "../lib/responses";
-import { authHook } from "../auth/jwt";
+import { authHook, optionalAuthHook } from "../auth/jwt";
 
 const isProduction = (process.env.NODE_ENV ?? "development") === "production";
-const devNoOp = undefined;
 
 export function registerIncidentRoutes(app: FastifyInstance) {
   app.get("/incidents", {
-    preHandler: isProduction ? authHook(["admin", "editor", "viewer"]) : devNoOp,
+    preHandler: isProduction ? authHook(["admin", "editor", "viewer"]) : optionalAuthHook(),
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     const tenantId = request.auth?.tenant_id ?? (request.query as any).tenantId;
     if (!tenantId) return sendError(reply, 400, "missing_tenant", "tenantId required");
@@ -27,7 +26,7 @@ export function registerIncidentRoutes(app: FastifyInstance) {
         severity: recentFailures.count >= 5 ? "critical" : "warning",
         title: `${recentFailures.count} failed call(s) in the last hour`,
         description: "Calls are failing -- check agent config and external services.",
-        detectedAt: new Date().toISOString(),
+        evaluatedAt: new Date().toISOString(),
         status: "active",
       });
     }
@@ -47,7 +46,7 @@ export function registerIncidentRoutes(app: FastifyInstance) {
         severity: "warning",
         title: "Elevated handoff rate (>50%)",
         description: `${recentTotal.handoffs} of ${recentTotal.total} calls escalated in the last hour.`,
-        detectedAt: new Date().toISOString(),
+        evaluatedAt: new Date().toISOString(),
         status: "active",
       });
     }
@@ -66,7 +65,7 @@ export function registerIncidentRoutes(app: FastifyInstance) {
         severity: "warning",
         title: `${toolTimeouts.count} tool errors in the last hour`,
         description: "External tool integrations are failing. Check credentials and connectivity.",
-        detectedAt: new Date().toISOString(),
+        evaluatedAt: new Date().toISOString(),
         status: "active",
       });
     }

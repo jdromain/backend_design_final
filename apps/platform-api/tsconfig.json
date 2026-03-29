@@ -22,7 +22,7 @@
     "skipLibCheck": true
   },
   "include": ["src/**/*.ts"],
-  "exclude": ["dist", "node_modules"],
+  "exclude": ["dist", "node_modules", "**/*.test.ts"],
   "references": [
     { "path": "../../packages/core-types" },
     { "path": "../../packages/event-bus" },

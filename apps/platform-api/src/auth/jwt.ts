@@ -26,6 +26,10 @@ export function issueToken(user: AuthUser): string {
   );
 }
 
+const LOGIN_FAIL_HINT =
+  "No active user with that email. Default seed is admin@example.com (see supabase/002_ui_tables.sql). " +
+  "If you use docker-compose Postgres, run `docker compose up -d postgres` on a fresh volume, or re-apply that SQL to your DATABASE_URL.";
+
 export async function loginHandler(
   request: FastifyRequest<{ Body: { email: string } }>,
   reply: FastifyReply
@@ -35,13 +39,40 @@ export async function loginHandler(
     reply.status(400);
     return { ok: false, error: "email required" };
   }
-  const user = await findUserByEmail(email);
+  let user: Awaited<ReturnType<typeof findUserByEmail>>;
+  try {
+    user = await findUserByEmail(email);
+  } catch (err) {
+    const msg = (err as Error).message ?? "";
+    logger.warn("login user lookup failed", { error: msg });
+    reply.status(503);
+    if (/relation ["']users["'] does not exist/i.test(msg)) {
+      return {
+        ok: false,
+        error:
+          "database not migrated — public.users is missing. Apply supabase/setup_complete.sql and supabase/002_ui_tables.sql (docker-compose mounts them on first Postgres init).",
+      };
+    }
+    return {
+      ok: false,
+      error: `database unavailable (${msg.slice(0, 120)})`,
+    };
+  }
   if (!user) {
     reply.status(401);
-    return { ok: false, error: "invalid credentials" };
+    return { ok: false, error: `invalid credentials — ${LOGIN_FAIL_HINT}` };
   }
   const token = issueToken(user);
-  return { ok: true, token };
+  return {
+    ok: true,
+    token,
+    user: {
+      id: user.userId,
+      email: user.email,
+      roles: user.roles,
+      tenantId: user.tenantId,
+    },
+  };
 }
 
 export function authHook(allowedRoles?: AuthRole[]) {
@@ -91,6 +122,48 @@ export function authHook(allowedRoles?: AuthRole[]) {
     } catch (err) {
       logger.warn("auth verification failed", { error: (err as Error).message });
       reply.status(401).send({ error: "unauthorized" });
+    }
+  };
+}
+
+/**
+ * Development only: if `Authorization: Bearer …` is valid, attach `request.auth`
+ * (tenant_id, roles, etc.). If missing or invalid, continue — routes may still use
+ * `?tenantId=`. This matches production behavior after JWT dev-login without
+ * requiring query params on every `lib/api-client` GET.
+ */
+export function optionalAuthHook() {
+  return async (request: FastifyRequest, _reply: FastifyReply): Promise<void> => {
+    if (env.NODE_ENV === "production") return;
+
+    const header = request.headers.authorization;
+    if (!header?.startsWith("Bearer ")) return;
+    const token = header.slice("Bearer ".length);
+
+    try {
+      if (isClerkEnabled) {
+        const claims = await verifyClerkToken(token);
+        const user =
+          (await authStore.findByClerkId(claims.sub)) ??
+          (await authStore.findByEmail(claims.email));
+        if (!user) return;
+        request.auth = {
+          sub: user.userId,
+          tenant_id: user.tenantId,
+          email: user.email,
+          roles: user.roles,
+        };
+      } else {
+        const decoded = jwt.verify(token, JWT_SECRET) as jwt.JwtPayload;
+        request.auth = {
+          sub: decoded.sub as string,
+          tenant_id: decoded.tenant_id as string,
+          email: decoded.email as string,
+          roles: (decoded.roles as AuthRole[]) ?? [],
+        };
+      }
+    } catch {
+      /* invalid / expired token — leave auth unset */
     }
   };
 }

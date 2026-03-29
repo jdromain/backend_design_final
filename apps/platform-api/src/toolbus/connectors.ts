@@ -94,9 +94,17 @@ export async function executeToolCall(request: ToolExecutionRequest): Promise<un
         echo: true,
         toolName: request.toolName,
         provider: request.provider ?? "unknown",
-        args: request.args
+        args: request.args,
+        status: "stub",
       };
   }
+}
+
+/** True when the connector did not call a real external provider. */
+export function toolResultIsMocked(result: unknown): boolean {
+  if (!result || typeof result !== "object") return false;
+  const r = result as Record<string, unknown>;
+  return r.status === "mocked" || r.status === "stub";
 }
 
 function shouldMock(credentials: ConnectorCredentials): boolean {

@@ -113,7 +113,12 @@ export async function ping(): Promise<boolean> {
   try {
     const result = await query("SELECT 1 AS ok");
     return result.rows[0]?.ok === 1;
-  } catch {
+  } catch (err) {
+    const e = err as Error & { code?: string };
+    logger.warn("database ping failed", {
+      error: e.message || String(err),
+      code: e.code,
+    });
     return false;
   }
 }

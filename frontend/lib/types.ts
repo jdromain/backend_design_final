@@ -20,8 +20,9 @@ export interface AgentConfig {
   name: string;
   version: number;
   config: Record<string, unknown>;
-  createdAt: string;
-  updatedAt: string;
+  /** ISO timestamps when the API provides them; omitted by platform-api when not persisted. */
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface CallRecord {

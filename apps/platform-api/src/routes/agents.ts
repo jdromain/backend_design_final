@@ -1,14 +1,13 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { sendData, sendError } from "../lib/responses";
-import { authHook } from "../auth/jwt";
+import { authHook, optionalAuthHook } from "../auth/jwt";
 import { ConfigStore } from "../config/store";
 import { query } from "../persistence/dbClient";
 
 const isProduction = (process.env.NODE_ENV ?? "development") === "production";
-const devNoOp = undefined;
 
 export function registerAgentRoutes(app: FastifyInstance, configStore: ConfigStore) {
-  const preHandler = isProduction ? authHook(["admin", "editor", "viewer"]) : devNoOp;
+  const preHandler = isProduction ? authHook(["admin", "editor", "viewer"]) : optionalAuthHook();
 
   app.get("/agents", { preHandler }, async (request: FastifyRequest, reply: FastifyReply) => {
     const tenantId = request.auth?.tenant_id ?? (request.query as any).tenantId;
@@ -37,10 +36,12 @@ export function registerAgentRoutes(app: FastifyInstance, configStore: ConfigSto
 
     const m = metricsMap.get(agentConfig.id) ?? { total_calls: 0, handled: 0, escalated: 0, failed: 0, avg_duration: 0 };
 
+    const cfgName = (agentConfig as { name?: string }).name;
+
     const agents = [{
       id: agentConfig.id,
-      name: agentConfig.name ?? agentConfig.id,
-      description: (agentConfig as any).persona?.role ?? "AI Voice Agent",
+      name: cfgName ?? agentConfig.id,
+      description: agentConfig.persona,
       status: snapshot.status === "published" ? "active" : "draft",
       type: "general",
       version: String(snapshot.version),
@@ -54,8 +55,6 @@ export function registerAgentRoutes(app: FastifyInstance, configStore: ConfigSto
         failureRate: m.total_calls > 0 ? m.failed / m.total_calls : 0,
         avgDuration: m.avg_duration ?? 0,
       },
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
     }];
 
     sendData(reply, agents);
@@ -85,8 +84,8 @@ export function registerAgentRoutes(app: FastifyInstance, configStore: ConfigSto
 
     sendData(reply, {
       id: agentConfig.id,
-      name: agentConfig.name ?? agentConfig.id,
-      description: (agentConfig as any).persona?.role ?? "AI Voice Agent",
+      name: (agentConfig as { name?: string }).name ?? agentConfig.id,
+      description: agentConfig.persona,
       status: snapshot.status === "published" ? "active" : "draft",
       type: "general",
       version: String(snapshot.version),
@@ -100,8 +99,6 @@ export function registerAgentRoutes(app: FastifyInstance, configStore: ConfigSto
         failureRate: m.total_calls > 0 ? m.failed / m.total_calls : 0,
         avgDuration: m.avg_duration ?? 0,
       },
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
     });
   });
 }

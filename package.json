@@ -9,7 +9,10 @@
     "build": "pnpm -r --if-present build",
     "lint": "pnpm -r --if-present lint",
     "test": "pnpm -r --if-present test",
-    "format": "pnpm -r --if-present format"
+    "format": "pnpm -r --if-present format",
+    "kill-ports": "bash scripts/kill-dev-ports.sh",
+    "dev:api": "pnpm --filter @rezovo/platform-api dev",
+    "dev:web": "pnpm --filter frontend dev"
   },
   "devDependencies": {
     "@types/node": "^25.0.0",

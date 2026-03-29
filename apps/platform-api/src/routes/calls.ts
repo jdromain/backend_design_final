@@ -1,14 +1,15 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
+import { Type } from "@sinclair/typebox";
 import { createLogger } from "@rezovo/logging";
 import { callStore, CallRecord, TranscriptEntry, CallEvent } from "../persistence/callStore";
 import { query } from "../persistence/dbClient";
 import { sendData, sendError } from "../lib/responses";
-import { authHook } from "../auth/jwt";
+import { authHook, optionalAuthHook } from "../auth/jwt";
+import { CallsListEnvelopeSchema } from "../contracts/httpSchemas";
 
 const logger = createLogger({ service: "platform-api", module: "callRoutes" });
 
 const isProduction = (process.env.NODE_ENV ?? "development") === "production";
-const devNoOp = undefined;
 
 function mapOutcome(outcome: string | undefined | null): "completed" | "handoff" | "dropped" | "systemFailed" | "pending" {
   switch (outcome) {
@@ -201,7 +202,11 @@ export function registerCallRoutes(app: FastifyInstance) {
   // ----------------------------------------------------------------
 
   app.get("/calls", {
-    preHandler: isProduction ? authHook(["admin", "editor", "viewer"]) : devNoOp,
+    preHandler: isProduction ? authHook(["admin", "editor", "viewer"]) : optionalAuthHook(),
+    schema: {
+      querystring: Type.Object({ tenantId: Type.Optional(Type.String()) }),
+      response: { 200: CallsListEnvelopeSchema },
+    },
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     const tenantId = request.auth?.tenant_id ?? (request.query as any).tenantId;
     if (!tenantId) {
@@ -255,7 +260,7 @@ export function registerCallRoutes(app: FastifyInstance) {
   });
 
   app.get("/calls/live", {
-    preHandler: isProduction ? authHook(["admin", "editor", "viewer"]) : devNoOp,
+    preHandler: isProduction ? authHook(["admin", "editor", "viewer"]) : optionalAuthHook(),
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     const tenantId = request.auth?.tenant_id ?? (request.query as any).tenantId;
     if (!tenantId) {
@@ -328,7 +333,7 @@ export function registerCallRoutes(app: FastifyInstance) {
   });
 
   app.get("/calls/:id/timeline", {
-    preHandler: isProduction ? authHook(["admin", "editor", "viewer"]) : devNoOp,
+    preHandler: isProduction ? authHook(["admin", "editor", "viewer"]) : optionalAuthHook(),
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     const { id } = request.params as { id: string };
     const eventRows = (await query(
@@ -348,7 +353,7 @@ export function registerCallRoutes(app: FastifyInstance) {
   });
 
   app.get("/calls/:id/transcript", {
-    preHandler: isProduction ? authHook(["admin", "editor", "viewer"]) : devNoOp,
+    preHandler: isProduction ? authHook(["admin", "editor", "viewer"]) : optionalAuthHook(),
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     const { id } = request.params as { id: string };
     const entries = await callStore.getTranscript(id);
@@ -364,7 +369,7 @@ export function registerCallRoutes(app: FastifyInstance) {
   });
 
   app.get("/calls/:id/tools", {
-    preHandler: isProduction ? authHook(["admin", "editor", "viewer"]) : devNoOp,
+    preHandler: isProduction ? authHook(["admin", "editor", "viewer"]) : optionalAuthHook(),
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     const { id } = request.params as { id: string };
     const eventRows = (await query(

@@ -4,6 +4,11 @@ import fastifyRateLimit from "@fastify/rate-limit";
 import fastifyCors from "@fastify/cors";
 import { register as promRegister } from "prom-client";
 import { Type, TypeBoxTypeProvider } from "@fastify/type-provider-typebox";
+import {
+  BillingQuotaOkSchema,
+  HealthEnvelopeSchema,
+  LoginOkSchema,
+} from "./contracts/httpSchemas";
 import fastifyFormbody from "@fastify/formbody";
 
 import { createEventEnvelope, EventBusClient } from "@rezovo/event-bus";
@@ -16,7 +21,7 @@ import { ConfigStore } from "./config/store";
 import { canStartCallHandler, registerUsageIngest } from "./billingQuota";
 import { toolCallHandler } from "./toolbus";
 import { kbRetrieveHandler, kbIngestHandler, kbStatusHandler } from "./kb";
-import { authHook, loginHandler } from "./auth/jwt";
+import { authHook, loginHandler, optionalAuthHook } from "./auth/jwt";
 import { isClerkEnabled } from "./auth/clerk";
 import { AnalyticsStore } from "./analytics/store";
 import { registerAnalyticsConsumer } from "./analytics/consumer";
@@ -49,7 +54,6 @@ import { clerkSyncHandler } from "./webhooks/clerkSync";
 import { calendlyWebhookHandler } from "./webhooks/calendly";
 
 const isProduction = env.NODE_ENV === "production";
-const devNoOp = undefined;
 
 const logger = createLogger({ service: "platform-api", module: "http" });
 
@@ -96,23 +100,43 @@ export function buildServer(eventBus: EventBusClient): FastifyInstance<any, any,
     hook: "onRequest",
     keyGenerator: (req: FastifyRequest) => `${req.headers["x-tenant-id"] ?? "anon"}::${req.ip}`,
   });
-  app.register(fastifyUnderPressure, {
-    maxEventLoopDelay: 250,
-    maxHeapUsedBytes: 256 * 1024 * 1024,
-    maxRssBytes: 512 * 1024 * 1024,
-    pressureHandler: (_req: FastifyRequest, reply: FastifyReply) => {
-      reply.status(503).send({ error: "overloaded" });
-    },
-  });
+  // Under-pressure is noisy in local/dev (false positives on heap/RSS); keep for production only.
+  if (isProduction) {
+    app.register(fastifyUnderPressure, {
+      maxEventLoopDelay: 250,
+      maxHeapUsedBytes: 256 * 1024 * 1024,
+      maxRssBytes: 512 * 1024 * 1024,
+      pressureHandler: (_req: FastifyRequest, reply: FastifyReply) => {
+        reply.status(503).send({ error: "overloaded" });
+      },
+    });
+  }
 
   // Prometheus metrics
   app.get("/metrics", async () => promRegister.metrics());
 
-  // Health -- UI shape (SystemHealthData)
-  app.get("/health", async (_request, reply) => {
-    const data = await getSystemHealthData();
-    sendData(reply, data);
+  // Root — browsers often probe `/`; API lives under named routes (`/health`, etc.)
+  app.get("/", async (_request, reply) => {
+    reply.status(200).send({
+      service: "platform-api",
+      docs: "Use GET /health for dashboard status, POST /auth/login (dev JWT) when Clerk is off.",
+    });
   });
+
+  // Health -- UI shape (SystemHealthData)
+  app.get(
+    "/health",
+    {
+      schema: {
+        description: "System health for dashboard header",
+        response: { 200: HealthEnvelopeSchema },
+      },
+    },
+    async (_request, reply) => {
+      const data = await getSystemHealthData();
+      sendData(reply, data);
+    }
+  );
 
   // Fast liveness probe (DB ping only)
   app.get("/ready", async (_request, reply) => {
@@ -142,7 +166,21 @@ export function buildServer(eventBus: EventBusClient): FastifyInstance<any, any,
 
   // Auth -- dev-only login route
   if (!isClerkEnabled) {
-    app.post("/auth/login", loginHandler);
+    app.post(
+      "/auth/login",
+      {
+        schema: {
+          body: Type.Object({ email: Type.String() }),
+          response: {
+            200: LoginOkSchema,
+            400: Type.Object({ ok: Type.Literal(false), error: Type.String() }),
+            401: Type.Object({ ok: Type.Literal(false), error: Type.String() }),
+            503: Type.Object({ ok: Type.Literal(false), error: Type.String() }),
+          },
+        },
+      },
+      loginHandler
+    );
   }
 
   // Clerk webhook
@@ -151,7 +189,7 @@ export function buildServer(eventBus: EventBusClient): FastifyInstance<any, any,
   // Config endpoints
   app.get("/config/schema", {
     schema: { querystring: Type.Object({ lob: Type.Optional(Type.String()) }) },
-    preHandler: isProduction ? authHook(["admin", "editor"]) : devNoOp,
+    preHandler: isProduction ? authHook(["admin", "editor"]) : optionalAuthHook(),
   }, async (request) => {
     const { lob } = request.query as { lob?: string };
     return { lob: lob ?? "default", schema: getSchema(lob) };
@@ -159,7 +197,7 @@ export function buildServer(eventBus: EventBusClient): FastifyInstance<any, any,
 
   app.get("/config/templates", {
     schema: { querystring: Type.Object({ lob: Type.Optional(Type.String()) }) },
-    preHandler: isProduction ? authHook(["admin", "editor"]) : devNoOp,
+    preHandler: isProduction ? authHook(["admin", "editor"]) : optionalAuthHook(),
   }, async (request) => {
     const { lob } = request.query as { lob?: string };
     return { lob: lob ?? "default", templates: getTemplates(lob) };
@@ -172,7 +210,7 @@ export function buildServer(eventBus: EventBusClient): FastifyInstance<any, any,
         lob: Type.Optional(Type.String()),
       }),
     },
-    preHandler: isProduction ? authHook(["admin", "editor", "viewer"]) : devNoOp,
+    preHandler: isProduction ? authHook(["admin", "editor", "viewer"]) : optionalAuthHook(),
   }, async (request) => {
     const { tenantId, lob } = request.query as { tenantId: string; lob?: string };
     return await configStore.getSnapshot(tenantId, lob ?? "default");
@@ -185,7 +223,7 @@ export function buildServer(eventBus: EventBusClient): FastifyInstance<any, any,
         config: Type.Record(Type.String(), Type.Any()),
       }),
     },
-    preHandler: isProduction ? authHook(["admin", "editor"]) : devNoOp,
+    preHandler: isProduction ? authHook(["admin", "editor"]) : optionalAuthHook(),
   }, async (request, reply) => {
     const { lob, config } = request.body as { lob?: string; config: unknown };
     const result = validateConfig({ lob, config: config as any });
@@ -210,7 +248,7 @@ export function buildServer(eventBus: EventBusClient): FastifyInstance<any, any,
         config: Type.Optional(Type.Record(Type.String(), Type.Any())),
       }),
     },
-    preHandler: isProduction ? authHook(["admin", "editor"]) : devNoOp,
+    preHandler: isProduction ? authHook(["admin", "editor"]) : optionalAuthHook(),
   }, async (request, reply) => {
     const body = request.body as {
       tenantId: string;
@@ -261,25 +299,32 @@ export function buildServer(eventBus: EventBusClient): FastifyInstance<any, any,
 
   // Billing quota and usage ingest -- internal service calls
   app.post("/billing-quota/can-start-call", {
-    preHandler: isProduction ? authHook(["admin", "editor", "viewer"]) : devNoOp,
+    schema: {
+      body: Type.Object({ tenantId: Type.String() }),
+      response: {
+        200: BillingQuotaOkSchema,
+        400: Type.Object({ allowed: Type.Literal(false), reason: Type.String() }),
+      },
+    },
+    preHandler: isProduction ? authHook(["admin", "editor", "viewer"]) : optionalAuthHook(),
     handler: canStartCallHandler,
   });
   app.post("/usage/ingest", {
-    preHandler: isProduction ? authHook(["admin", "editor", "viewer"]) : devNoOp,
+    preHandler: isProduction ? authHook(["admin", "editor", "viewer"]) : optionalAuthHook(),
     handler: registerUsageIngest(eventBus),
   });
 
   // Toolbus and KB endpoints -- internal service calls
   app.post("/tool/call", {
-    preHandler: isProduction ? authHook(["admin", "editor"]) : devNoOp,
+    preHandler: isProduction ? authHook(["admin", "editor"]) : optionalAuthHook(),
     handler: toolCallHandler(eventBus),
   });
-  app.post("/kb/retrieve", { preHandler: isProduction ? authHook(["admin", "editor", "viewer"]) : devNoOp, handler: kbRetrieveHandler });
+  app.post("/kb/retrieve", { preHandler: isProduction ? authHook(["admin", "editor", "viewer"]) : optionalAuthHook(), handler: kbRetrieveHandler });
   app.post("/kb/docs", {
-    preHandler: isProduction ? authHook(["admin", "editor"]) : devNoOp,
+    preHandler: isProduction ? authHook(["admin", "editor"]) : optionalAuthHook(),
     handler: (req, reply) => kbIngestHandler(eventBus, req as any, reply),
   });
-  app.get("/kb/status", { preHandler: isProduction ? authHook(["admin", "editor", "viewer"]) : devNoOp, handler: kbStatusHandler });
+  app.get("/kb/status", { preHandler: isProduction ? authHook(["admin", "editor", "viewer"]) : optionalAuthHook(), handler: kbStatusHandler });
 
   // Credentials management
   credentialsRoutes(app as any);

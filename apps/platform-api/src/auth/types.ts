@@ -18,6 +18,7 @@ export interface RequestAuth {
 
 declare module "fastify" {
   interface FastifyRequest {
-    auth: RequestAuth;
+    /** Set by auth hooks when a valid Bearer token is present. */
+    auth?: RequestAuth;
   }
 }

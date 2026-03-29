@@ -1,10 +1,14 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
+import Link from "next/link";
 import { UserButton } from "@clerk/nextjs";
 import { Bell } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { ThemeToggle } from "@/components/theme-toggle";
 import { api } from "@/lib/api";
+
+const clerkPublishableKey = process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY?.trim();
 
 export function Header() {
   const { data: healthData, error } = useQuery({
@@ -36,12 +40,19 @@ export function Header() {
         </div>
       </div>
 
-      <div className="flex items-center gap-4">
+      <div className="flex items-center gap-2">
+        <ThemeToggle />
         <Button variant="ghost" size="icon">
           <Bell className="h-5 w-5" />
         </Button>
 
-        <UserButton afterSignOutUrl="/sign-in" />
+        {clerkPublishableKey ? (
+          <UserButton afterSignOutUrl="/sign-in" />
+        ) : (
+          <Button variant="outline" size="sm" asChild>
+            <Link href="/dev-login">Account</Link>
+          </Button>
+        )}
       </div>
     </div>
   );

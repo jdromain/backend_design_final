@@ -1,49 +1,45 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# Run from repo root: install once with `pnpm install`, then either:
+#   ./frontend/start.sh
+# or from this directory after `cd frontend`.
 
-# Rezovo Frontend Quick Start Script
+set -euo pipefail
 
-echo "🚀 Starting Rezovo Frontend Development Environment"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$(dirname "$0")"
+
+echo "Rezovo frontend — local dev"
 echo ""
 
-# Check if node_modules exists
-if [ ! -d "node_modules" ]; then
-  echo "📦 Installing dependencies..."
-  npm install
-  echo ""
+if [[ ! -d "node_modules" ]]; then
+  echo "Installing dependencies (from monorepo root recommended)..."
+  (cd "$ROOT" && pnpm install)
 fi
 
-# Check if .env.local exists
-if [ ! -f ".env.local" ]; then
-  echo "⚠️  Warning: .env.local not found"
-  echo "Creating .env.local with default values..."
+if [[ ! -f ".env.local" ]]; then
+  echo "Creating .env.local with API URL defaults..."
   cat > .env.local << 'EOF'
+# platform-api base (both names supported: lib/api.ts + lib/api-client.ts)
+NEXT_PUBLIC_API_URL=http://localhost:3001
 NEXT_PUBLIC_API_BASE_URL=http://localhost:3001
+
+# Optional Clerk — leave empty to use JWT dev login without Clerk
 NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=
 CLERK_SECRET_KEY=
+
+# Optional: frontend can use mock data layers when API is down (see lib/data/_env-check)
+# NEXT_PUBLIC_USE_MOCKS=true
 EOF
-  echo "✅ Created .env.local"
+  echo "Created .env.local"
   echo ""
 fi
 
-echo "📋 Quick Start Guide:"
+echo "Prerequisites:"
+echo "  1. platform-api on http://localhost:3001 (see apps/platform-api/env.example)"
+echo "  2. Postgres running if you want real data (otherwise API logs a DB warning but still listens)"
+echo "  3. If port 3001 or 3000 is busy, from repo root run: pnpm kill-ports"
 echo ""
-echo "1. Ensure backend is running on http://localhost:3001"
-echo "2. Login with:"
-echo "   Email: admin@example.com"
-echo "   Password: password"
-echo ""
-echo "3. Available pages:"
-echo "   - Dashboard: http://localhost:3000"
-echo "   - Live Calls: http://localhost:3000/live"
-echo "   - Call History: http://localhost:3000/history"
-echo "   - Analytics: http://localhost:3000/analytics"
-echo "   - AI Agents: http://localhost:3000/agents"
-echo "   - Knowledge Base: http://localhost:3000/knowledge"
-echo "   - Integrations: http://localhost:3000/integrations"
-echo "   - Billing: http://localhost:3000/billing"
-echo ""
-echo "🌐 Starting development server..."
+echo "Login: http://localhost:3000/dev-login (email only — matches POST /auth/login)"
 echo ""
 
-npm run dev
-
+pnpm run dev

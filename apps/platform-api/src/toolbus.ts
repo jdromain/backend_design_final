@@ -3,7 +3,7 @@ import { FastifyReply, FastifyRequest } from "fastify";
 import { createLogger } from "@rezovo/logging";
 import { createEventEnvelope, EventBusClient } from "@rezovo/event-bus";
 
-import { executeToolCall } from "./toolbus/connectors";
+import { executeToolCall, toolResultIsMocked } from "./toolbus/connectors";
 import { PersistenceStore } from "./persistence/store";
 
 const logger = createLogger({ service: "platform-api", module: "toolbus" });
@@ -39,7 +39,12 @@ export function toolCallHandler(eventBus: EventBusClient) {
     const storeKey = `${tenantId}::${toolName}::${idempotencyKey}`;
     const cached = await persistence.loadToolResult(tenantId, toolName, storeKey);
     if (cached) {
-      return { ok: true, fromCache: true, result: cached.result };
+      return {
+        ok: true,
+        fromCache: true,
+        mocked: toolResultIsMocked(cached.result),
+        result: cached.result,
+      };
     }
 
     const credentials = (await persistence.loadCredentials(tenantId, provider)) ?? {};
@@ -53,6 +58,11 @@ export function toolCallHandler(eventBus: EventBusClient) {
       args: args ?? {},
       credentials
     });
+
+    const mocked =
+      MOCK_MODE ||
+      Object.keys(credentials).length === 0 ||
+      toolResultIsMocked(result);
 
     await persistence.saveToolResult(tenantId, toolName, storeKey, result);
     const envelope = createEventEnvelope({
@@ -70,7 +80,7 @@ export function toolCallHandler(eventBus: EventBusClient) {
     void eventBus.publish(envelope);
     logger.info("tool executed", { tenantId, toolName, idempotencyKey, provider });
 
-    return { ok: true, provider, result };
+    return { ok: true, provider, mocked, result };
   };
 }
 

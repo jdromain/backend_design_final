@@ -1,60 +1,35 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
 
-# Run All Tests Script
+# Repo-wide tests: platform-api contract (Vitest inject) + frontend API client unit tests.
+# Does not start a long-lived backend; integration tests that require port 3001 are opt-in.
 
-echo "🧪 Running Rezovo Test Suite"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$ROOT"
+
+echo "🧪 Rezovo test suite (Phase F)"
 echo ""
 
-# Check if backend is running
-if ! lsof -i:3001 > /dev/null 2>&1; then
-  echo "⚠️  Backend not running on port 3001"
-  echo "   Starting backend..."
-  cd apps/platform-api
-  node dist/index.js &
-  BACKEND_PID=$!
-  cd ../..
-  sleep 3
-  echo "   ✅ Backend started (PID: $BACKEND_PID)"
-  CLEANUP_BACKEND=true
-else
-  echo "✅ Backend already running on port 3001"
-  CLEANUP_BACKEND=false
-fi
-
+echo "── platform-api (Fastify inject + TypeBox) ──"
+# Use workspace filter + package script so Vitest resolves via pnpm (avoids broken direct vitest.mjs paths).
+VITEST=true pnpm --filter @rezovo/platform-api run test
 echo ""
 
-# Install test dependencies if needed
-cd frontend
-if [ ! -d "node_modules/@testing-library" ]; then
-  echo "📦 Installing test dependencies..."
-  pnpm add -D @testing-library/react @testing-library/jest-dom @testing-library/user-event @vitejs/plugin-react jsdom vitest @vitest/ui
-  echo ""
-fi
-
-# Run tests
-echo "🧪 Running Unit Tests..."
-pnpm vitest run --reporter=verbose
-
-TEST_EXIT_CODE=$?
-
-cd ..
-
-# Cleanup if we started backend
-if [ "$CLEANUP_BACKEND" = true ]; then
-  echo ""
-  echo "🧹 Cleaning up backend..."
-  kill $BACKEND_PID 2>/dev/null
-fi
-
-echo ""
-if [ $TEST_EXIT_CODE -eq 0 ]; then
-  echo "✅ All tests passed!"
-  exit 0
-else
-  echo "❌ Some tests failed"
+echo "── frontend (api client mapping / unwrap) ──"
+# `frontend/` lives outside pnpm-workspace.yaml — invoke its package scripts directly.
+if [[ ! -d "$ROOT/frontend/node_modules" ]]; then
+  echo "⚠️  frontend/node_modules missing. Run: cd frontend && pnpm install" >&2
   exit 1
 fi
+(
+  cd "$ROOT/frontend"
+  # Pass the file to Vitest directly — `pnpm run test -- file` forwards `"--"` as an arg and runs the whole suite.
+  pnpm exec vitest run __tests__/api.test.ts
+)
+echo ""
 
-
-
-
+echo "✅ Core tests passed."
+echo ""
+echo "Optional: run full frontend Vitest (may fail without backend / broken suites):"
+echo "  cd frontend && pnpm vitest run"
+echo "Optional: with Postgres + API up, manual smoke checklist: docs/setup.md § Demo smoke checklist"

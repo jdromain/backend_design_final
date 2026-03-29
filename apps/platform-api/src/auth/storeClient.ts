@@ -6,43 +6,33 @@ const logger = createLogger({ service: "platform-api", module: "authStore" });
 
 export class AuthStoreClient {
   async findByEmail(email: string): Promise<AuthUser | undefined> {
-    try {
-      const result = await query(
-        "SELECT id, tenant_id, email, roles, name FROM users WHERE LOWER(email) = LOWER($1) AND status = 'active'",
-        [email]
-      );
-      if (result.rows.length === 0) return undefined;
-      const row = result.rows[0];
-      return {
-        userId: row.id,
-        tenantId: row.tenant_id,
-        email: row.email,
-        roles: row.roles ?? ["viewer"],
-      };
-    } catch (err) {
-      logger.warn("findByEmail failed", { error: (err as Error).message });
-      return undefined;
-    }
+    const result = await query(
+      "SELECT id, tenant_id, email, roles, name FROM users WHERE LOWER(email) = LOWER($1) AND status = 'active'",
+      [email]
+    );
+    if (result.rows.length === 0) return undefined;
+    const row = result.rows[0];
+    return {
+      userId: row.id,
+      tenantId: row.tenant_id,
+      email: row.email,
+      roles: row.roles ?? ["viewer"],
+    };
   }
 
   async findByClerkId(clerkId: string): Promise<AuthUser | undefined> {
-    try {
-      const result = await query(
-        "SELECT id, tenant_id, email, roles, name FROM users WHERE clerk_id = $1 AND status = 'active'",
-        [clerkId]
-      );
-      if (result.rows.length === 0) return undefined;
-      const row = result.rows[0];
-      return {
-        userId: row.id,
-        tenantId: row.tenant_id,
-        email: row.email,
-        roles: row.roles ?? ["viewer"],
-      };
-    } catch (err) {
-      logger.warn("findByClerkId failed", { error: (err as Error).message });
-      return undefined;
-    }
+    const result = await query(
+      "SELECT id, tenant_id, email, roles, name FROM users WHERE clerk_id = $1 AND status = 'active'",
+      [clerkId]
+    );
+    if (result.rows.length === 0) return undefined;
+    const row = result.rows[0];
+    return {
+      userId: row.id,
+      tenantId: row.tenant_id,
+      email: row.email,
+      roles: row.roles ?? ["viewer"],
+    };
   }
 
   async listByTenant(tenantId: string): Promise<AuthUser[]> {

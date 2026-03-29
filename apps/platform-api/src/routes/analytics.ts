@@ -1,11 +1,11 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { query } from "../persistence/dbClient";
 import { sendData, sendError } from "../lib/responses";
-import { authHook } from "../auth/jwt";
+import { authHook, optionalAuthHook } from "../auth/jwt";
 import { ConfigStore } from "../config/store";
+import { AnalyticsSummaryEnvelopeSchema } from "../contracts/httpSchemas";
 
 const isProduction = (process.env.NODE_ENV ?? "development") === "production";
-const devNoOp = undefined;
 
 function mapOutcome(pg: string | null): string {
   switch (pg) {
@@ -18,7 +18,7 @@ function mapOutcome(pg: string | null): string {
 }
 
 export function registerAnalyticsRoutes(app: FastifyInstance, configStore: ConfigStore) {
-  const preHandler = isProduction ? authHook(["admin", "editor", "viewer"]) : devNoOp;
+  const preHandler = isProduction ? authHook(["admin", "editor", "viewer"]) : optionalAuthHook();
 
   app.get("/analytics/outcomes", { preHandler }, async (request: FastifyRequest, reply: FastifyReply) => {
     const tenantId = request.auth?.tenant_id ?? (request.query as any).tenantId;
@@ -188,23 +188,36 @@ export function registerAnalyticsRoutes(app: FastifyInstance, configStore: Confi
       [tenantId]
     );
 
-    const total = agg.total_calls || 1;
+    const totalCallsCount = Number(agg.total_calls) || 0;
     const topIntents = intentsResult.rows.map((r: any) => ({
       name: r.name,
       count: r.count,
-      percentage: Math.round((r.count / total) * 1000) / 10,
+      percentage:
+        totalCallsCount > 0
+          ? Math.round((r.count / totalCallsCount) * 1000) / 10
+          : 0,
     }));
 
     const snapshot = await configStore.getSnapshot(tenantId);
-    const agentName = snapshot.agentConfig?.name ?? "Rezovo Agent";
+    const cfg = snapshot.agentConfig as { name?: string };
+    const agentName = cfg.name ?? snapshot.agentConfig.id;
 
     sendData(reply, {
       name: agentName,
       version: `v${snapshot.version}`,
       totalCalls: agg.total_calls,
-      handledRate: total > 0 ? Math.round((agg.handled / total) * 1000) / 10 : 0,
-      escalationRate: total > 0 ? Math.round((agg.escalated / total) * 1000) / 10 : 0,
-      failureRate: total > 0 ? Math.round((agg.failed / total) * 1000) / 10 : 0,
+      handledRate:
+        totalCallsCount > 0
+          ? Math.round((agg.handled / totalCallsCount) * 1000) / 10
+          : 0,
+      escalationRate:
+        totalCallsCount > 0
+          ? Math.round((agg.escalated / totalCallsCount) * 1000) / 10
+          : 0,
+      failureRate:
+        totalCallsCount > 0
+          ? Math.round((agg.failed / totalCallsCount) * 1000) / 10
+          : 0,
       avgDuration: agg.avg_duration ?? 0,
       topIntents,
     });
@@ -243,5 +256,68 @@ export function registerAnalyticsRoutes(app: FastifyInstance, configStore: Confi
     }
 
     sendData(reply, insights);
+  });
+
+  /**
+   * SQL-only dashboard summary (same semantics as client-side aggregate from /calls + live + tools).
+   */
+  app.get("/analytics/summary", {
+    preHandler,
+    schema: { response: { 200: AnalyticsSummaryEnvelopeSchema } },
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const tenantId = request.auth?.tenant_id ?? (request.query as any).tenantId;
+    if (!tenantId) return sendError(reply, 400, "missing_tenant", "tenantId required");
+
+    const aggRow = (
+      await query(
+        `SELECT
+           COUNT(*)::int AS total_calls,
+           COUNT(*) FILTER (WHERE outcome = 'handled')::int AS successful_calls,
+           COUNT(*) FILTER (WHERE outcome = 'failed')::int AS failed_calls,
+           COALESCE(SUM(duration_sec), 0)::bigint AS total_duration_sec
+         FROM calls
+         WHERE tenant_id = $1`,
+        [tenantId]
+      )
+    ).rows[0] ?? {
+      total_calls: 0,
+      successful_calls: 0,
+      failed_calls: 0,
+      total_duration_sec: "0",
+    };
+
+    const liveRow = (
+      await query(
+        `SELECT COUNT(*)::int AS active_now
+         FROM calls
+         WHERE tenant_id = $1
+           AND status IN ('initiated', 'ringing', 'in_progress')`,
+        [tenantId]
+      )
+    ).rows[0] ?? { active_now: 0 };
+
+    const toolRow = (
+      await query(
+        `SELECT COUNT(*)::int AS tool_invocations
+         FROM call_events
+         WHERE tenant_id = $1 AND event_type = 'tool_called'`,
+        [tenantId]
+      )
+    ).rows[0] ?? { tool_invocations: 0 };
+
+    const totalCalls = Number(aggRow.total_calls) || 0;
+    const successfulCalls = Number(aggRow.successful_calls) || 0;
+    const failedCalls = Number(aggRow.failed_calls) || 0;
+    const totalDurationSec = Number(aggRow.total_duration_sec) || 0;
+
+    sendData(reply, {
+      totalCalls,
+      successfulCalls,
+      failedCalls,
+      averageDurationMs: totalCalls > 0 ? (totalDurationSec * 1000) / totalCalls : 0,
+      successRate: totalCalls > 0 ? successfulCalls / totalCalls : 0,
+      activeNow: Number(liveRow.active_now) || 0,
+      toolInvocations: Number(toolRow.tool_invocations) || 0,
+    });
   });
 }

@@ -1,10 +1,9 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { query } from "../persistence/dbClient";
 import { sendData, sendError } from "../lib/responses";
-import { authHook } from "../auth/jwt";
+import { authHook, optionalAuthHook } from "../auth/jwt";
 
 const isProduction = (process.env.NODE_ENV ?? "development") === "production";
-const devNoOp = undefined;
 
 function periodInterval(period?: string): string {
   switch (period) {
@@ -16,7 +15,7 @@ function periodInterval(period?: string): string {
 }
 
 export function registerBillingRoutes(app: FastifyInstance) {
-  const preHandler = isProduction ? authHook(["admin", "editor", "viewer"]) : devNoOp;
+  const preHandler = isProduction ? authHook(["admin", "editor", "viewer"]) : optionalAuthHook();
 
   app.get("/billing/usage", { preHandler }, async (request: FastifyRequest, reply: FastifyReply) => {
     const tenantId = request.auth?.tenant_id ?? (request.query as any).tenantId;
@@ -186,12 +185,13 @@ export function registerBillingRoutes(app: FastifyInstance) {
     );
 
     sendData(reply, result.rows.map((r: any, idx: number) => ({
-      id: `inv-${tenantId}-${idx}`,
+      id: `usage-${tenantId}-${idx}`,
       period: new Date(r.month).toISOString().slice(0, 7),
       calls: r.call_count,
       minutes: Math.ceil(r.total_seconds / 60),
       total: parseFloat(r.total_cost),
-      status: "paid",
+      /** Internal metering rollup — not a payment or invoice status. */
+      kind: "usage_month_rollup" as const,
     })));
   });
 }

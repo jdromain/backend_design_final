@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
@@ -33,7 +34,7 @@ describe('useQuery refetchInterval callback form', () => {
           refetchInterval: (query) => (query.state.error ? false : 1000),
         }),
       {
-        wrapper: ({ children }: { children: React.ReactNode }) => (
+        wrapper: ({ children }: { children: ReactNode }) => (
           <QueryClientProvider client={queryClient}>
             {children}
           </QueryClientProvider>
@@ -47,10 +48,7 @@ describe('useQuery refetchInterval callback form', () => {
   });
 
   it('should stop refetching when error occurs', async () => {
-    const mockFn = vi
-      .fn()
-      .mockRejectedValueOnce(new Error('API Error'))
-      .mockResolvedValue({ data: 'test' });
+    const mockFn = vi.fn().mockRejectedValue(new Error("API Error"));
 
     const { result } = renderHook(
       () =>
@@ -58,10 +56,10 @@ describe('useQuery refetchInterval callback form', () => {
           queryKey: ['test-error'],
           queryFn: mockFn,
           refetchInterval: (query) => (query.state.error ? false : 100),
-          retry: 1,
+          retry: false,
         }),
       {
-        wrapper: ({ children }: { children: React.ReactNode }) => (
+        wrapper: ({ children }: { children: ReactNode }) => (
           <QueryClientProvider client={queryClient}>
             {children}
           </QueryClientProvider>
@@ -69,8 +67,7 @@ describe('useQuery refetchInterval callback form', () => {
       }
     );
 
-    // Wait for error
-    await waitFor(() => expect(result.current.error).toBeTruthy());
+    await waitFor(() => expect(result.current.isError).toBe(true));
 
     // Verify refetchInterval is disabled by checking calls don't increase
     const callsAfterError = mockFn.mock.calls.length;
@@ -92,7 +89,7 @@ describe('useQuery refetchInterval callback form', () => {
           refetchInterval: (query) => (query.state.error ? false : 100),
         }),
       {
-        wrapper: ({ children }: { children: React.ReactNode }) => (
+        wrapper: ({ children }: { children: ReactNode }) => (
           <QueryClientProvider client={queryClient}>
             {children}
           </QueryClientProvider>
@@ -130,7 +127,7 @@ describe('Fixed Components - No Temporal Dead Zone', () => {
           retry: 1,
         }),
       {
-        wrapper: ({ children }) => (
+        wrapper: ({ children }: { children: ReactNode }) => (
           <QueryClientProvider client={new QueryClient()}>
             {children}
           </QueryClientProvider>
@@ -153,7 +150,7 @@ describe('Fixed Components - No Temporal Dead Zone', () => {
           retry: 1,
         }),
       {
-        wrapper: ({ children }) => (
+        wrapper: ({ children }: { children: ReactNode }) => (
           <QueryClientProvider client={new QueryClient()}>
             {children}
           </QueryClientProvider>
@@ -176,7 +173,7 @@ describe('Fixed Components - No Temporal Dead Zone', () => {
           retry: 1,
         }),
       {
-        wrapper: ({ children }) => (
+        wrapper: ({ children }: { children: ReactNode }) => (
           <QueryClientProvider client={new QueryClient()}>
             {children}
           </QueryClientProvider>
