@@ -1,0 +1,18 @@
+[
+  {
+    "userId": "user-1",
+    "tenantId": "tenant-default",
+    "email": "admin@example.com",
+    "roles": [
+      "admin"
+    ]
+  },
+  {
+    "userId": "user-2",
+    "tenantId": "tenant-default",
+    "email": "editor@example.com",
+    "roles": [
+      "editor"
+    ]
+  }
+]

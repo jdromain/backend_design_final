@@ -24,7 +24,6 @@ function printEnvDiagnostics(): void {
   logger.info("LLM config", {
     provider: env.LLM_PROVIDER,
     model: env.LLM_MODEL,
-    temperature: env.LLM_TEMPERATURE,
     maxTokens: env.LLM_MAX_TOKENS,
     OPENAI_API_KEY: env.OPENAI_API_KEY ? "***set***" : "(NOT SET — agent calls will fail)",
   });

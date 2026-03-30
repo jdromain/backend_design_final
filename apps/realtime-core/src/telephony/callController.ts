@@ -185,6 +185,52 @@ export class CallController {
     let transcriptBuffer = "";
     let isProcessing = false;
     let callEnded = false;
+    let pendingUtterance: string | null = null;
+
+    // Silence detection state
+    let lastActivityAt = Date.now();
+    const SILENCE_PROMPT_MS = 8_000;
+    const MAX_SILENCE_PROMPTS = 2;
+    let silencePromptCount = 0;
+
+    const processTurn = async (userText: string, sttStreamRef: { close: () => void }) => {
+      isProcessing = true;
+      lastActivityAt = Date.now();
+      silencePromptCount = 0;
+      traceLog.sttFinal(session.id, userText);
+      logger.info("processing user utterance", { callId: session.id, text: userText });
+      try {
+        const response = await session.receiveUserStreaming(
+          userText,
+          async (sentence: string) => {
+            if (tts && !callEnded) {
+              await this.synthesizeAndSend(
+                tts, sentence, mediaSession, bridgeConnection,
+                (chars, seconds) => session.addTtsUsage(chars, seconds), signal
+              );
+            }
+          }
+        );
+        if (response.type === "handoff" || response.type === "end") {
+          callEnded = true;
+          sttStreamRef.close();
+        }
+      } catch (error) {
+        logger.error("error processing turn", {
+          callId: session.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      } finally {
+        isProcessing = false;
+        transcriptBuffer = "";
+        // Drain buffered utterance that arrived while we were busy
+        if (pendingUtterance && !callEnded) {
+          const next = pendingUtterance;
+          pendingUtterance = null;
+          await processTurn(next, sttStreamRef);
+        }
+      }
+    };
 
     try {
       // Create a dummy connection for STT if no bridge (required by startStream signature)
@@ -200,48 +246,55 @@ export class CallController {
             return;
           }
 
-          // Final transcript -- stream through agent pipeline with sentence-level TTS
-          if (segment.isFinal && !isProcessing && !callEnded) {
-            isProcessing = true;
-            const userText = segment.text.trim();
+          lastActivityAt = Date.now();
 
-            if (userText.length === 0) {
-              isProcessing = false;
-              return;
-            }
+          if (callEnded) return;
 
-            traceLog.sttFinal(session.id, userText);
-            logger.info("processing user utterance", { callId: session.id, text: userText });
+          const userText = segment.text.trim();
+          if (userText.length === 0) return;
 
-            try {
-              const response = await session.receiveUserStreaming(
-                userText,
-                async (sentence: string) => {
-                  if (tts && !callEnded) {
-                    await this.synthesizeAndSend(
-                      tts, sentence, mediaSession, bridgeConnection,
-                      (chars, seconds) => session.addTtsUsage(chars, seconds), signal
-                    );
-                  }
-                }
-              );
-
-              if (response.type === "handoff" || response.type === "end") {
-                callEnded = true;
-                sttStream.close();
-              }
-            } catch (error) {
-              logger.error("error processing turn", {
-                callId: session.id,
-                error: error instanceof Error ? error.message : String(error),
-              });
-            } finally {
-              isProcessing = false;
-              transcriptBuffer = "";
-            }
+          if (isProcessing) {
+            // Buffer the most recent utterance — will be drained after current turn finishes
+            pendingUtterance = userText;
+            logger.debug("turn in progress, buffering utterance", { callId: session.id, text: userText });
+            return;
           }
+
+          await processTurn(userText, sttStream);
         }
       );
+
+      // Silence detection: prompt if no caller activity for SILENCE_PROMPT_MS
+      const silenceCheck = setInterval(async () => {
+        if (callEnded || isProcessing) return;
+        if (Date.now() - lastActivityAt < SILENCE_PROMPT_MS) return;
+
+        if (silencePromptCount >= MAX_SILENCE_PROMPTS) {
+          logger.info("max silence prompts reached, ending call", { callId: session.id });
+          callEnded = true;
+          sttStream.close();
+          return;
+        }
+
+        silencePromptCount++;
+        lastActivityAt = Date.now();
+        const prompt = silencePromptCount === 1
+          ? "Are you still there?"
+          : "I'll let you go — have a great day, goodbye!";
+        logger.info("silence prompt", { callId: session.id, attempt: silencePromptCount, prompt });
+        if (tts) {
+          try {
+            await this.synthesizeAndSend(tts, prompt, mediaSession, bridgeConnection,
+              (chars, seconds) => session.addTtsUsage(chars, seconds), signal);
+          } catch {
+            // non-fatal
+          }
+        }
+        if (silencePromptCount >= MAX_SILENCE_PROMPTS) {
+          callEnded = true;
+          sttStream.close();
+        }
+      }, 2_000);
 
       // Pipe audio from bridge → STT
       if (bridgeConnection) {
@@ -257,6 +310,7 @@ export class CallController {
         const timeout = setTimeout(() => {
           logger.warn("call timeout reached", { callId: session.id, maxCallDuration });
           callEnded = true;
+          clearInterval(silenceCheck);
           sttStream.close();
           resolve();
         }, maxCallDuration);
@@ -266,16 +320,18 @@ export class CallController {
             logger.info("call aborted by signal", { callId: session.id });
             clearTimeout(timeout);
             callEnded = true;
+            clearInterval(silenceCheck);
             sttStream.close();
             resolve();
           });
         }
 
-        // Poll for callEnded flag (set by handleResponse on end/handoff)
+        // Poll for callEnded flag
         const check = setInterval(() => {
           if (callEnded) {
             clearTimeout(timeout);
             clearInterval(check);
+            clearInterval(silenceCheck);
             resolve();
           }
         }, 200);
@@ -291,48 +347,6 @@ export class CallController {
       await session.cleanup();
       logger.info("dialogue loop ended", { callId: session.id, turns: session.getTranscript().length });
     }
-  }
-
-  /**
-   * Handle an OrchestratorResponse: speak, handoff, or end.
-   * Returns true if the call should end.
-   */
-  private async handleResponse(
-    response: { type: string; text?: string; reason?: string },
-    tts: ReturnType<typeof createTtsProvider> | null,
-    mediaSession: MediaSession,
-    bridgeConnection: RtpBridgeConnection | null,
-    session: CallSession,
-    signal?: AbortSignal
-  ): Promise<boolean> {
-    if (response.type === "speak" && tts && response.text) {
-      await this.synthesizeAndSend(tts, response.text, mediaSession, bridgeConnection,
-        (chars, seconds) => session.addTtsUsage(chars, seconds), signal);
-      return false;
-    }
-
-    if (response.type === "handoff") {
-      logger.info("transfer requested", { callId: session.id });
-      if (tts) {
-        await this.synthesizeAndSend(
-          tts, response.text || "Let me connect you with someone right away.",
-          mediaSession, bridgeConnection,
-          (chars, seconds) => session.addTtsUsage(chars, seconds), signal
-        );
-      }
-      return true;
-    }
-
-    if (response.type === "end") {
-      logger.info("call ending", { callId: session.id });
-      if (tts && response.text) {
-        await this.synthesizeAndSend(tts, response.text, mediaSession, bridgeConnection,
-          (chars, seconds) => session.addTtsUsage(chars, seconds), signal);
-      }
-      return true;
-    }
-
-    return false;
   }
 
   private async publishCallStarted(params: {

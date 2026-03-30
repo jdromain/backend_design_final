@@ -53,7 +53,6 @@ export const env = {
   LLM_PROVIDER: optional("LLM_PROVIDER", "openai"),
   OPENAI_API_KEY: optional("OPENAI_API_KEY", ""),
   LLM_MODEL: optional("LLM_MODEL", "gpt-4o-mini"),
-  LLM_TEMPERATURE: optionalNum("LLM_TEMPERATURE", 0.7),
   LLM_MAX_TOKENS: optionalInt("LLM_MAX_TOKENS", 500),
 
   // STT (Deepgram)

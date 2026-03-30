@@ -50,7 +50,6 @@ export class AgentFactory {
       model: "gpt-5-nano",
       handoffs: [bookingAgent, modifyAgent, cancelAgent, complaintAgent, infoAgent],
       modelSettings: {
-        temperature: 0.3,
         maxTokens: 50,
       },
     });
@@ -63,7 +62,7 @@ export class AgentFactory {
       instructions: this.buildBookingPrompt(ctx),
       model: "gpt-5-nano",
       tools: this.buildTools("create_booking", ctx),
-      modelSettings: { temperature: 0.7, maxTokens: 150 },
+      modelSettings: { maxTokens: 150 },
     });
   }
 
@@ -74,7 +73,7 @@ export class AgentFactory {
       instructions: this.buildModifyPrompt(ctx),
       model: "gpt-5-nano",
       tools: this.buildTools("modify_booking", ctx),
-      modelSettings: { temperature: 0.7, maxTokens: 150 },
+      modelSettings: { maxTokens: 150 },
     });
   }
 
@@ -85,7 +84,7 @@ export class AgentFactory {
       instructions: this.buildCancelPrompt(ctx),
       model: "gpt-5-nano",
       tools: this.buildTools("cancel_booking", ctx),
-      modelSettings: { temperature: 0.7, maxTokens: 150 },
+      modelSettings: { maxTokens: 150 },
     });
   }
 
@@ -96,7 +95,7 @@ export class AgentFactory {
       instructions: this.buildComplaintPrompt(ctx),
       model: "gpt-5-nano",
       tools: this.buildTools("complaint", ctx),
-      modelSettings: { temperature: 0.8, maxTokens: 150 },
+      modelSettings: { maxTokens: 150 },
     });
   }
 
@@ -107,7 +106,7 @@ export class AgentFactory {
       instructions: this.buildInfoPrompt(ctx),
       model: "gpt-5-nano",
       tools: [],
-      modelSettings: { temperature: 0.7, maxTokens: 150 },
+      modelSettings: { maxTokens: 150 },
     });
   }
 

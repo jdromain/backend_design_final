@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Free Next.js (3000) and platform-api (3001) on macOS/Linux.
+# Free all dev ports: Next.js (3000), platform-api (3001), realtime-core (3002),
+# rtp-bridge external (8080), rtp-bridge internal (8081), metrics (9090/9100).
 # macOS: use `lsof -tiTCP:PORT -sTCP:LISTEN` (not `lsof -ti :3000,3001`).
 
 set -euo pipefail
@@ -24,6 +25,6 @@ kill_port() {
   fi
 }
 
-for p in 3000 3001; do
+for p in 3000 3001 3002 8080 8081 9090 9100; do
   kill_port "$p"
 done

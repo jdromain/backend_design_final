@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useMemo } from "react";
+import { isClerkFeatureOn } from "@/lib/clerk-runtime";
 import {
   Phone,
   CheckCircle,
@@ -90,7 +91,10 @@ export function DashboardHomePage() {
   useEffect(() => {
     const onUnauthorized = () => {
       if (typeof window === "undefined") return;
-      if (process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY?.trim()) {
+      if (
+        process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY?.trim() &&
+        isClerkFeatureOn()
+      ) {
         window.location.href = "/sign-in";
       } else {
         window.location.href = "/dev-login";

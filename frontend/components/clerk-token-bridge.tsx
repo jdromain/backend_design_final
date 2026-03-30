@@ -3,6 +3,7 @@
 import { useAuth } from "@clerk/nextjs";
 import { useEffect } from "react";
 import { configureApiAuth } from "@/lib/api-client";
+import { isClerkFeatureOn } from "@/lib/clerk-runtime";
 
 const jwtTemplate = process.env.NEXT_PUBLIC_CLERK_JWT_TEMPLATE ?? "platform-api";
 
@@ -28,6 +29,6 @@ function ClerkTokenBridgeInner() {
  * configured so `useAuth` is never used without `ClerkProvider`.
  */
 export function ClerkTokenBridge() {
-  if (!clerkPublishableKey) return null;
+  if (!clerkPublishableKey || !isClerkFeatureOn()) return null;
   return <ClerkTokenBridgeInner />;
 }

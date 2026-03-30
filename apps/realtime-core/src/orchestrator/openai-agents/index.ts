@@ -101,6 +101,19 @@ function detectActionFromText(text: string): "speak" | "transfer" | "end" {
 
 const guardrails = new GuardrailsEngine();
 
+// ---- History utilities ----
+
+/**
+ * Cap history at maxPairs exchange pairs to prevent context window overflow.
+ * Always preserves the first item (greeting seed).
+ */
+function trimHistory(h: AgentInputItem[], maxPairs = 20): AgentInputItem[] {
+  const seed = h.slice(0, 1);
+  const rest = h.slice(1);
+  const maxItems = maxPairs * 2;
+  return rest.length > maxItems ? [...seed, ...rest.slice(-maxItems)] : h;
+}
+
 // ---- Build CallContext from agent config ----
 
 export function buildCallContext(
@@ -175,7 +188,7 @@ export async function processTurn(opts: {
   const {
     utterance,
     callId,
-    history,
+    history: historyIn,
     currentAgent,
     agentConfig,
     phoneConfig,
@@ -183,6 +196,7 @@ export async function processTurn(opts: {
     currentDateTime,
     signal,
   } = opts;
+  let history = historyIn;
   const turnStart = Date.now();
   const turnId = randomUUID();
   const isDev = env.NODE_ENV === "development";
@@ -207,14 +221,23 @@ export async function processTurn(opts: {
       logger.warn("input blocked by guardrails", { callId, category: inputCheckResult.category });
       const text = inputCheckResult.message || "Let me connect you with someone who can help.";
       await onSentence(text);
+      history.push({ role: "user", content: utterance } as AgentInputItem);
+      history.push({ role: "assistant", content: [{ type: "output_text", text }] } as AgentInputItem);
       traceLog.turnEnd(callId, turnId, "transfer", { reason: "guardrails_blocked" });
       return { turnId, action: "transfer", text, agentName: currentAgent.name, history, currentAgent };
     }
     if (inputCheckResult.action === "transfer") {
       const text = "Let me connect you with someone right away.";
       await onSentence(text);
+      history.push({ role: "user", content: utterance } as AgentInputItem);
+      history.push({ role: "assistant", content: [{ type: "output_text", text }] } as AgentInputItem);
       traceLog.turnEnd(callId, turnId, "transfer", { reason: "guardrails_transfer" });
       return { turnId, action: "transfer", text, agentName: currentAgent.name, history, currentAgent };
+    }
+    if (inputCheckResult.action === "warn" && inputCheckResult.message) {
+      await onSentence(inputCheckResult.message);
+      history.push({ role: "assistant", content: [{ type: "output_text", text: inputCheckResult.message }] } as AgentInputItem);
+      // fall through — LLM still runs with the de-escalation message visible in history
     }
   }
 
@@ -227,7 +250,8 @@ export async function processTurn(opts: {
     currentDateTime ?? new Date().toISOString(),
   );
 
-  // 4. Add user message to history
+  // 4. Add user message to history (trim first to prevent context overflow)
+  history = trimHistory(history);
   history.push({ role: "user", content: utterance });
 
   traceLog.runInput(
@@ -323,14 +347,16 @@ export async function processTurn(opts: {
       if (outputCheck.blocked) {
         logger.warn("output blocked by guardrails", { callId });
         const text = "I apologize, let me connect you with someone who can help.";
-        traceLog.runOutput(callId, turnId, agentName, "transfer", fullText.length, newHistory.length, fullText, { outputBlocked: true });
+        // Return pre-run history with a clean replacement entry — do NOT expose flagged content
+        history.push({ role: "assistant", content: [{ type: "output_text", text }] } as AgentInputItem);
+        traceLog.runOutput(callId, turnId, agentName, "transfer", fullText.length, history.length, fullText, { outputBlocked: true });
         traceLog.turnEnd(callId, turnId, "transfer", { outputBlocked: true });
         return {
           turnId,
           action: "transfer",
           text,
           agentName,
-          history: newHistory,
+          history,
           currentAgent: newAgent,
         };
       }
@@ -364,6 +390,8 @@ export async function processTurn(opts: {
     traceLog.turnEnd(callId, turnId, "speak", { error: true });
     const fallback = "I apologize, I'm having a bit of trouble. Could you repeat that?";
     await onSentence(fallback);
+    // Prevent orphaned user entry — pair it with a synthetic assistant reply so history stays valid
+    history.push({ role: "assistant", content: [{ type: "output_text", text: fallback }] } as AgentInputItem);
     return {
       turnId,
       action: "speak",

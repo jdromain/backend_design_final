@@ -332,6 +332,8 @@ const bookingAgent: Agent<CallContext> = new Agent({
       "Ensure to format the address properly, for example john.doe@example.com.\n" +
       "Once you have these, search for availability and present 2-3 options.\n" +
       "After the caller picks a time and confirms, create the booking.\n" +
+      "After the booking is confirmed, ask if there is anything else you can help with today.\n" +
+      "If the caller says no or indicates they are done, close the call warmly — say something like 'Have a great day, goodbye!' and end the call.\n" +
       "If the caller asks about something unrelated to booking, hand off back to the Receptionist.",
   ),
   model: env.LLM_MODEL,
@@ -341,7 +343,7 @@ const bookingAgent: Agent<CallContext> = new Agent({
     otSearchAvailability,
     otCreateReservation,
   ] as any,
-  modelSettings: { temperature: 0.7 },
+  modelSettings: {},
 });
 
 const cancelAgent: Agent<CallContext> = new Agent({
@@ -352,28 +354,34 @@ const cancelAgent: Agent<CallContext> = new Agent({
       "Never announce yourself or mention being a specialist. Just respond naturally.\n" +
       "Ask for the caller's name or email to locate their booking.\n" +
       "Confirm they want to cancel before proceeding.\n" +
-      "After cancellation, ask if there is anything else you can help with.\n" +
+      "After cancellation, ask if there is anything else you can help with today.\n" +
+      "If the caller says no or indicates they are done, close the call warmly — say something like 'Have a great day, goodbye!' and end the call.\n" +
       "If the caller needs something unrelated, hand off back to the Receptionist.",
   ),
   model: env.LLM_MODEL,
   tools: [calendlyCancelBooking] as any,
-  modelSettings: { temperature: 0.7 },
+  modelSettings: {},
 });
 
 const complaintAgent: Agent<CallContext> = new Agent({
   name: "Customer Care Specialist",
-  handoffDescription: "Handles complaints and customer issues",
+  handoffDescription: "Handles complaints, frustration, dissatisfaction, and requests to speak with a manager",
   instructions: withContext(
-    "You handle complaints with empathy and professionalism.\n" +
+    "You handle complaints and frustrated callers with deep empathy and professionalism.\n" +
       "Never announce yourself or mention being a specialist. Just respond naturally.\n" +
-      "Listen carefully to the caller's concern. Acknowledge their frustration.\n" +
-      "Collect their name and phone number so a manager can call them back.\n" +
-      "Once you have their details, log the complaint and assure them someone will follow up within 24 hours.\n" +
+      "Your first priority is to make the caller feel heard — do NOT rush to collect their details.\n" +
+      "Begin by acknowledging what they experienced specifically. Reflect it back: 'That sounds really frustrating, I'm so sorry that happened.'\n" +
+      "Give them space to fully express their concern before moving forward.\n" +
+      "Once they feel heard, explain clearly what will happen: a manager will personally call them back within 24 hours.\n" +
+      "Only then ask for their name and a good callback phone number.\n" +
+      "Once you have their details, log the complaint.\n" +
+      "After logging, thank them for bringing it to your attention and ask if there is anything else you can help with today.\n" +
+      "If the caller is done, close the call warmly — say something like 'Thank you for your patience, have a good day, goodbye!' and end the call.\n" +
       "If they need something else, hand off back to the Receptionist.",
   ),
   model: env.LLM_MODEL,
   tools: [logComplaint] as any,
-  modelSettings: { temperature: 0.8 },
+  modelSettings: {},
 });
 
 const infoAgent: Agent<CallContext> = new Agent({
@@ -384,29 +392,31 @@ const infoAgent: Agent<CallContext> = new Agent({
       "Never announce yourself or mention being a specialist. Just respond naturally.\n" +
       "Use the knowledge provided above to answer accurately.\n" +
       "If you do not know the answer, say so honestly and offer to help with something else.\n" +
+      "After answering, ask if there is anything else you can help with.\n" +
+      "If the caller says no or indicates they are done, close the call warmly — say something like 'Have a great day, goodbye!' and end the call.\n" +
       "If the caller wants to book, cancel, or has a complaint, hand off to the right specialist.",
   ),
   model: env.LLM_MODEL,
   tools: [],
-  modelSettings: { temperature: 0.7 },
+  modelSettings: {},
 });
 
 const triageAgent: Agent<CallContext> = new Agent({
   name: "Receptionist",
   instructions: withContext(
-    "You are a receptionist. Your ONLY job is to determine what the caller needs and hand off immediately.\n" +
-      "Do NOT speak to the caller. Do NOT say things like 'let me connect you' or 'just a moment'.\n" +
-      "Simply hand off to the right person based on what they said:\n" +
+    "You are a receptionist. Your primary job is to route the caller to the right specialist immediately.\n" +
+      "Route based on what the caller says:\n" +
       "- Booking Specialist: for new appointments or reservations\n" +
       "- Cancellation Specialist: for cancelling existing bookings\n" +
-      "- Customer Care Specialist: for complaints or issues\n" +
-      "- Information Specialist: for general questions\n" +
-      "Hand off immediately without generating any text.",
+      "- Customer Care Specialist: for complaints, frustration, dissatisfaction, or requests to speak with a manager\n" +
+      "- Information Specialist: for general questions about the business\n" +
+      "If the caller's intent is clear, hand off without generating any spoken text.\n" +
+      "If the caller's need is unclear (e.g. they just say 'hello', 'hi', 'who is this', or are silent), ask exactly ONE short question: 'How can I help you today?'\n" +
+      "Never answer questions yourself. Route immediately once you understand what they need.",
   ),
   model: env.LLM_MODEL,
   handoffs: [bookingAgent, cancelAgent, complaintAgent, infoAgent] as any,
-  // OpenAI API requires max_output_tokens >= 16; keep triage responses short but valid.
-  modelSettings: { temperature: 0.3, maxTokens: 16 },
+  modelSettings: {},
 });
 
 // Bidirectional handoffs: specialists can route back to triage

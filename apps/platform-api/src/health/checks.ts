@@ -146,9 +146,9 @@ export async function checkTTS(): Promise<ServiceHealth> {
   const start = Date.now();
   try {
     const response = await withTimeout(
-      fetch("https://api.elevenlabs.io/v1/voices", {
+      fetch("https://api.elevenlabs.io/v2/voices?page_size=1", {
         method: "GET",
-        headers: { "xi-api-key": apiKey, "Content-Type": "application/json" },
+        headers: { "xi-api-key": apiKey },
       }),
       TIMEOUT_MS,
       "ElevenLabs"
@@ -156,6 +156,22 @@ export async function checkTTS(): Promise<ServiceHealth> {
     const latencyMs = Date.now() - start;
     if (response.ok) {
       return { name: "ElevenLabs TTS", status: "ok", latencyMs, message: "ElevenLabs TTS API accessible" };
+    }
+    if (response.status === 401) {
+      // Distinguish a scoped key (missing_permissions) from a truly invalid key.
+      // A scoped key that lacks voices_read still authenticates correctly for TTS synthesis.
+      let body: { detail?: { status?: string; message?: string } } = {};
+      try { body = await response.json(); } catch { /* ignore */ }
+      const detail = body?.detail;
+      if (detail?.status === "missing_permissions") {
+        return {
+          name: "ElevenLabs TTS",
+          status: "ok",
+          latencyMs,
+          message: `ElevenLabs key authenticated (scoped — ${detail.message ?? "voices_read not granted"})`,
+        };
+      }
+      return { name: "ElevenLabs TTS", status: "error", latencyMs, message: "ElevenLabs API key invalid (401)" };
     }
     return { name: "ElevenLabs TTS", status: "error", latencyMs, message: `ElevenLabs API returned ${response.status}` };
   } catch (err) {
