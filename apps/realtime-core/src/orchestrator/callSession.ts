@@ -18,7 +18,8 @@ import {
 } from "@rezovo/core-types";
 import type { Agent, AgentInputItem } from "@openai/agents";
 import { UsageTracker } from "./usageTracker";
-import { processTurn, triageAgent, type OnSentenceCallback } from "./openai-agents";
+import { processTurn, triageAgent, fetchKbPassages, type OnSentenceCallback } from "./openai-agents";
+import { bookingAgent, cancelAgent, complaintAgent } from "./openai-agents/agents";
 import { traceLog } from "../traceLog";
 
 export type OrchestratorResponse =
@@ -43,6 +44,10 @@ export class CallSession {
 
   // Track the last active agent name for persistence/logging
   private lastAgentName = "Receptionist";
+
+  // Session-level KB cache: fetched once during greet(), reused on every turn
+  private kbPassages: string[] = [];
+  private kbFetchPromise: Promise<string[]> | null = null;
 
   constructor(
     phoneConfig: PhoneNumberConfig,
@@ -90,8 +95,31 @@ export class CallSession {
       content: [{ type: "output_text" as const, text: greetingText }],
     } as AgentInputItem);
 
+    // Start KB pre-fetch in background — runs while greeting TTS is synthesizing and playing.
+    // By the time the caller responds, KB is already ready. Avoids blocking every turn.
+    const { agentConfig } = this.context;
+    if (agentConfig.kbNamespace) {
+      this.kbFetchPromise = fetchKbPassages(
+        this.id,
+        "business services hours pricing appointments",
+        agentConfig.tenantId,
+        agentConfig.businessId,
+        agentConfig.kbNamespace,
+      ).catch(() => []);
+    }
+
     traceLog.sessionGreet(this.id, greetingText.length);
     return { type: "speak", text: greetingText };
+  }
+
+  // ---- Keyword-based intent detection for turn 1 ----
+
+  private selectAgentForFirstTurn(utterance: string): Agent<any, any> {
+    const t = utterance.toLowerCase();
+    if (/\b(book|appointment|schedule|meeting|reservation|reserve)\b/.test(t)) return bookingAgent;
+    if (/\b(cancel)\b/.test(t)) return cancelAgent;
+    if (/\b(complaint|complain|unhappy|upset|frustrated|speak.*manager)\b/.test(t)) return complaintAgent;
+    return triageAgent;
   }
 
   // ---- Streaming Turn Processing ----
@@ -110,6 +138,22 @@ export class CallSession {
     this.abortController = new AbortController();
 
     try {
+      // Drain the background KB pre-fetch on the first turn (it was started in greet())
+      if (this.kbFetchPromise) {
+        this.kbPassages = await this.kbFetchPromise;
+        this.kbFetchPromise = null;
+      }
+
+      // On turn 1, use keyword intent detection to skip triage when intent is clear
+      if (this.turnCount === 1) {
+        this.currentAgent = this.selectAgentForFirstTurn(utterance);
+        logger.info("intent pre-detection", {
+          callId: this.id,
+          agent: this.currentAgent.name,
+          utterance: utterance.slice(0, 100),
+        });
+      }
+
       this.addTranscriptEntry({
         from: "user",
         text: utterance,
@@ -126,6 +170,7 @@ export class CallSession {
         onSentence,
         currentDateTime: this.context.startedAt.toISOString(),
         signal: this.abortController.signal,
+        kbPassages: this.kbPassages,
       });
 
       // SDK manages history and agent routing

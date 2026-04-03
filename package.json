@@ -15,16 +15,16 @@
     "dev:web": "pnpm --filter frontend dev"
   },
   "devDependencies": {
-    "@types/node": "^25.0.0",
-    "eslint": "^9.0.0",
-    "prettier": "^3.2.0",
-    "typescript": "^5.4.0"
+    "@types/node": "^25.5.0",
+    "eslint": "^9.39.4",
+    "prettier": "^3.8.1",
+    "typescript": "^5.9.3"
   },
   "packageManager": "pnpm@9.0.0",
   "dependencies": {
+    "@aws-sdk/client-secrets-manager": "^3.1020.0",
     "@types/uuid": "^11.0.0",
-    "uuid": "^13.0.0",
-    "twilio": "^5.3.4",
-    "@aws-sdk/client-secrets-manager": "^3.705.0"
+    "twilio": "^5.13.1",
+    "uuid": "^13.0.0"
   }
 }

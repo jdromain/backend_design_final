@@ -158,8 +158,10 @@ export class CallController {
     this.throwIfAborted(signal);
     const greet = session.greet();
     if (tts && greet.type === "speak") {
+      const ttsStart = Date.now();
       await this.synthesizeAndSend(tts, greet.text, mediaSession, bridgeConnection,
         (chars, seconds) => session.addTtsUsage(chars, seconds), signal);
+      traceLog.autoMessage(session.id, "greeting", greet.text, Date.now() - ttsStart);
     }
 
     // 2. Process initial utterance if provided (e.g. from IVR text input)
@@ -199,15 +201,17 @@ export class CallController {
       silencePromptCount = 0;
       traceLog.sttFinal(session.id, userText);
       logger.info("processing user utterance", { callId: session.id, text: userText });
+      let sentenceIndex = 0;
       try {
         const response = await session.receiveUserStreaming(
           userText,
           async (sentence: string) => {
             if (tts && !callEnded) {
-              await this.synthesizeAndSend(
+              const synthesisMs = await this.synthesizeAndSend(
                 tts, sentence, mediaSession, bridgeConnection,
                 (chars, seconds) => session.addTtsUsage(chars, seconds), signal
               );
+              traceLog.ttsSentence(session.id, "", sentenceIndex++, sentence.length, synthesisMs);
             }
           }
         );
@@ -284,8 +288,10 @@ export class CallController {
         logger.info("silence prompt", { callId: session.id, attempt: silencePromptCount, prompt });
         if (tts) {
           try {
+            const ttsStart = Date.now();
             await this.synthesizeAndSend(tts, prompt, mediaSession, bridgeConnection,
               (chars, seconds) => session.addTtsUsage(chars, seconds), signal);
+            traceLog.autoMessage(session.id, "silence_prompt", prompt, Date.now() - ttsStart);
           } catch {
             // non-fatal
           }
@@ -445,6 +451,7 @@ export class CallController {
 
   /**
    * Synthesize TTS and send audio through bridge back to caller.
+   * Returns synthesis duration in ms, or 0 if synthesis failed.
    */
   private async synthesizeAndSend(
     tts: ReturnType<typeof createTtsProvider>,
@@ -453,11 +460,13 @@ export class CallController {
     bridgeConnection: RtpBridgeConnection | null,
     usageCb: (chars: number, seconds: number) => void,
     signal?: AbortSignal
-  ): Promise<void> {
+  ): Promise<number> {
     for (let attempt = 1; attempt <= 2; attempt++) {
       this.throwIfAborted(signal);
       try {
+        const synthStart = Date.now();
         const audio = await tts.synthesize(text, { outputFormat: "ulaw_8000" });
+        const synthesisMs = Date.now() - synthStart;
         mediaSession.markAgentFrame(audio.audio.length);
         usageCb(text.length, audio.audio.length / 32000);
 
@@ -468,13 +477,14 @@ export class CallController {
             timestamp: Date.now(),
           });
         }
-        return;
+        return synthesisMs;
       } catch (err) {
         if (attempt === 2) {
           logger.warn("tts synthesis failed, falling back to text only", { error: (err as Error).message });
         }
       }
     }
+    return 0;
   }
 
   private throwIfAborted(signal?: AbortSignal): void {

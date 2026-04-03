@@ -14,7 +14,7 @@ import {
   topFailureReasons,
   onboardingSteps,
 } from "@/data/mock/dashboard"
-import { get } from "@/lib/api-client"
+import { appendTenantQuery, get } from "@/lib/api-client"
 
 assertMockSafety()
 
@@ -82,22 +82,22 @@ function mapApiIncidentToPanel(i: ApiIncident): Incident {
 
 export async function getDashboardOutcomes() {
   if (useMocks) return generateOutcomesData()
-  return get<ReturnType<typeof generateOutcomesData>>("/analytics/outcomes")
+  return get<ReturnType<typeof generateOutcomesData>>(appendTenantQuery("/analytics/outcomes"))
 }
 
 export async function getDashboardCalls(): Promise<CallRecord[]> {
   if (useMocks) return generateCallsData()
-  return get<CallRecord[]>("/calls")
+  return get<CallRecord[]>(appendTenantQuery("/calls"))
 }
 
 export async function getDashboardActivity() {
   if (useMocks) return generateActivityData()
-  return get<ReturnType<typeof generateActivityData>>("/activity")
+  return get<ReturnType<typeof generateActivityData>>(appendTenantQuery("/activity"))
 }
 
 export async function getSparklineData() {
   if (useMocks) return sparklineData
-  const raw = await get<ApiSparklines>("/analytics/sparklines")
+  const raw = await get<ApiSparklines>(appendTenantQuery("/analytics/sparklines"))
   return mapSparklinesFromApi(raw)
 }
 
@@ -108,28 +108,28 @@ export async function getSystemHealth() {
 
 export async function getIncidents(): Promise<Incident[]> {
   if (useMocks) return incidents as Incident[]
-  const rows = await get<ApiIncident[]>("/incidents")
+  const rows = await get<ApiIncident[]>(appendTenantQuery("/incidents"))
   return Array.isArray(rows) ? rows.map(mapApiIncidentToPanel) : []
 }
 
 export async function getTopIntents() {
   if (useMocks) return topIntents
-  return get<typeof topIntents>("/analytics/intents")
+  return get<typeof topIntents>(appendTenantQuery("/analytics/intents"))
 }
 
 export async function getTopHandoffReasons() {
   if (useMocks) return topHandoffReasons
-  return get<typeof topHandoffReasons>("/analytics/handoffs")
+  return get<typeof topHandoffReasons>(appendTenantQuery("/analytics/handoffs"))
 }
 
 export async function getTopFailureReasons() {
   if (useMocks) return topFailureReasons
-  return get<typeof topFailureReasons>("/analytics/failures")
+  return get<typeof topFailureReasons>(appendTenantQuery("/analytics/failures"))
 }
 
 export async function getOnboardingSteps() {
   if (useMocks) return onboardingSteps
-  return get<typeof onboardingSteps>("/onboarding")
+  return get<typeof onboardingSteps>(appendTenantQuery("/onboarding"))
 }
 
 // Re-export generators and static mock objects for components that use them

@@ -1,6 +1,6 @@
 import type { Agent } from "@/components/agents/agents-table"
 import { assertMockSafety } from "./_env-check"
-import { get } from "@/lib/api-client"
+import { appendTenantQuery, get } from "@/lib/api-client"
 
 assertMockSafety()
 
@@ -116,7 +116,7 @@ export async function listAgents(): Promise<Agent[]> {
   if (useMocks) {
     return MOCK_AGENTS_FALLBACK
   }
-  const rows = await get<ApiAgentListRow[]>("/agents")
+  const rows = await get<ApiAgentListRow[]>(appendTenantQuery("/agents"))
   if (!Array.isArray(rows)) return []
   return rows.map(mapApiRowToAgent)
 }
@@ -142,5 +142,5 @@ export async function getAgentDetail(agentId: string): Promise<AgentDetailApi> {
       agentType: "support",
     }
   }
-  return get<AgentDetailApi>(`/agents/${encodeURIComponent(agentId)}`)
+  return get<AgentDetailApi>(appendTenantQuery(`/agents/${encodeURIComponent(agentId)}`))
 }

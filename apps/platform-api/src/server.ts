@@ -31,7 +31,7 @@ import { registerCallRoutes } from "./routes/calls";
 import { credentialsRoutes } from "./credentials/routes";
 import { runHealthChecks, getSystemHealthData } from "./health/checks";
 import { ping } from "./persistence/dbClient";
-import { sendData } from "./lib/responses";
+import { sendData, sendError } from "./lib/responses";
 import { env } from "./env";
 import WebSocket from "ws";
 
@@ -185,6 +185,23 @@ export function buildServer(eventBus: EventBusClient): FastifyInstance<any, any,
 
   // Clerk webhook
   app.post("/webhooks/clerk", clerkSyncHandler);
+
+  const sessionReadPreHandler = isProduction
+    ? authHook(["admin", "editor", "viewer"])
+    : optionalAuthHook();
+
+  app.get("/auth/me", { preHandler: sessionReadPreHandler }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const auth = request.auth;
+    if (!auth) {
+      return sendError(reply, 401, "unauthorized", "sign in required");
+    }
+    sendData(reply, {
+      userId: auth.sub,
+      tenantId: auth.tenant_id,
+      email: auth.email,
+      roles: auth.roles,
+    });
+  });
 
   // Config endpoints
   app.get("/config/schema", {

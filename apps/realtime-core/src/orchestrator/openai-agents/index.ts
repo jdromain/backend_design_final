@@ -106,8 +106,9 @@ const guardrails = new GuardrailsEngine();
 /**
  * Cap history at maxPairs exchange pairs to prevent context window overflow.
  * Always preserves the first item (greeting seed).
+ * 8 pairs = 17 items max — covers full booking flows, keeps context window tight.
  */
-function trimHistory(h: AgentInputItem[], maxPairs = 20): AgentInputItem[] {
+function trimHistory(h: AgentInputItem[], maxPairs = 8): AgentInputItem[] {
   const seed = h.slice(0, 1);
   const rest = h.slice(1);
   const maxItems = maxPairs * 2;
@@ -147,7 +148,7 @@ export function buildCallContext(
 
 // ---- KB retrieval helper ----
 
-async function fetchKbPassages(
+export async function fetchKbPassages(
   callId: string,
   query: string,
   tenantId: string,
@@ -184,6 +185,8 @@ export async function processTurn(opts: {
   onSentence: OnSentenceCallback;
   currentDateTime?: string;
   signal?: AbortSignal;
+  /** Pre-fetched KB passages from session-level cache (avoids per-turn HTTP block) */
+  kbPassages?: string[];
 }): Promise<TurnResult> {
   const {
     utterance,
@@ -195,6 +198,7 @@ export async function processTurn(opts: {
     onSentence,
     currentDateTime,
     signal,
+    kbPassages: sessionKbPassages = [],
   } = opts;
   let history = historyIn;
   const turnStart = Date.now();
@@ -203,18 +207,15 @@ export async function processTurn(opts: {
 
   traceLog.turnStart(callId, turnId, utterance, { agentName: currentAgent.name, historyLen: history.length });
 
-  // 1. Input guardrails + KB fetch in parallel (skip guardrails in dev for speed)
-  const [inputCheckResult, kbPassages] = await Promise.all([
-    isDev
-      ? Promise.resolve(null)
-      : guardrails.checkInput(utterance, callId),
-    agentConfig.kbNamespace
-      ? fetchKbPassages(callId, utterance, agentConfig.tenantId, agentConfig.businessId, agentConfig.kbNamespace)
-      : Promise.resolve([] as string[]),
-  ]);
+  // 1. Input guardrails (skip in dev for speed)
+  const guardrailsStart = Date.now();
+  const inputCheckResult = isDev
+    ? null
+    : await guardrails.checkInput(utterance, callId);
+  const guardrailsMs = Date.now() - guardrailsStart;
 
-  traceLog.guardrails(callId, turnId, isDev, inputCheckResult ? (inputCheckResult.blocked ? "blocked" : (inputCheckResult.action ?? "allowed")) : "skipped");
-  traceLog.kbFetch(callId, turnId, kbPassages.length, agentConfig.kbNamespace);
+  traceLog.guardrails(callId, turnId, isDev, inputCheckResult ? (inputCheckResult.blocked ? "blocked" : (inputCheckResult.action ?? "allowed")) : "skipped", { durationMs: guardrailsMs });
+  traceLog.kbFetch(callId, turnId, sessionKbPassages.length, agentConfig.kbNamespace, { source: "session_cache" });
 
   if (inputCheckResult) {
     if (inputCheckResult.blocked) {
@@ -223,7 +224,7 @@ export async function processTurn(opts: {
       await onSentence(text);
       history.push({ role: "user", content: utterance } as AgentInputItem);
       history.push({ role: "assistant", content: [{ type: "output_text", text }] } as AgentInputItem);
-      traceLog.turnEnd(callId, turnId, "transfer", { reason: "guardrails_blocked" });
+      traceLog.turnEnd(callId, turnId, "transfer", { reason: "guardrails_blocked", totalTurnMs: Date.now() - turnStart });
       return { turnId, action: "transfer", text, agentName: currentAgent.name, history, currentAgent };
     }
     if (inputCheckResult.action === "transfer") {
@@ -231,7 +232,7 @@ export async function processTurn(opts: {
       await onSentence(text);
       history.push({ role: "user", content: utterance } as AgentInputItem);
       history.push({ role: "assistant", content: [{ type: "output_text", text }] } as AgentInputItem);
-      traceLog.turnEnd(callId, turnId, "transfer", { reason: "guardrails_transfer" });
+      traceLog.turnEnd(callId, turnId, "transfer", { reason: "guardrails_transfer", totalTurnMs: Date.now() - turnStart });
       return { turnId, action: "transfer", text, agentName: currentAgent.name, history, currentAgent };
     }
     if (inputCheckResult.action === "warn" && inputCheckResult.message) {
@@ -241,16 +242,16 @@ export async function processTurn(opts: {
     }
   }
 
-  // 2. Build per-call context (KB passages injected via dynamic instructions)
+  // 2. Build per-call context (KB passages from session cache, injected via dynamic instructions)
   const callContext = buildCallContext(
     callId,
     agentConfig,
     phoneConfig,
-    kbPassages,
+    sessionKbPassages,
     currentDateTime ?? new Date().toISOString(),
   );
 
-  // 4. Add user message to history (trim first to prevent context overflow)
+  // 3. Add user message to history (trim first to prevent context overflow)
   history = trimHistory(history);
   history.push({ role: "user", content: utterance });
 
@@ -264,8 +265,9 @@ export async function processTurn(opts: {
   );
 
   try {
-    // 5. Run the agent (SDK handles routing, tool calls, handoffs)
+    // 4. Run the agent (SDK handles routing, tool calls, handoffs)
     logger.info("running agent", { callId, agent: currentAgent.name });
+    const llmStart = Date.now();
 
     const stream = (await run(currentAgent as any, history, {
       stream: true,
@@ -273,10 +275,11 @@ export async function processTurn(opts: {
       signal,
     })) as unknown as StreamedRunResult<CallContext, Agent<any, any>>;
 
-    // 6. Stream text through sentence buffer for TTS
+    // 5. Stream text through sentence buffer for TTS
     const buffer = new SentenceBuffer();
     let fullText = "";
     let firstTokenMs: number | null = null;
+    let llmOnlyTtftMs: number | null = null;
 
     const textStream = stream.toTextStream({ compatibleWithNodeStreams: true });
     for await (const chunk of textStream) {
@@ -285,8 +288,9 @@ export async function processTurn(opts: {
 
       if (!firstTokenMs) {
         firstTokenMs = Date.now() - turnStart;
-        traceLog.streamFirstToken(callId, turnId, firstTokenMs, currentAgent.name);
-        logger.info("first token", { callId, ttft: firstTokenMs, agent: currentAgent.name });
+        llmOnlyTtftMs = Date.now() - llmStart;
+        traceLog.streamFirstToken(callId, turnId, firstTokenMs, currentAgent.name, { llmOnlyTtftMs });
+        logger.info("first token", { callId, ttft: firstTokenMs, llmOnlyTtftMs, agent: currentAgent.name });
       }
 
       fullText += text;
@@ -299,8 +303,11 @@ export async function processTurn(opts: {
     const remaining = buffer.flush();
     if (remaining) await onSentence(remaining);
 
-    // 7. Wait for stream to finish
+    // 6. Wait for stream to finish
     await stream.completed;
+
+    const llmTotalMs = Date.now() - llmStart;
+    const totalTurnMs = Date.now() - turnStart;
 
     traceLog.streamComplete(callId, turnId, !stream.error, {});
     if (stream.error) {
@@ -308,26 +315,34 @@ export async function processTurn(opts: {
       throw stream.error;
     }
 
-    // 8. SDK manages history and agent handoffs
+    // 7. SDK manages history and agent handoffs
     const newHistory = stream.history;
     const newAgent = stream.currentAgent ?? stream.lastAgent ?? currentAgent;
     const agentName = newAgent?.name ?? currentAgent.name;
 
-    const elapsed = Date.now() - turnStart;
     logger.info("turn complete", {
       callId,
       agent: agentName,
-      elapsed,
+      totalTurnMs,
       ttft: firstTokenMs,
+      llmOnlyTtftMs,
+      llmTotalMs,
       textLen: fullText.length,
-      kbHits: kbPassages.length,
+      kbHits: sessionKbPassages.length,
+    });
+
+    traceLog.turnTimingSummary(callId, turnId, {
+      guardrailsMs,
+      llmTtftMs: llmOnlyTtftMs ?? 0,
+      llmTotalMs,
+      totalTurnMs,
     });
 
     if (!fullText) {
       const fallback = "I'm sorry, could you say that again?";
       await onSentence(fallback);
       traceLog.runOutput(callId, turnId, agentName, "speak", 0, newHistory.length, fallback, { emptyResponse: true });
-      traceLog.turnEnd(callId, turnId, "speak", { emptyResponse: true });
+      traceLog.turnEnd(callId, turnId, "speak", { emptyResponse: true, totalTurnMs });
       return {
         turnId,
         action: "speak",
@@ -338,32 +353,11 @@ export async function processTurn(opts: {
       };
     }
 
-    // 9. Detect action from text
+    // 8. Detect action from text
     const action = detectActionFromText(fullText);
 
-    // 10. Output guardrails (skip in dev for speed)
-    if (!isDev) {
-      const outputCheck = await guardrails.checkOutput(fullText, callId);
-      if (outputCheck.blocked) {
-        logger.warn("output blocked by guardrails", { callId });
-        const text = "I apologize, let me connect you with someone who can help.";
-        // Return pre-run history with a clean replacement entry — do NOT expose flagged content
-        history.push({ role: "assistant", content: [{ type: "output_text", text }] } as AgentInputItem);
-        traceLog.runOutput(callId, turnId, agentName, "transfer", fullText.length, history.length, fullText, { outputBlocked: true });
-        traceLog.turnEnd(callId, turnId, "transfer", { outputBlocked: true });
-        return {
-          turnId,
-          action: "transfer",
-          text,
-          agentName,
-          history,
-          currentAgent: newAgent,
-        };
-      }
-    }
-
     traceLog.runOutput(callId, turnId, agentName, action, fullText.length, newHistory.length, fullText, {});
-    traceLog.turnEnd(callId, turnId, action, {});
+    traceLog.turnEnd(callId, turnId, action, { totalTurnMs });
     return {
       turnId,
       action,
@@ -381,13 +375,10 @@ export async function processTurn(opts: {
       throw error;
     }
 
-    logger.error("agent run failed", {
-      callId,
-      error: msg,
-      elapsed: Date.now() - turnStart,
-    });
+    const elapsed = Date.now() - turnStart;
+    logger.error("agent run failed", { callId, error: msg, elapsed });
 
-    traceLog.turnEnd(callId, turnId, "speak", { error: true });
+    traceLog.turnEnd(callId, turnId, "speak", { error: true, totalTurnMs: elapsed });
     const fallback = "I apologize, I'm having a bit of trouble. Could you repeat that?";
     await onSentence(fallback);
     // Prevent orphaned user entry — pair it with a synthetic assistant reply so history stays valid
@@ -403,6 +394,6 @@ export async function processTurn(opts: {
   }
 }
 
-// Re-export the starting agent
+// Re-exports
 export { triageAgent } from "./agents";
 export type { CallContext } from "./agents";

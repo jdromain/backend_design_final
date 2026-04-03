@@ -112,6 +112,14 @@ export function resolveTenantIdForQuery(): string {
   return DEFAULT_TENANT_ID;
 }
 
+/** Appends `tenantId` for platform-api routes that use `auth ?? query.tenantId`. */
+export function appendTenantQuery(path: string): string {
+  const tenantId = encodeURIComponent(resolveTenantIdForQuery());
+  return path.includes("?")
+    ? `${path}&tenantId=${tenantId}`
+    : `${path}?tenantId=${tenantId}`;
+}
+
 // ============================================================================
 // Core Request
 // ============================================================================

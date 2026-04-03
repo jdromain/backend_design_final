@@ -2,7 +2,7 @@ import { assertMockSafety } from "./_env-check"
 import { getMockKnowledgeCollections, getMockKnowledgeDocuments } from "@/data/mock/knowledge"
 import type { KbDocument, ProcessingStatus } from "@/components/knowledge/documents-table"
 import type { Collection } from "@/components/knowledge/collections-modal"
-import { get } from "@/lib/api-client"
+import { appendTenantQuery, get } from "@/lib/api-client"
 
 assertMockSafety()
 
@@ -71,7 +71,7 @@ export async function getKnowledgeWorkspace(): Promise<{ documents: KbDocument[]
     const documents = getMockKnowledgeDocuments()
     return { documents, collections: getMockKnowledgeCollections() }
   }
-  const res = await get<{ documents: KbDocumentApiRow[] }>("/knowledge/documents")
+  const res = await get<{ documents: KbDocumentApiRow[] }>(appendTenantQuery("/knowledge/documents"))
   const documents = (res.documents ?? []).map(mapRowToKbDocument)
   return {
     documents,

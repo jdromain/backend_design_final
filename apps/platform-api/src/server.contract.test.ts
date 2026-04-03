@@ -4,7 +4,15 @@
  */
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from "vitest";
 import { Value } from "@sinclair/typebox/value";
+import jwt from "jsonwebtoken";
 import { createInMemoryEventBus } from "@rezovo/event-bus";
+
+const { CONTRACT_JWT_SECRET } = vi.hoisted(() => {
+  const secret = "contract-test-jwt-secret";
+  process.env.CLERK_AUTH_ENABLED = "false";
+  process.env.JWT_SECRET = secret;
+  return { CONTRACT_JWT_SECRET: secret };
+});
 
 vi.mock("./persistence/dbClient", () => {
   const query = vi.fn();
@@ -44,10 +52,49 @@ import {
   LoginOkSchema,
 } from "./contracts/httpSchemas";
 
+const testTenantCallRow = {
+  call_id: "call-list-contract-1",
+  tenant_id: "test-tenant",
+  phone_number: "+18005550199",
+  caller_number: "+15551234567",
+  twilio_call_sid: "CAcontract",
+  direction: "inbound",
+  classified_intent: "support",
+  intent_confidence: null,
+  final_intent: null,
+  agent_config_id: "agent-contract",
+  agent_config_ver: 1,
+  status: "completed",
+  started_at: "2026-01-15T12:00:00.000Z",
+  answered_at: null,
+  ended_at: "2026-01-15T12:05:00.000Z",
+  duration_sec: 120,
+  end_reason: null,
+  outcome: "handled",
+  slots_collected: {},
+  summary: null,
+  turn_count: 3,
+  llm_tokens_in: 0,
+  llm_tokens_out: 0,
+  tts_chars: 0,
+  stt_seconds: 0,
+};
+
+const testTenantLiveRow = {
+  ...testTenantCallRow,
+  call_id: "call-live-contract-1",
+  status: "in_progress",
+  ended_at: null,
+  duration_sec: null,
+  outcome: null,
+  started_at: "2026-01-15T14:00:00.000Z",
+};
+
 function wireDbMocks() {
   const q = vi.mocked(query);
-  q.mockImplementation(async (sql: string) => {
+  q.mockImplementation(async (sql: string, params?: unknown[]) => {
     const s = sql.toLowerCase();
+    const p0 = params?.[0];
     if (s.includes("from users") && s.includes("email")) {
       return {
         rows: [
@@ -61,8 +108,24 @@ function wireDbMocks() {
         ],
       };
     }
-    // GET /calls/live — full rows (empty for contract test)
-    if (s.includes("select * from calls") && s.includes("in_progress")) {
+    if (s.includes("select * from call_transcript")) {
+      return { rows: [] };
+    }
+    if (
+      s.includes("from call_events") &&
+      s.includes("call_id") &&
+      s.includes("order by occurred_at") &&
+      !s.includes("tool_called")
+    ) {
+      return { rows: [] };
+    }
+    if (s.includes("select call_id, payload") && s.includes("tool_called")) {
+      return { rows: [] };
+    }
+    if (s.includes("in ('initiated'") && s.includes("from calls")) {
+      if (p0 === "test-tenant") {
+        return { rows: [testTenantLiveRow] };
+      }
       return { rows: [] };
     }
     if (s.includes("filter (where outcome = 'handled')")) {
@@ -80,8 +143,14 @@ function wireDbMocks() {
     if (s.includes("as active_now")) {
       return { rows: [{ active_now: 1 }] };
     }
-    if (s.includes("tool_called")) {
+    if (s.includes("tool_invocations") && s.includes("tool_called")) {
       return { rows: [{ tool_invocations: 5 }] };
+    }
+    if (s.includes("from calls") && s.includes("limit 100")) {
+      if (p0 === "test-tenant") {
+        return { rows: [testTenantCallRow] };
+      }
+      return { rows: [] };
     }
     if (s.includes("from calls") && s.includes("tenant_id")) {
       return { rows: [] };
@@ -95,7 +164,8 @@ describe("platform-api HTTP contract (inject)", () => {
 
   beforeAll(async () => {
     wireDbMocks();
-    process.env.JWT_SECRET = process.env.JWT_SECRET || "contract-test-jwt-secret";
+    process.env.JWT_SECRET = CONTRACT_JWT_SECRET;
+    process.env.CLERK_AUTH_ENABLED = "false"; // dev JWT path; ignore local .env Clerk flag
     const bus = createInMemoryEventBus();
     app = buildServer(bus);
     await app.ready();
@@ -174,5 +244,56 @@ describe("platform-api HTTP contract (inject)", () => {
     const body = res.json();
     expect(Value.Check(BillingQuotaOkSchema, body)).toBe(true);
     expect(body.allowed).toBe(true);
+  });
+
+  function bearerTestTenant(): string {
+    return jwt.sign(
+      {
+        sub: "jwt-contract-user",
+        tenant_id: "test-tenant",
+        email: "contract-tenant@example.com",
+        roles: ["viewer"],
+      },
+      CONTRACT_JWT_SECRET,
+      { expiresIn: "1h" }
+    );
+  }
+
+  it("GET /auth/me returns tenant from Bearer JWT (dev JWT path)", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: "/auth/me",
+      headers: { authorization: `Bearer ${bearerTestTenant()}` },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.data.tenantId).toBe("test-tenant");
+    expect(body.data.email).toBe("contract-tenant@example.com");
+  });
+
+  it("GET /calls/live with Bearer JWT returns live rows for that tenant", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: "/calls/live",
+      headers: { authorization: `Bearer ${bearerTestTenant()}` },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(Array.isArray(body.data)).toBe(true);
+    expect(body.data).toHaveLength(1);
+    expect(body.data[0].callId).toBe("call-live-contract-1");
+  });
+
+  it("GET /calls with Bearer JWT returns call list for that tenant", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: "/calls",
+      headers: { authorization: `Bearer ${bearerTestTenant()}` },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(Value.Check(CallsListEnvelopeSchema, body)).toBe(true);
+    expect(body.data).toHaveLength(1);
+    expect(body.data[0].callId).toBe("call-list-contract-1");
   });
 });

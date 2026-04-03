@@ -343,7 +343,7 @@ const bookingAgent: Agent<CallContext> = new Agent({
     otSearchAvailability,
     otCreateReservation,
   ] as any,
-  modelSettings: {},
+  modelSettings: { maxTokens: 120, reasoning: { effort: "low" } },
 });
 
 const cancelAgent: Agent<CallContext> = new Agent({
@@ -360,7 +360,7 @@ const cancelAgent: Agent<CallContext> = new Agent({
   ),
   model: env.LLM_MODEL,
   tools: [calendlyCancelBooking] as any,
-  modelSettings: {},
+  modelSettings: { maxTokens: 120, reasoning: { effort: "low" } },
 });
 
 const complaintAgent: Agent<CallContext> = new Agent({
@@ -381,7 +381,7 @@ const complaintAgent: Agent<CallContext> = new Agent({
   ),
   model: env.LLM_MODEL,
   tools: [logComplaint] as any,
-  modelSettings: {},
+  modelSettings: { maxTokens: 120, reasoning: { effort: "low" } },
 });
 
 const infoAgent: Agent<CallContext> = new Agent({
@@ -398,7 +398,7 @@ const infoAgent: Agent<CallContext> = new Agent({
   ),
   model: env.LLM_MODEL,
   tools: [],
-  modelSettings: {},
+  modelSettings: { maxTokens: 120, reasoning: { effort: "low" } },
 });
 
 const triageAgent: Agent<CallContext> = new Agent({
@@ -410,13 +410,13 @@ const triageAgent: Agent<CallContext> = new Agent({
       "- Cancellation Specialist: for cancelling existing bookings\n" +
       "- Customer Care Specialist: for complaints, frustration, dissatisfaction, or requests to speak with a manager\n" +
       "- Information Specialist: for general questions about the business\n" +
-      "If the caller's intent is clear, hand off without generating any spoken text.\n" +
+      "Always say exactly one short natural sentence before handing off, e.g. 'Let me help you with that.' Then immediately hand off.\n" +
       "If the caller's need is unclear (e.g. they just say 'hello', 'hi', 'who is this', or are silent), ask exactly ONE short question: 'How can I help you today?'\n" +
       "Never answer questions yourself. Route immediately once you understand what they need.",
   ),
   model: env.LLM_MODEL,
   handoffs: [bookingAgent, cancelAgent, complaintAgent, infoAgent] as any,
-  modelSettings: {},
+  modelSettings: { maxTokens: 120, reasoning: { effort: "low" } },
 });
 
 // Bidirectional handoffs: specialists can route back to triage

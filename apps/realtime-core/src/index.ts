@@ -5,6 +5,8 @@ import { createLogger } from "@rezovo/logging";
 import { createInMemoryEventBus } from "@rezovo/event-bus";
 import { env } from "./env";
 import { ConfigChangedPayload, TypedEventEnvelope } from "@rezovo/core-types";
+import { setDefaultOpenAIClient } from "@openai/agents";
+import OpenAI from "openai";
 
 import { ConfigCache, makeDefaultSnapshot } from "./config-cache/cache";
 import { fetchConfigSnapshot } from "./config-cache/fetcher";
@@ -65,6 +67,15 @@ function printEnvDiagnostics(): void {
 }
 
 async function bootstrap(): Promise<void> {
+  // Configure the OpenAI client globally before any agent is used.
+  // 8s timeout: any voice turn beyond this is a failed interaction.
+  // maxRetries: 1 — the SDK auto-retries 500s, timeouts, and 429s with exponential backoff.
+  setDefaultOpenAIClient(new OpenAI({
+    apiKey: env.OPENAI_API_KEY,
+    timeout: 8_000,
+    maxRetries: 1,
+  }));
+
   printEnvDiagnostics();
 
   const bus = createInMemoryEventBus();
