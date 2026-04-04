@@ -91,7 +91,7 @@ export async function checkKafka(): Promise<ServiceHealth> {
 export async function checkOpenAI(): Promise<ServiceHealth> {
   const apiKey = env.OPENAI_API_KEY;
   if (!apiKey) {
-    return { name: "OpenAI", status: "error", message: "OPENAI_API_KEY not configured" };
+    return { name: "OpenAI", status: "disabled", message: "OPENAI_API_KEY not configured" };
   }
   const start = Date.now();
   try {

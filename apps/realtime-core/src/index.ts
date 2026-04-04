@@ -15,7 +15,7 @@ import { BillingQuotaClient } from "./billingClient";
 import { RtpBridgeClient } from "./media/rtpBridgeClient";
 import { CallController } from "./telephony/callController";
 import { PbxBridge } from "./telephony/pbxBridge";
-import { startWebhookServer } from "./webhookServer";
+import { startWebhookServer, WEBHOOK_LISTEN_PORT } from "./webhookServer";
 
 const logger = createLogger({ service: "realtime-core", module: "bootstrap" });
 
@@ -138,10 +138,10 @@ async function bootstrap(): Promise<void> {
   pbxBridge.registerHandler(async (call, ctx) => callController.handleInboundCall(call, ctx));
   await pbxBridge.start();
 
-  startWebhookServer(callController, 3002);
+  await startWebhookServer(callController);
 
   logger.info("─── realtime-core READY ───", {
-    webhookPort: 3002,
+    webhookPort: WEBHOOK_LISTEN_PORT,
     stt: env.STT_PROVIDER,
     tts: env.ELEVEN_API_KEY ? "elevenlabs" : "disabled",
     rtpBridge: env.RTP_BRIDGE_URL ? "live" : "mock",
