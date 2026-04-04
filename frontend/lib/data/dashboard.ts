@@ -1,5 +1,7 @@
 import type { CallRecord } from "@/types/api"
 import type { Incident } from "@/components/dashboard/needs-attention-panel"
+import type { InsightItem } from "@/components/dashboard/insights-card"
+import type { OnboardingStep } from "@/components/dashboard/onboarding-checklist"
 import { formatDistanceToNow } from "date-fns"
 import { assertMockSafety } from "./_env-check"
 import {
@@ -112,24 +114,94 @@ export async function getIncidents(): Promise<Incident[]> {
   return Array.isArray(rows) ? rows.map(mapApiIncidentToPanel) : []
 }
 
+type ApiInsightRow = { label: string; value: number }
+
+function mapInsightRows(rows: ApiInsightRow[]): InsightItem[] {
+  return rows.map((r, i) => ({ id: String(i + 1), label: r.label, count: r.value }))
+}
+
 export async function getTopIntents() {
   if (useMocks) return topIntents
-  return get<typeof topIntents>(appendTenantQuery("/analytics/intents"))
+  const rows = await get<ApiInsightRow[]>(appendTenantQuery("/analytics/intents"))
+  return Array.isArray(rows) ? mapInsightRows(rows) : []
 }
 
 export async function getTopHandoffReasons() {
   if (useMocks) return topHandoffReasons
-  return get<typeof topHandoffReasons>(appendTenantQuery("/analytics/handoffs"))
+  const rows = await get<ApiInsightRow[]>(appendTenantQuery("/analytics/handoffs"))
+  return Array.isArray(rows) ? mapInsightRows(rows) : []
 }
 
 export async function getTopFailureReasons() {
   if (useMocks) return topFailureReasons
-  return get<typeof topFailureReasons>(appendTenantQuery("/analytics/failures"))
+  const rows = await get<ApiInsightRow[]>(appendTenantQuery("/analytics/failures"))
+  return Array.isArray(rows) ? mapInsightRows(rows) : []
+}
+
+type ApiOnboardingStep = {
+  id: string
+  label: string
+  completed: boolean
+  order: number
+}
+
+const onboardingStepMeta: Record<
+  string,
+  {
+    icon: OnboardingStep["icon"]
+    description: string
+    action: OnboardingStep["action"]
+  }
+> = {
+  "phone-number": {
+    icon: "phone",
+    description: "Set up your Twilio or SIP connection",
+    action: { label: "Configure", page: "integrations" },
+  },
+  "kb-upload": {
+    icon: "docs",
+    description: "Add your knowledge base content",
+    action: { label: "Upload", page: "knowledge" },
+  },
+  credentials: {
+    icon: "integration",
+    description: "Link your CRM or calendar",
+    action: { label: "Connect", page: "integrations" },
+  },
+  "agent-publish": {
+    icon: "live",
+    description: "Publish an agent configuration",
+    action: { label: "Go Live", page: "agents" },
+  },
+  "test-call": {
+    icon: "test",
+    description: "Make sure everything works",
+    action: { label: "Test", page: "dashboard" },
+  },
+}
+
+function mapApiOnboardingStep(s: ApiOnboardingStep): OnboardingStep {
+  const meta = onboardingStepMeta[s.id] ?? {
+    icon: "phone" as const,
+    description: "",
+    action: { label: "Continue", page: "dashboard" },
+  }
+  return {
+    id: s.id,
+    title: s.label,
+    description: meta.description,
+    icon: meta.icon,
+    completed: s.completed,
+    action: meta.action,
+  }
 }
 
 export async function getOnboardingSteps() {
   if (useMocks) return onboardingSteps
-  return get<typeof onboardingSteps>(appendTenantQuery("/onboarding"))
+  const rows = await get<ApiOnboardingStep[]>(appendTenantQuery("/onboarding"))
+  if (!Array.isArray(rows)) return []
+  const sorted = [...rows].sort((a, b) => a.order - b.order)
+  return sorted.map(mapApiOnboardingStep)
 }
 
 // Re-export generators and static mock objects for components that use them

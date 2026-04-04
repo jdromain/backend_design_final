@@ -65,7 +65,8 @@ export function OnboardingChecklist({ steps, onAction }: OnboardingChecklistProp
       <CardContent>
         <div className="space-y-3">
           {steps.map((step, index) => {
-            const Icon = iconMap[step.icon]
+            const Icon = iconMap[step.icon] ?? Phone
+            const action = step.action ?? { label: "Continue", page: "dashboard" }
             return (
               <div
                 key={step.id}
@@ -111,9 +112,9 @@ export function OnboardingChecklist({ steps, onAction }: OnboardingChecklistProp
                     size="sm"
                     variant={index === completedCount ? "default" : "outline"}
                     className="shrink-0"
-                    onClick={() => onAction(step.action.page)}
+                    onClick={() => onAction(action.page)}
                   >
-                    {step.action.label}
+                    {action.label}
                     <ArrowRight className="ml-1 h-3 w-3" />
                   </Button>
                 )}
