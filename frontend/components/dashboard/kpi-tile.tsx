@@ -9,8 +9,11 @@ interface KpiTileProps {
   title: string
   value: string | number
   subValue?: string
+  /** % change vs prior bucket; omit to hide the trend row */
   change?: number
   changeLabel?: string
+  /** When true, an increase is bad (red) and a decrease is good (green) — e.g. latency, failures */
+  invertTrendColors?: boolean
   icon: LucideIcon
   sparklineData?: number[]
   color?: "default" | "success" | "warning" | "danger" | "info"
@@ -87,6 +90,7 @@ export function KpiTile({
   subValue,
   change,
   changeLabel = "vs prev period",
+  invertTrendColors = false,
   icon: Icon,
   sparklineData,
   color = "default",
@@ -96,21 +100,48 @@ export function KpiTile({
   tooltip,
 }: KpiTileProps) {
   const config = colorConfig[color]
-  const isPositive = change != null && change > 0
-  const isNegative = change != null && change < 0
+  const rawUp = change != null && change > 0
+  const rawDown = change != null && change < 0
+
+  let TrendArrow: typeof ArrowUp | typeof ArrowDown | typeof Minus = Minus
+  let trendClass = "text-muted-foreground"
+  let trendPct = "0%"
+  if (change != null && change !== 0) {
+    if (!invertTrendColors) {
+      if (rawUp) {
+        TrendArrow = ArrowUp
+        trendClass = "text-emerald-600 dark:text-emerald-400"
+        trendPct = `${change}%`
+      } else {
+        TrendArrow = ArrowDown
+        trendClass = "text-red-600 dark:text-red-400"
+        trendPct = `${Math.abs(change)}%`
+      }
+    } else {
+      if (rawUp) {
+        TrendArrow = ArrowUp
+        trendClass = "text-red-600 dark:text-red-400"
+        trendPct = `${change}%`
+      } else {
+        TrendArrow = ArrowDown
+        trendClass = "text-emerald-600 dark:text-emerald-400"
+        trendPct = `${Math.abs(change)}%`
+      }
+    }
+  }
 
   return (
     <Card
       className={cn(
-        "relative overflow-hidden cursor-pointer transition-all hover:shadow-md",
+        "relative min-w-0 overflow-hidden cursor-pointer transition-all hover:shadow-md",
         isActive && `ring-2 ${config.ring}`,
         onClick && "hover:border-primary/50",
       )}
       onClick={onClick}
     >
       <CardContent className="p-4">
-        <div className="flex items-start justify-between">
-          <div className="space-y-1 flex-1">
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0 flex-1 space-y-1">
             <div className="flex items-center gap-1">
               <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{title}</p>
               {tooltip && (
@@ -137,26 +168,12 @@ export function KpiTile({
             </div>
             {subValue && <p className="text-xs text-muted-foreground">{subValue}</p>}
             {change !== undefined && (
-              <div className="flex items-center gap-1 mt-1">
-                {isPositive && (
-                  <span className="flex items-center text-xs font-medium text-emerald-600 dark:text-emerald-400">
-                    <ArrowUp className="h-3 w-3" />
-                    {change}%
-                  </span>
-                )}
-                {isNegative && (
-                  <span className="flex items-center text-xs font-medium text-red-600 dark:text-red-400">
-                    <ArrowDown className="h-3 w-3" />
-                    {Math.abs(change)}%
-                  </span>
-                )}
-                {!isPositive && !isNegative && (
-                  <span className="flex items-center text-xs text-muted-foreground">
-                    <Minus className="h-3 w-3 shrink-0" />
-                    0%
-                  </span>
-                )}
-                <span className="text-xs text-muted-foreground">{changeLabel}</span>
+              <div className="mt-1 flex max-w-full flex-nowrap items-center gap-1.5 text-xs whitespace-nowrap">
+                <span className={cn("inline-flex shrink-0 items-center font-medium", trendClass)}>
+                  <TrendArrow className="h-3 w-3 shrink-0" />
+                  {trendPct}
+                </span>
+                <span className="min-w-0 truncate text-muted-foreground">{changeLabel}</span>
               </div>
             )}
           </div>

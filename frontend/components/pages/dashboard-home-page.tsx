@@ -40,6 +40,7 @@ import {
   getTopFailureReasons,
   getOnboardingSteps,
 } from "@/lib/data/dashboard";
+import { sparklinePercentDelta } from "@/lib/sparkline-delta";
 
 /**
  * Main UI dashboard body from `Backend-design-mainui` `app/page.tsx`, adapted
@@ -190,6 +191,20 @@ export function DashboardHomePage() {
     };
   }, [callsData, sparklineData]);
 
+  /** % change vs prior hour bucket from sparklines (omitted when fewer than 2 points or prior bucket is 0) */
+  const kpiTrendPct = useMemo(
+    () => ({
+      calls: sparklinePercentDelta(sparklineData.calls),
+      active: sparklinePercentDelta(sparklineData.active),
+      completed: sparklinePercentDelta(sparklineData.completed),
+      handoff: sparklinePercentDelta(sparklineData.handoff),
+      dropped: sparklinePercentDelta(sparklineData.dropped),
+      failed: sparklinePercentDelta(sparklineData.failed),
+      latency: sparklinePercentDelta(sparklineData.latency),
+    }),
+    [sparklineData]
+  );
+
   const outcomesChartData = useMemo(() => {
     if (outcomesData.length > 0) return outcomesData;
     return [{ time: "—", completed: 0, handoff: 0, dropped: 0, systemFailed: 0 }];
@@ -294,7 +309,7 @@ export function DashboardHomePage() {
               <KpiTile
                 title="Total Calls"
                 value={analytics.totalCalls}
-                change={12}
+                change={kpiTrendPct.calls}
                 icon={Phone}
                 sparklineData={sparklineData.calls}
                 color="default"
@@ -305,6 +320,7 @@ export function DashboardHomePage() {
               <KpiTile
                 title="Active Now"
                 value={analytics.activeNow}
+                change={kpiTrendPct.active}
                 icon={Users}
                 sparklineData={sparklineData.active}
                 color="info"
@@ -316,7 +332,7 @@ export function DashboardHomePage() {
               <KpiTile
                 title="Completion Rate"
                 value={`${analytics.handledRate}%`}
-                change={3}
+                change={kpiTrendPct.completed}
                 icon={CheckCircle}
                 sparklineData={sparklineData.completed}
                 color="success"
@@ -327,7 +343,8 @@ export function DashboardHomePage() {
               <KpiTile
                 title="Handoff Rate"
                 value={`${analytics.escalationRate}%`}
-                change={-1}
+                change={kpiTrendPct.handoff}
+                invertTrendColors
                 icon={ArrowDownUp}
                 sparklineData={sparklineData.handoff}
                 color="warning"
@@ -338,7 +355,8 @@ export function DashboardHomePage() {
               <KpiTile
                 title="Drop Rate"
                 value={`${analytics.dropRate}%`}
-                change={0}
+                change={kpiTrendPct.dropped}
+                invertTrendColors
                 icon={XCircle}
                 sparklineData={sparklineData.dropped ?? []}
                 color="warning"
@@ -350,7 +368,8 @@ export function DashboardHomePage() {
                 title="System Failure"
                 value={`${analytics.failureRate}%`}
                 subValue={`${analytics.failedCount} failures`}
-                change={-2}
+                change={kpiTrendPct.failed}
+                invertTrendColors
                 icon={XOctagon}
                 sparklineData={sparklineData.failed}
                 color="danger"
@@ -361,7 +380,8 @@ export function DashboardHomePage() {
               <KpiTile
                 title="P95 Latency"
                 value={`${analytics.p95Latency}ms`}
-                change={5}
+                change={kpiTrendPct.latency}
+                invertTrendColors
                 icon={Gauge}
                 sparklineData={sparklineData.latency}
                 color="default"
