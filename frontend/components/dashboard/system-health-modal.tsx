@@ -20,20 +20,24 @@ import {
   Brain,
   Wrench,
   Puzzle,
+  Power,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 
-export type ServiceStatus = "operational" | "degraded" | "outage"
+/** UI pill states (platform-api uses ok | error | disabled | degraded on rows) */
+export type ServiceStatus = "operational" | "degraded" | "outage" | "disabled"
 
 export interface ServiceHealth {
   name: string
-  status: ServiceStatus
+  /** Mock/UI: operational | degraded | outage. API: ok | error | disabled | degraded */
+  status: ServiceStatus | string
   latency?: number
+  latencyMs?: number
   message?: string
 }
 
 export interface SystemHealthData {
-  overall: ServiceStatus
+  overall: ServiceStatus | string
   telephony: ServiceHealth[]
   stt: ServiceHealth[]
   tts: ServiceHealth[]
@@ -68,6 +72,34 @@ const statusConfig = {
     bgColor: "bg-red-500/10",
     badgeClass: "bg-red-500/10 text-red-600 dark:text-red-400 border-red-500/20",
   },
+  disabled: {
+    label: "Disabled",
+    icon: Power,
+    color: "text-muted-foreground",
+    bgColor: "bg-muted",
+    badgeClass: "bg-muted text-muted-foreground border-border",
+  },
+} satisfies Record<
+  ServiceStatus,
+  { label: string; icon: typeof CheckCircle2; color: string; bgColor: string; badgeClass: string }
+>
+
+/** Map GET /health row status into UI status keys */
+export function mapApiHealthStatus(raw: string): ServiceStatus {
+  const s = String(raw).toLowerCase()
+  if (s === "operational" || s === "ok" || s === "healthy") return "operational"
+  if (s === "degraded") return "degraded"
+  if (s === "outage" || s === "error" || s === "failed") return "outage"
+  if (s === "disabled") return "disabled"
+  return "degraded"
+}
+
+function normalizeOverall(raw: string | undefined): keyof typeof statusConfig {
+  if (raw === "operational" || raw === "degraded" || raw === "outage") return raw
+  if (raw == null || raw === "") return "operational"
+  const mapped = mapApiHealthStatus(raw)
+  if (mapped === "disabled") return "operational"
+  return mapped
 }
 
 const sectionIcons = {
@@ -81,25 +113,27 @@ const sectionIcons = {
 
 function StatusPill({ status }: { status: ServiceStatus }) {
   const config = statusConfig[status]
-  const Icon = config.icon
+  const PillIcon = config.icon
 
   return (
     <Badge variant="outline" className={cn("gap-1", config.badgeClass)}>
-      <Icon className="h-3 w-3" />
+      <PillIcon className="h-3 w-3" />
       {config.label}
     </Badge>
   )
 }
 
 function ServiceRow({ service }: { service: ServiceHealth }) {
-  const config = statusConfig[service.status]
-  const Icon = config.icon
+  const uiStatus = mapApiHealthStatus(service.status)
+  const config = statusConfig[uiStatus]
+  const RowIcon = config.icon
+  const latencyMs = service.latency ?? service.latencyMs
 
   return (
     <div className="flex items-center justify-between py-2">
       <div className="flex items-center gap-3">
         <div className={cn("p-1 rounded", config.bgColor)}>
-          <Icon className={cn("h-3.5 w-3.5", config.color)} />
+          <RowIcon className={cn("h-3.5 w-3.5", config.color)} />
         </div>
         <div>
           <p className="text-sm font-medium">{service.name}</p>
@@ -109,10 +143,10 @@ function ServiceRow({ service }: { service: ServiceHealth }) {
         </div>
       </div>
       <div className="flex items-center gap-2">
-        {service.latency !== undefined && (
-          <span className="text-xs text-muted-foreground">{service.latency}ms</span>
+        {latencyMs !== undefined && (
+          <span className="text-xs text-muted-foreground">{latencyMs}ms</span>
         )}
-        <StatusPill status={service.status} />
+        <StatusPill status={uiStatus} />
       </div>
     </div>
   )
@@ -145,8 +179,9 @@ function ServiceSection({
 }
 
 export function SystemHealthModal({ data }: SystemHealthModalProps) {
-  const config = statusConfig[data.overall]
-  const OverallIcon = config.icon
+  const overall = normalizeOverall(data.overall)
+  const config = statusConfig[overall]
+  const HeaderIcon = config.icon
 
   return (
     <Dialog>
@@ -159,17 +194,17 @@ export function SystemHealthModal({ data }: SystemHealthModalProps) {
             <span
               className={cn(
                 "absolute inline-flex h-full w-full rounded-full opacity-75",
-                data.overall === "operational" && "animate-ping bg-emerald-400",
-                data.overall === "degraded" && "animate-pulse bg-amber-400",
-                data.overall === "outage" && "animate-ping bg-red-400"
+                overall === "operational" && "animate-ping bg-emerald-400",
+                overall === "degraded" && "animate-pulse bg-amber-400",
+                overall === "outage" && "animate-ping bg-red-400"
               )}
             />
             <span
               className={cn(
                 "relative inline-flex h-2 w-2 rounded-full",
-                data.overall === "operational" && "bg-emerald-500",
-                data.overall === "degraded" && "bg-amber-500",
-                data.overall === "outage" && "bg-red-500"
+                overall === "operational" && "bg-emerald-500",
+                overall === "degraded" && "bg-amber-500",
+                overall === "outage" && "bg-red-500"
               )}
             />
           </span>
@@ -181,7 +216,7 @@ export function SystemHealthModal({ data }: SystemHealthModalProps) {
       <DialogContent className="sm:max-w-[500px]">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <OverallIcon className={cn("h-5 w-5", config.color)} />
+            <HeaderIcon className={cn("h-5 w-5", config.color)} />
             System Health
           </DialogTitle>
         </DialogHeader>

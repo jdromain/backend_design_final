@@ -10,3 +10,6 @@ coverage
 .idea
 .vscode
 docs/
+
+# local credentials (never commit)
+postgres creds

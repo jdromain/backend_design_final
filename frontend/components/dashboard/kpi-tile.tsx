@@ -2,7 +2,7 @@
 
 import { Card, CardContent } from "@/components/ui/card"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
-import { ArrowUp, ArrowDown, Info, type LucideIcon } from "lucide-react"
+import { ArrowUp, ArrowDown, Minus, Info, type LucideIcon } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 interface KpiTileProps {
@@ -21,16 +21,18 @@ interface KpiTileProps {
 }
 
 function Sparkline({ data, color }: { data: number[]; color: string }) {
+  if (!data.length) return null
   const max = Math.max(...data)
   const min = Math.min(...data)
   const range = max - min || 1
   const width = 60
   const height = 20
   const padding = 2
+  const denom = Math.max(data.length - 1, 1)
 
   const points = data
     .map((value, index) => {
-      const x = padding + (index / (data.length - 1)) * (width - padding * 2)
+      const x = padding + (index / denom) * (width - padding * 2)
       const y = height - padding - ((value - min) / range) * (height - padding * 2)
       return `${x},${y}`
     })
@@ -54,7 +56,7 @@ function Sparkline({ data, color }: { data: number[]; color: string }) {
 const colorConfig = {
   default: {
     icon: "bg-primary/10 text-primary",
-    sparkline: "hsl(var(--primary))",
+    sparkline: "var(--primary)",
     ring: "ring-primary/30",
   },
   success: {
@@ -94,8 +96,8 @@ export function KpiTile({
   tooltip,
 }: KpiTileProps) {
   const config = colorConfig[color]
-  const isPositive = change && change > 0
-  const isNegative = change && change < 0
+  const isPositive = change != null && change > 0
+  const isNegative = change != null && change < 0
 
   return (
     <Card
@@ -148,7 +150,12 @@ export function KpiTile({
                     {Math.abs(change)}%
                   </span>
                 )}
-                {!isPositive && !isNegative && <span className="text-xs text-muted-foreground">0%</span>}
+                {!isPositive && !isNegative && (
+                  <span className="flex items-center text-xs text-muted-foreground">
+                    <Minus className="h-3 w-3 shrink-0" />
+                    0%
+                  </span>
+                )}
                 <span className="text-xs text-muted-foreground">{changeLabel}</span>
               </div>
             )}

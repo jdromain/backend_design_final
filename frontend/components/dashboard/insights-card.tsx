@@ -47,8 +47,9 @@ export function InsightsCard({ title, icon, items, onItemClick, emptyMessage = "
           <ScrollArea className="h-[180px]">
             <div className="space-y-1">
               {items.map((item, index) => {
-                const TrendIcon = item.trend ? trendConfig[item.trend].icon : null
-                const trendColor = item.trend ? trendConfig[item.trend].color : ""
+                const trendEntry = item.trend && item.trend in trendConfig ? trendConfig[item.trend as keyof typeof trendConfig] : null
+                const TrendIcon = trendEntry?.icon ?? null
+                const trendColor = trendEntry?.color ?? ""
 
                 return (
                   <button

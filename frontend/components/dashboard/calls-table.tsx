@@ -51,6 +51,7 @@ const resultBadgeStyles: Record<CallRecord["result"], { class: string; label: st
   handoff: { class: "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20", label: "Handoff" },
   dropped: { class: "bg-muted text-muted-foreground border-muted", label: "Dropped" },
   systemFailed: { class: "bg-red-500/10 text-red-600 dark:text-red-400 border-red-500/20", label: "System Failed" },
+  pending: { class: "bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/20", label: "In Progress" },
 }
 
 export function CallsTable({

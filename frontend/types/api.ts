@@ -17,7 +17,7 @@ export interface CallRecord {
   intent?: "Billing" | "Support" | "Sales" | "Booking" | "Unknown"
   direction: "inbound" | "outbound"
   durationMs: number
-  result: "completed" | "handoff" | "dropped" | "systemFailed"
+  result: "completed" | "handoff" | "dropped" | "systemFailed" | "pending"
   endReason?: string
   turnCount?: number
   toolsUsed: { name: string; success: boolean }[]

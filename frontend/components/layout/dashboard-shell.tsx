@@ -62,7 +62,7 @@ type NavItem = {
 
 const PRIMARY_NAV: NavItem[] = [
   { href: "/", pageId: "dashboard", label: "Dashboard", icon: BarChart3, shortcut: 1 },
-  { href: "/live", pageId: "live", label: "Live", icon: Activity, shortcut: 2 },
+  { href: "/live", pageId: "live", label: "Active Calls", icon: Activity, shortcut: 2 },
   { href: "/history", pageId: "history", label: "Call History", icon: History, shortcut: 3 },
   { href: "/actions", pageId: "actions", label: "Actions", icon: Zap, shortcut: 4 },
   { href: "/analytics", pageId: "analytics", label: "Analytics", icon: TrendingUp, shortcut: 5 },
@@ -151,11 +151,11 @@ export function DashboardShell({ children }: { children: ReactNode }) {
 
   const navLinkClass = (active: boolean) =>
     cn(
-      "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
+      "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
       sidebarCollapsed && "justify-center px-2",
       active
         ? "bg-primary text-primary-foreground"
-        : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+        : "text-muted-foreground hover:bg-muted hover:text-foreground"
     );
 
   const renderNavLink = (item: NavItem) => {
@@ -208,7 +208,7 @@ export function DashboardShell({ children }: { children: ReactNode }) {
       <div className="flex h-screen overflow-hidden">
         <aside
           className={cn(
-            "fixed left-0 top-0 z-40 flex h-screen flex-col border-r bg-card transition-[width] duration-200 ease-out",
+            "fixed left-0 top-0 z-40 h-full border-r bg-card transition-all duration-300",
             sidebarCollapsed ? "w-16" : "w-64"
           )}
         >
@@ -219,73 +219,78 @@ export function DashboardShell({ children }: { children: ReactNode }) {
             )}
           >
             {sidebarCollapsed ? (
-              <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-                <RezovoaiLogo size={22} className="text-primary-foreground" />
+              <div className="mx-auto flex h-8 w-8 items-center justify-center rounded-lg bg-primary">
+                <RezovoaiLogo size={20} className="text-primary-foreground" />
               </div>
             ) : (
-              <div className="min-w-0">
-                <p className="text-[10px] font-medium uppercase tracking-widest text-muted-foreground">Rezovoai</p>
-                <h1 className="truncate text-lg font-bold tracking-tight">REZOVOAI</h1>
+              <div className="flex w-full items-center justify-center">
+                <span className="text-xl font-bold overline leading-none">REZOVOAI</span>
               </div>
             )}
           </div>
 
-          <div className="flex-1 space-y-1 overflow-y-auto p-3">{PRIMARY_NAV.map(renderNavLink)}</div>
+          <div className="flex h-[calc(100vh-4rem)] flex-col justify-between p-3">
+            <nav className="space-y-1">{PRIMARY_NAV.map(renderNavLink)}</nav>
 
-          <Separator />
-          <div className="space-y-1 p-3">
-            {footerLink("/settings", "Settings", Settings, (p) => p.startsWith("/settings"))}
-            {footerLink("/help", "Help & Support", HelpCircle, (p) => p.startsWith("/help"))}
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button
-                  type="button"
-                  onClick={() => setSidebarCollapsed((c) => !c)}
-                  className={cn(
-                    "flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground",
-                    sidebarCollapsed && "justify-center px-2"
-                  )}
-                  aria-expanded={!sidebarCollapsed}
-                >
-                  {sidebarCollapsed ? (
-                    <ChevronRight className="h-5 w-5 shrink-0" />
-                  ) : (
-                    <>
-                      <ChevronLeft className="h-5 w-5 shrink-0" />
-                      <span className="flex flex-1 items-center justify-between gap-2">
+            <div className="space-y-1">
+              <Separator className="my-2" />
+              {footerLink("/settings", "Settings", Settings, (p) => p.startsWith("/settings"))}
+              {footerLink("/help", "Help & Support", HelpCircle, (p) => p.startsWith("/help"))}
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    onClick={() => setSidebarCollapsed((c) => !c)}
+                    className={cn(
+                      "flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground",
+                      sidebarCollapsed && "justify-center px-2"
+                    )}
+                    aria-expanded={!sidebarCollapsed}
+                  >
+                    {sidebarCollapsed ? (
+                      <ChevronRight className="h-5 w-5" />
+                    ) : (
+                      <>
+                        <ChevronLeft className="h-5 w-5" />
                         <span>Collapse</span>
-                        <span className="hidden text-[10px] font-normal opacity-60 lg:inline">⌘B</span>
-                      </span>
-                    </>
-                  )}
-                </button>
-              </TooltipTrigger>
-              {sidebarCollapsed && (
-                <TooltipContent side="right">Expand sidebar (⌘B)</TooltipContent>
-              )}
-            </Tooltip>
+                        <span className="ml-auto text-xs text-muted-foreground">⌘B</span>
+                      </>
+                    )}
+                  </button>
+                </TooltipTrigger>
+                {sidebarCollapsed && (
+                  <TooltipContent side="right">
+                    <p>Expand sidebar</p>
+                    <span className="ml-2 text-xs text-muted-foreground">⌘B</span>
+                  </TooltipContent>
+                )}
+              </Tooltip>
+            </div>
           </div>
         </aside>
 
         <div
           className={cn(
-            "flex min-w-0 flex-1 flex-col overflow-hidden transition-[margin] duration-200 ease-out",
+            "flex min-w-0 flex-1 flex-col overflow-hidden transition-all duration-300",
             sidebarCollapsed ? "ml-16" : "ml-64"
           )}
         >
-          <header className="flex h-16 shrink-0 items-center justify-between gap-4 border-b bg-card px-4 md:px-6">
-            <div className="min-w-0 flex-1">
+          <header className="sticky top-0 z-30 flex h-16 shrink-0 items-center justify-between gap-4 border-b bg-card/95 px-4 backdrop-blur supports-[backdrop-filter]:bg-card/60 md:px-6">
+            <div className="flex items-center gap-4">
               <Button
                 variant="outline"
-                className="w-full max-w-md justify-start text-muted-foreground"
+                className="hidden w-64 justify-start text-muted-foreground sm:flex bg-transparent"
                 onClick={() => setSearchOpen(true)}
                 type="button"
               >
-                <Search className="mr-2 h-4 w-4 shrink-0" />
-                <span className="truncate">Search…</span>
-                <kbd className="pointer-events-none ml-auto hidden h-5 select-none items-center gap-1 rounded border bg-muted px-1.5 font-mono text-[10px] font-medium opacity-100 sm:flex">
+                <Search className="mr-2 h-4 w-4" />
+                <span>Search...</span>
+                <kbd className="ml-auto pointer-events-none inline-flex h-5 select-none items-center gap-1 rounded border bg-muted px-1.5 font-mono text-[10px] font-medium text-muted-foreground">
                   <span className="text-xs">⌘</span>K
                 </kbd>
+              </Button>
+              <Button variant="ghost" size="icon" className="sm:hidden" onClick={() => setSearchOpen(true)} type="button">
+                <Search className="h-5 w-5" />
               </Button>
             </div>
             <div className="flex shrink-0 items-center gap-2">
