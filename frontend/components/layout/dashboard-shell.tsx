@@ -47,10 +47,7 @@ import { ConfirmDialog } from "@/components/confirm-dialog";
 import { RezovoaiLogo } from "@/components/rezovoai-logo";
 import { navigateAppPage } from "@/hooks/use-app-navigate";
 import { clearAuthToken } from "@/lib/api-client";
-import { isClerkFeatureOn } from "@/lib/clerk-runtime";
-
-const clerkPublishableKey =
-  process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY?.trim();
+import { isClerkConfigured } from "@/lib/clerk-runtime";
 
 type NavItem = {
   href: string;
@@ -296,7 +293,7 @@ export function DashboardShell({ children }: { children: ReactNode }) {
             <div className="flex shrink-0 items-center gap-2">
               <ThemeToggle />
               <NotificationCenter open={notificationsOpen} onOpenChange={setNotificationsOpen} />
-              {clerkPublishableKey && isClerkFeatureOn() ? (
+              {isClerkConfigured() ? (
                 <UserButton afterSignOutUrl="/sign-in" />
               ) : (
                 <>

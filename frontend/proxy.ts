@@ -1,5 +1,6 @@
 import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
-import { isClerkFeatureOn } from "@/lib/clerk-runtime";
+import { NextResponse, type NextFetchEvent, type NextRequest } from "next/server";
+import { isClerkConfigured } from "@/lib/clerk-runtime";
 
 /**
  * Next.js 16+ network boundary — use `proxy.ts` + named `proxy` export
@@ -17,19 +18,18 @@ const isPublicRoute = createRouteMatcher([
   "/dev-login(.*)",
 ]);
 
-export const proxy = clerkMiddleware(async (auth, request) => {
-  // JWT demo milestone: without Clerk keys, do not force sign-in — dashboard uses
-  // bearer from /dev-login + platform-api dev auth.
-  const clerkConfigured =
-    Boolean(process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY?.trim()) &&
-    isClerkFeatureOn();
-  if (!clerkConfigured) {
-    return;
-  }
+const clerkProxy = clerkMiddleware(async (auth, request) => {
   if (!isPublicRoute(request)) {
     await auth.protect();
   }
 });
+
+export function proxy(request: NextRequest, event: NextFetchEvent) {
+  if (!isClerkConfigured()) {
+    return NextResponse.next();
+  }
+  return clerkProxy(request, event);
+}
 
 export const config = {
   matcher: [

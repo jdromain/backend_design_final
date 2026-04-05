@@ -161,7 +161,11 @@ export async function checkTTS(): Promise<ServiceHealth> {
       // Distinguish a scoped key (missing_permissions) from a truly invalid key.
       // A scoped key that lacks voices_read still authenticates correctly for TTS synthesis.
       let body: { detail?: { status?: string; message?: string } } = {};
-      try { body = await response.json(); } catch { /* ignore */ }
+      try {
+        body = (await response.json()) as { detail?: { status?: string; message?: string } };
+      } catch {
+        /* ignore */
+      }
       const detail = body?.detail;
       if (detail?.status === "missing_permissions") {
         return {

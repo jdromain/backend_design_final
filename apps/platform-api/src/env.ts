@@ -38,6 +38,8 @@ function optionalBool(name: string, fallback: boolean): boolean {
 export const env = {
   PORT: parseInt(optional("PORT", "3001"), 10),
   NODE_ENV: optional("NODE_ENV", "development") as "development" | "production" | "test",
+  /** When true, query `tenantId` may override JWT tenant even in production (use sparingly). */
+  ALLOW_DEV_TENANT_QUERY_OVERRIDE: optionalBool("ALLOW_DEV_TENANT_QUERY_OVERRIDE", false),
 
   DATABASE_URL: optional("DATABASE_URL", "postgresql://rezovo:rezovo_local@localhost:5432/rezovo"),
   DB_POOL_MAX: parseInt(optional("DB_POOL_MAX", "5"), 10),

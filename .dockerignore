@@ -1,0 +1,25 @@
+.git
+.cursor
+.DS_Store
+
+# Per-directory build artifacts — excluded at every level
+**/node_modules
+**/dist
+**/.next
+**/*.tsbuildinfo
+
+# Secrets — never copy real env files into the build context
+**/.env
+!**/.env.example
+!.env.docker.example
+
+# Logs
+*.log
+**/npm-debug.log*
+
+# Compiled Go binaries that may exist from local builds
+apps/rtp-bridge/rtp-bridge
+apps/rtp-bridge/*.log
+
+# pnpm store (can be large)
+.pnpm-store

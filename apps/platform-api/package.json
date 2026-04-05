@@ -24,6 +24,7 @@
     "@sinclair/typebox": "^0.32.34",
     "dotenv": "^16.4.5",
     "fastify": "^5.0.0",
+    "ioredis": "^5.10.1",
     "jsonwebtoken": "^9.0.2",
     "pg": "^8.13.0",
     "prom-client": "^15.1.0",

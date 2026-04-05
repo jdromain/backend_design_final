@@ -12,7 +12,14 @@
     "format": "pnpm -r --if-present format",
     "kill-ports": "bash scripts/kill-dev-ports.sh",
     "dev:api": "pnpm --filter @rezovo/platform-api dev",
-    "dev:web": "pnpm --filter frontend dev"
+    "dev:web": "pnpm --filter frontend dev",
+    "dev:jobs": "pnpm --filter @rezovo/jobs start",
+    "dev:realtime": "pnpm --filter @rezovo/realtime-core dev",
+    "stack:up": "bash scripts/stack-up.sh",
+    "stack:down": "bash scripts/stack-down.sh",
+    "stack:logs": "bash scripts/stack-logs.sh",
+    "stack:fresh": "bash scripts/fresh-demo-postgres.sh",
+    "stack:restart": "bash scripts/restart-demo-stack.sh"
   },
   "devDependencies": {
     "@types/node": "^25.5.0",

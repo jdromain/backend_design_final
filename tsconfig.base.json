@@ -14,6 +14,7 @@
     "composite": true,
     "baseUrl": ".",
     "paths": {
+      "@rezovo/core-types": ["packages/core-types/dist/index.d.ts"],
       "@rezovo/core-types/*": ["packages/core-types/src/*"],
       "@rezovo/event-bus/*": ["packages/event-bus/src/*"],
       "@rezovo/logging/*": ["packages/logging/src/*"],
