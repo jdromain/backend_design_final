@@ -1,9 +1,9 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { query } from "../persistence/dbClient";
 import { sendData, sendError } from "../lib/responses";
-import { authHook, optionalAuthHook } from "../auth/jwt";
+import { authHook, resolvedAuthHook } from "../auth/jwt";
+import { requireTenantForRequest } from "../auth/tenantScope";
 
-const isProduction = (process.env.NODE_ENV ?? "development") === "production";
 
 function periodInterval(period?: string): string {
   switch (period) {
@@ -15,12 +15,12 @@ function periodInterval(period?: string): string {
 }
 
 export function registerBillingRoutes(app: FastifyInstance) {
-  const preHandler = isProduction ? authHook(["admin", "editor", "viewer"]) : optionalAuthHook();
+  const preHandler = resolvedAuthHook(["admin", "editor", "viewer"]);
 
   app.get("/billing/usage", { preHandler }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const tenantId = request.auth?.tenant_id ?? (request.query as any).tenantId;
+    const tenantId = requireTenantForRequest(request, reply, (request.query as any).tenantId);
+    if (!tenantId) return;
     const period = (request.query as any).period;
-    if (!tenantId) return sendError(reply, 400, "missing_tenant", "tenantId required");
 
     const interval = periodInterval(period);
 
@@ -67,9 +67,9 @@ export function registerBillingRoutes(app: FastifyInstance) {
   });
 
   app.get("/billing/breakdown", { preHandler }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const tenantId = request.auth?.tenant_id ?? (request.query as any).tenantId;
+    const tenantId = requireTenantForRequest(request, reply, (request.query as any).tenantId);
+    if (!tenantId) return;
     const period = (request.query as any).period;
-    if (!tenantId) return sendError(reply, 400, "missing_tenant", "tenantId required");
 
     const interval = periodInterval(period);
 
@@ -123,8 +123,8 @@ export function registerBillingRoutes(app: FastifyInstance) {
   });
 
   app.get("/billing/agents", { preHandler }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const tenantId = request.auth?.tenant_id ?? (request.query as any).tenantId;
-    if (!tenantId) return sendError(reply, 400, "missing_tenant", "tenantId required");
+    const tenantId = requireTenantForRequest(request, reply, (request.query as any).tenantId);
+    if (!tenantId) return;
 
     const result = await query(
       `SELECT
@@ -147,8 +147,8 @@ export function registerBillingRoutes(app: FastifyInstance) {
   });
 
   app.get("/billing/tools", { preHandler }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const tenantId = request.auth?.tenant_id ?? (request.query as any).tenantId;
-    if (!tenantId) return sendError(reply, 400, "missing_tenant", "tenantId required");
+    const tenantId = requireTenantForRequest(request, reply, (request.query as any).tenantId);
+    if (!tenantId) return;
 
     const result = await query(
       `SELECT
@@ -169,8 +169,8 @@ export function registerBillingRoutes(app: FastifyInstance) {
   });
 
   app.get("/billing/invoices", { preHandler }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const tenantId = request.auth?.tenant_id ?? (request.query as any).tenantId;
-    if (!tenantId) return sendError(reply, 400, "missing_tenant", "tenantId required");
+    const tenantId = requireTenantForRequest(request, reply, (request.query as any).tenantId);
+    if (!tenantId) return;
 
     const result = await query(
       `SELECT

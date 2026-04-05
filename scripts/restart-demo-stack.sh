@@ -78,12 +78,25 @@ if [[ "$MODE" == "docker" ]]; then
   bash "$ROOT/scripts/verify-database-for-testing.sh" || \
     echo "WARN: DB seed check failed — run: bash scripts/fresh-demo-postgres.sh" >&2
 
+  # Detect auth mode from .env.docker
+  _auth_mode="dev_jwt"
+  if [[ -f "$ROOT/.env.docker" ]]; then
+    _m=$(grep -E '^AUTH_MODE=' "$ROOT/.env.docker" | head -1 | sed 's/^AUTH_MODE=//' | tr -d '"' | tr -d "'" | tr -d '[:space:]')
+    _c=$(grep -E '^CLERK_AUTH_ENABLED=' "$ROOT/.env.docker" | head -1 | sed 's/^CLERK_AUTH_ENABLED=//' | tr -d '"' | tr -d "'" | tr -d '[:space:]')
+    if [[ "$_m" == "clerk" ]] || [[ "$_c" == "true" ]]; then _auth_mode="clerk"; fi
+  fi
+
   echo ""
   echo "────────────────────────────────────────────────────────────"
-  echo "Stack is up."
+  echo "Stack is up.  Auth mode: $_auth_mode"
   echo ""
   echo "  Dashboard:   http://localhost:3000"
-  echo "  Dev login:   http://localhost:3000/dev-login  (admin@example.com)"
+  if [[ "$_auth_mode" == "clerk" ]]; then
+    echo "  Sign in:     http://localhost:3000/sign-in  (Clerk)"
+    echo "               Ensure JWT template 'platform-api' exists in Clerk Dashboard"
+  else
+    echo "  Dev login:   http://localhost:3000/dev-login  (admin@example.com)"
+  fi
   echo "  API health:  http://localhost:3001/health"
   echo "  Webhook:     http://localhost:3002/health"
   echo ""
@@ -165,12 +178,29 @@ if [[ "$MODE" == "local" ]]; then
   wait_http "realtime-core" "http://127.0.0.1:3002/health"  120
   wait_http "frontend"      "http://127.0.0.1:3000/"        60
 
+  # Detect auth mode from platform-api .env
+  _auth_mode="dev_jwt"
+  ENV_FILE="$ROOT/apps/platform-api/.env"
+  if [[ -f "$ENV_FILE" ]]; then
+    _m=$(grep -E '^[[:space:]]*AUTH_MODE=' "$ENV_FILE" | head -1 | sed 's/^[[:space:]]*AUTH_MODE=//' | tr -d '"' | tr -d "'" | tr -d '[:space:]')
+    _c=$(grep -E '^[[:space:]]*CLERK_AUTH_ENABLED=' "$ENV_FILE" | head -1 | sed 's/^[[:space:]]*CLERK_AUTH_ENABLED=//' | tr -d '"' | tr -d "'" | tr -d '[:space:]')
+    if [[ "$_m" == "clerk" ]] || [[ "$_c" == "true" ]]; then _auth_mode="clerk"; fi
+  fi
+
   echo ""
   echo "────────────────────────────────────────────────────────────"
   echo "Local stack is up (infra in Docker, apps via pnpm)."
+  echo "Auth mode: $_auth_mode"
   echo ""
   echo "  Dashboard:   http://localhost:3000"
-  echo "  Dev login:   http://localhost:3000/dev-login  (admin@example.com)"
+  if [[ "$_auth_mode" == "clerk" ]]; then
+    echo "  Sign in:     http://localhost:3000/sign-in  (Clerk)"
+    echo "               Ensure JWT template 'platform-api' exists in Clerk Dashboard"
+    echo "  Smoke test:  bash scripts/smoke-clerk.sh --unauth-only"
+  else
+    echo "  Dev login:   http://localhost:3000/dev-login  (admin@example.com)"
+    echo "  Smoke test:  bash scripts/smoke-local.sh"
+  fi
   echo "  API health:  http://localhost:3001/health"
   echo ""
   echo "  Logs:        tail -f $LOGDIR/*.log"

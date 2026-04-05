@@ -1,11 +1,11 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { query } from "../persistence/dbClient";
 import { sendData, sendError } from "../lib/responses";
-import { authHook, optionalAuthHook } from "../auth/jwt";
+import { authHook, resolvedAuthHook } from "../auth/jwt";
+import { requireTenantForRequest } from "../auth/tenantScope";
 import { ConfigStore } from "../config/store";
 import { AnalyticsSummaryEnvelopeSchema } from "../contracts/httpSchemas";
 
-const isProduction = (process.env.NODE_ENV ?? "development") === "production";
 
 function mapOutcome(pg: string | null): string {
   switch (pg) {
@@ -18,11 +18,11 @@ function mapOutcome(pg: string | null): string {
 }
 
 export function registerAnalyticsRoutes(app: FastifyInstance, configStore: ConfigStore) {
-  const preHandler = isProduction ? authHook(["admin", "editor", "viewer"]) : optionalAuthHook();
+  const preHandler = resolvedAuthHook(["admin", "editor", "viewer"]);
 
   app.get("/analytics/outcomes", { preHandler }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const tenantId = request.auth?.tenant_id ?? (request.query as any).tenantId;
-    if (!tenantId) return sendError(reply, 400, "missing_tenant", "tenantId required");
+    const tenantId = requireTenantForRequest(request, reply, (request.query as any).tenantId);
+    if (!tenantId) return;
 
     const result = await query(
       `SELECT date_trunc('hour', started_at) AS time, outcome, COUNT(*)::int AS count
@@ -48,8 +48,8 @@ export function registerAnalyticsRoutes(app: FastifyInstance, configStore: Confi
   });
 
   app.get("/analytics/sparklines", { preHandler }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const tenantId = request.auth?.tenant_id ?? (request.query as any).tenantId;
-    if (!tenantId) return sendError(reply, 400, "missing_tenant", "tenantId required");
+    const tenantId = requireTenantForRequest(request, reply, (request.query as any).tenantId);
+    if (!tenantId) return;
 
     const result = await query(
       `SELECT date_trunc('hour', started_at) AS time,
@@ -93,8 +93,8 @@ export function registerAnalyticsRoutes(app: FastifyInstance, configStore: Confi
   });
 
   app.get("/analytics/intents", { preHandler }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const tenantId = request.auth?.tenant_id ?? (request.query as any).tenantId;
-    if (!tenantId) return sendError(reply, 400, "missing_tenant", "tenantId required");
+    const tenantId = requireTenantForRequest(request, reply, (request.query as any).tenantId);
+    if (!tenantId) return;
 
     const result = await query(
       `SELECT classified_intent AS label, COUNT(*)::int AS value
@@ -108,8 +108,8 @@ export function registerAnalyticsRoutes(app: FastifyInstance, configStore: Confi
   });
 
   app.get("/analytics/handoffs", { preHandler }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const tenantId = request.auth?.tenant_id ?? (request.query as any).tenantId;
-    if (!tenantId) return sendError(reply, 400, "missing_tenant", "tenantId required");
+    const tenantId = requireTenantForRequest(request, reply, (request.query as any).tenantId);
+    if (!tenantId) return;
 
     const result = await query(
       `SELECT end_reason AS label, COUNT(*)::int AS value
@@ -123,8 +123,8 @@ export function registerAnalyticsRoutes(app: FastifyInstance, configStore: Confi
   });
 
   app.get("/analytics/failures", { preHandler }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const tenantId = request.auth?.tenant_id ?? (request.query as any).tenantId;
-    if (!tenantId) return sendError(reply, 400, "missing_tenant", "tenantId required");
+    const tenantId = requireTenantForRequest(request, reply, (request.query as any).tenantId);
+    if (!tenantId) return;
 
     const result = await query(
       `SELECT end_reason AS label, COUNT(*)::int AS value
@@ -138,8 +138,8 @@ export function registerAnalyticsRoutes(app: FastifyInstance, configStore: Confi
   });
 
   app.get("/analytics/tools", { preHandler }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const tenantId = request.auth?.tenant_id ?? (request.query as any).tenantId;
-    if (!tenantId) return sendError(reply, 400, "missing_tenant", "tenantId required");
+    const tenantId = requireTenantForRequest(request, reply, (request.query as any).tenantId);
+    if (!tenantId) return;
 
     const result = await query(
       `SELECT
@@ -165,8 +165,8 @@ export function registerAnalyticsRoutes(app: FastifyInstance, configStore: Confi
   });
 
   app.get("/analytics/agents", { preHandler }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const tenantId = request.auth?.tenant_id ?? (request.query as any).tenantId;
-    if (!tenantId) return sendError(reply, 400, "missing_tenant", "tenantId required");
+    const tenantId = requireTenantForRequest(request, reply, (request.query as any).tenantId);
+    if (!tenantId) return;
 
     const agg = (await query(
       `SELECT
@@ -224,8 +224,8 @@ export function registerAnalyticsRoutes(app: FastifyInstance, configStore: Confi
   });
 
   app.get("/analytics/insights", { preHandler }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const tenantId = request.auth?.tenant_id ?? (request.query as any).tenantId;
-    if (!tenantId) return sendError(reply, 400, "missing_tenant", "tenantId required");
+    const tenantId = requireTenantForRequest(request, reply, (request.query as any).tenantId);
+    if (!tenantId) return;
 
     const peakHour = await query(
       `SELECT EXTRACT(HOUR FROM started_at)::int AS hour, COUNT(*)::int AS count
@@ -265,8 +265,8 @@ export function registerAnalyticsRoutes(app: FastifyInstance, configStore: Confi
     preHandler,
     schema: { response: { 200: AnalyticsSummaryEnvelopeSchema } },
   }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const tenantId = request.auth?.tenant_id ?? (request.query as any).tenantId;
-    if (!tenantId) return sendError(reply, 400, "missing_tenant", "tenantId required");
+    const tenantId = requireTenantForRequest(request, reply, (request.query as any).tenantId);
+    if (!tenantId) return;
 
     const aggRow = (
       await query(

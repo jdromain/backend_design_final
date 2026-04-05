@@ -1,5 +1,3 @@
-version: "3.9"
-
 # ─── Rezovo full-stack Docker Compose ─────────────────────────────────────────
 #
 # Prerequisites:
@@ -40,6 +38,7 @@ services:
       - pgdata:/var/lib/postgresql/data
       - ./database/setup_complete.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
       - ./database/002_ui_tables.sql:/docker-entrypoint-initdb.d/02_ui_tables.sql:ro
+      - ./database/003_clerk_tenant_mapping.sql:/docker-entrypoint-initdb.d/03_clerk_tenant_mapping.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U rezovo"]
       interval: 5s
@@ -83,10 +82,15 @@ services:
       REDIS_URL: redis://redis:6379
       REDIS_ENABLED: "true"
       REALTIME_CORE_URL: http://realtime-core:3002
+      PLATFORM_API_URL: http://platform-api:3001
       CORS_ORIGINS: http://localhost:3000
       DB_SSL: "false"
       DB_POOL_MAX: "5"
       KAFKA_ENABLED: "false"
+      EVENT_BUS_IMPL: redis
+      # Clerk auth vars (AUTH_MODE, CLERK_*) come from .env.docker via env_file.
+      # Do NOT redeclare them here — ${} interpolation reads from the host shell,
+      # not from env_file, so multiline keys (PEM) and secrets would be empty.
     env_file:
       - .env.docker
     healthcheck:
@@ -110,14 +114,18 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       NODE_ENV: production
-      # Internal service URLs
       DATABASE_URL: postgresql://rezovo:rezovo_local@postgres:5432/rezovo
+      REDIS_URL: redis://redis:6379
+      REDIS_ENABLED: "true"
       KAFKA_ENABLED: "false"
+      EVENT_BUS_IMPL: redis
+      PLATFORM_API_URL: http://platform-api:3001
     env_file:
       - .env.docker
-    # No HTTP server — monitor with: docker compose logs -f jobs
     restart: unless-stopped
 
   # ── rtp-bridge ────────────────────────────────────────────────────────────
@@ -156,13 +164,17 @@ services:
         condition: service_healthy
       rtp-bridge:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       NODE_ENV: production
       # Internal service URLs
       PLATFORM_API_URL: http://platform-api:3001
       RTP_BRIDGE_URL: ws://rtp-bridge:8081
-      REDIS_ENABLED: "false"
+      REDIS_URL: redis://redis:6379
+      REDIS_ENABLED: "true"
       KAFKA_ENABLED: "false"
+      EVENT_BUS_IMPL: redis
       LLM_PROVIDER: openai
       LLM_MODEL: gpt-4o-mini
       LLM_MAX_TOKENS: "500"
@@ -190,14 +202,19 @@ services:
       context: .
       dockerfile: frontend/Dockerfile
       args:
-        # These are baked into the Next.js JS bundle at image build time.
-        # NEXT_PUBLIC_API_URL must be reachable from the user's browser —
-        # use localhost (not the container DNS name) for local development.
+        # NEXT_PUBLIC_* are baked into the Next.js JS bundle at build time.
+        # Compose reads ${VAR} from the project root .env file (NOT env_file).
+        # We source .env.docker as the project .env via `env_file` on the
+        # `docker compose build` side by using --env-file or by symlinking.
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3001}
-        NEXT_PUBLIC_DEFAULT_TENANT_ID: ${NEXT_PUBLIC_DEFAULT_TENANT_ID:-tenant-default}
+        NEXT_PUBLIC_DEFAULT_TENANT_ID: ${NEXT_PUBLIC_DEFAULT_TENANT_ID:-test-tenant}
         NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY:-}
-        NEXT_PUBLIC_ENABLE_DEV_LOGIN: ${NEXT_PUBLIC_ENABLE_DEV_LOGIN:-true}
-        CLERK_ENABLED: ${CLERK_ENABLED:-false}
+        NEXT_PUBLIC_CLERK_ENABLED: ${NEXT_PUBLIC_CLERK_ENABLED:-true}
+        NEXT_PUBLIC_CLERK_JWT_TEMPLATE: ${NEXT_PUBLIC_CLERK_JWT_TEMPLATE:-platform-api}
+        NEXT_PUBLIC_ENABLE_DEV_LOGIN: ${NEXT_PUBLIC_ENABLE_DEV_LOGIN:-false}
+        NEXT_PUBLIC_USE_MOCKS: ${NEXT_PUBLIC_USE_MOCKS:-false}
+        CLERK_ENABLED: ${CLERK_ENABLED:-true}
+        CLERK_SECRET_KEY: ${CLERK_SECRET_KEY:-}
     container_name: rezovo-frontend
     ports:
       - "3000:3000"
@@ -208,6 +225,10 @@ services:
       NODE_ENV: production
       PORT: "3000"
       HOSTNAME: "0.0.0.0"
+      # Runtime Clerk vars (CLERK_SECRET_KEY, NEXT_PUBLIC_CLERK_*) come from
+      # .env.docker via env_file. CLERK_SECRET_KEY is needed by clerkMiddleware.
+    env_file:
+      - .env.docker
     restart: unless-stopped
 
 volumes:

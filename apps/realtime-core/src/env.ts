@@ -67,6 +67,8 @@ export const env = {
   // Redis
   REDIS_ENABLED: optionalBool("REDIS_ENABLED", false),
   REDIS_URL: optional("REDIS_URL", "redis://localhost:6379"),
+  /** `memory` or `redis` — match platform-api / jobs for shared `ConfigChanged` / ingest events. */
+  EVENT_BUS_IMPL: optional("EVENT_BUS_IMPL", "memory") as "memory" | "redis",
 
   // Kafka
   KAFKA_ENABLED: optionalBool("KAFKA_ENABLED", false),
@@ -78,6 +80,8 @@ export const env = {
 
   // Platform API (internal)
   PLATFORM_API_URL: optional("PLATFORM_API_URL", "http://localhost:3001"),
+  /** First snapshot tenant — must match SQL seeds (e.g. test-tenant). */
+  REALTIME_BOOTSTRAP_TENANT_ID: optional("REALTIME_BOOTSTRAP_TENANT_ID", "test-tenant"),
 
   // Twilio
   TWILIO_ACCOUNT_SID: optional("TWILIO_ACCOUNT_SID", ""),
@@ -94,6 +98,11 @@ export const env = {
 
 if (env.REDIS_ENABLED && !env.REDIS_URL) {
   console.error("[env] REDIS_ENABLED=true but REDIS_URL is not set");
+  process.exit(1);
+}
+
+if (env.EVENT_BUS_IMPL === "redis" && !env.REDIS_ENABLED) {
+  console.error("[env] EVENT_BUS_IMPL=redis requires REDIS_ENABLED=true and REDIS_URL");
   process.exit(1);
 }
 

@@ -3,8 +3,12 @@ import { Type, Static } from "@sinclair/typebox";
 import { TypeBoxTypeProvider } from "@fastify/type-provider-typebox";
 import { createLogger } from "@rezovo/logging";
 import { PersistenceStore } from "../persistence/store";
+import { authHook, optionalAuthHook } from "../auth/jwt";
+import { requireTenantForRequest } from "../auth/tenantScope";
 
 const logger = createLogger({ service: "platform-api", module: "credentials" });
+const isProduction = (process.env.NODE_ENV ?? "development") === "production";
+const credPreHandler = isProduction ? authHook(["admin", "editor"]) : optionalAuthHook();
 const persistence = new PersistenceStore();
 
 // Schema definitions
@@ -90,6 +94,7 @@ export function credentialsRoutes(app: FastifyInstance): void {
 
   // Save/update credentials for a provider
   typedApp.post<{ Params: { tenantId: string }, Body: SaveCredentialsBody }>("/credentials/:tenantId", {
+    preHandler: credPreHandler,
     schema: {
       params: Type.Object({
         tenantId: Type.String()
@@ -108,7 +113,8 @@ export function credentialsRoutes(app: FastifyInstance): void {
       }
     }
   }, async (request: FastifyRequest<{ Params: { tenantId: string }, Body: SaveCredentialsBody }>, reply: FastifyReply) => {
-    const { tenantId } = request.params;
+    const tenantId = requireTenantForRequest(request, reply, request.params.tenantId);
+    if (!tenantId) return;
     const { provider, credentials } = request.body;
 
     // Validate provider exists
@@ -157,6 +163,7 @@ export function credentialsRoutes(app: FastifyInstance): void {
 
   // Get credentials for a provider (returns masked version)
   typedApp.get<{ Params: { tenantId: string; provider: string } }>("/credentials/:tenantId/:provider", {
+    preHandler: credPreHandler,
     schema: {
       params: Type.Object({
         tenantId: Type.String(),
@@ -176,7 +183,9 @@ export function credentialsRoutes(app: FastifyInstance): void {
       }
     }
   }, async (request: FastifyRequest<{ Params: { tenantId: string; provider: string } }>, reply: FastifyReply) => {
-    const { tenantId, provider } = request.params;
+    const tenantId = requireTenantForRequest(request, reply, request.params.tenantId);
+    if (!tenantId) return;
+    const { provider } = request.params;
 
     try {
       const credentials = await persistence.loadCredentials(tenantId, provider);
@@ -217,6 +226,7 @@ export function credentialsRoutes(app: FastifyInstance): void {
 
   // Delete credentials for a provider
   typedApp.delete<{ Params: { tenantId: string; provider: string } }>("/credentials/:tenantId/:provider", {
+    preHandler: credPreHandler,
     schema: {
       params: Type.Object({
         tenantId: Type.String(),
@@ -230,7 +240,9 @@ export function credentialsRoutes(app: FastifyInstance): void {
       }
     }
   }, async (request: FastifyRequest<{ Params: { tenantId: string; provider: string } }>, reply: FastifyReply) => {
-    const { tenantId, provider } = request.params;
+    const tenantId = requireTenantForRequest(request, reply, request.params.tenantId);
+    if (!tenantId) return;
+    const { provider } = request.params;
 
     try {
       // Save empty credentials to effectively delete
@@ -258,6 +270,7 @@ export function credentialsRoutes(app: FastifyInstance): void {
 
   // Test credentials by making a simple API call
   typedApp.post<{ Params: { tenantId: string; provider: string } }>("/credentials/:tenantId/:provider/test", {
+    preHandler: credPreHandler,
     schema: {
       params: Type.Object({
         tenantId: Type.String(),
@@ -274,7 +287,9 @@ export function credentialsRoutes(app: FastifyInstance): void {
       }
     }
   }, async (request: FastifyRequest<{ Params: { tenantId: string; provider: string } }>, reply: FastifyReply) => {
-    const { tenantId, provider } = request.params;
+    const tenantId = requireTenantForRequest(request, reply, request.params.tenantId);
+    if (!tenantId) return;
+    const { provider } = request.params;
 
     try {
       const credentials = await persistence.loadCredentials(tenantId, provider);

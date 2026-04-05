@@ -1,17 +1,17 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { sendData, sendError } from "../lib/responses";
-import { authHook, optionalAuthHook } from "../auth/jwt";
+import { authHook, resolvedAuthHook } from "../auth/jwt";
+import { requireTenantForRequest } from "../auth/tenantScope";
 import { ConfigStore } from "../config/store";
 import { query } from "../persistence/dbClient";
 
-const isProduction = (process.env.NODE_ENV ?? "development") === "production";
 
 export function registerAgentRoutes(app: FastifyInstance, configStore: ConfigStore) {
-  const preHandler = isProduction ? authHook(["admin", "editor", "viewer"]) : optionalAuthHook();
+  const preHandler = resolvedAuthHook(["admin", "editor", "viewer"]);
 
   app.get("/agents", { preHandler }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const tenantId = request.auth?.tenant_id ?? (request.query as any).tenantId;
-    if (!tenantId) return sendError(reply, 400, "missing_tenant", "tenantId required");
+    const tenantId = requireTenantForRequest(request, reply, (request.query as any).tenantId);
+    if (!tenantId) return;
 
     const snapshot = await configStore.getSnapshot(tenantId);
     const agentConfig = snapshot.agentConfig;
@@ -61,9 +61,9 @@ export function registerAgentRoutes(app: FastifyInstance, configStore: ConfigSto
   });
 
   app.get("/agents/:agentId", { preHandler }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const tenantId = request.auth?.tenant_id ?? (request.query as any).tenantId;
+    const tenantId = requireTenantForRequest(request, reply, (request.query as any).tenantId);
+    if (!tenantId) return;
     const { agentId } = request.params as { agentId: string };
-    if (!tenantId) return sendError(reply, 400, "missing_tenant", "tenantId required");
 
     const snapshot = await configStore.getSnapshot(tenantId);
     const agentConfig = snapshot.agentConfig;

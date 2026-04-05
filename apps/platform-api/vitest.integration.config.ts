@@ -3,10 +3,10 @@ import { defineConfig } from "vitest/config";
 
 const repoRoot = path.resolve(__dirname, "../..");
 
-/** Workspace packages point at `dist/`; Vitest resolves sources so tests run without a full `pnpm build`. */
 const rezovoSrc = (pkg: string) =>
   path.join(repoRoot, "packages", pkg, "src", "index.ts");
 
+/** Runs only `*.integration.test.ts` in an isolated Vitest process (avoids env import races with contract tests). */
 export default defineConfig({
   resolve: {
     alias: {
@@ -20,10 +20,10 @@ export default defineConfig({
   test: {
     globals: false,
     environment: "node",
-    include: ["src/**/*.test.ts"],
-    exclude: ["src/**/*.integration.test.ts"],
-    testTimeout: 20_000,
-    hookTimeout: 20_000,
+    include: ["src/**/*.integration.test.ts"],
+    testTimeout: 120_000,
+    hookTimeout: 120_000,
+    fileParallelism: false,
     server: {
       deps: {
         inline: [/^@rezovo\//],

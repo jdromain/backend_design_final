@@ -9,7 +9,7 @@ Monorepo scaffold for the realtime receptionist platform. The high-level archite
 
 ## Event contracts (phase 1)
 - Canonical event types and payloads live in `packages/core-types/src/index.ts` (`CallStarted`, `CallEnded`, `UsageReported`, `ConfigChanged`, `DocIngestRequested`, `AppointmentUpdated`, `ToolUsed`, `VoicemailReferenceCreated`).
-- `packages/event-bus` exposes a typed `EventBusClient`, `createEventEnvelope`, and an in-memory implementation with tenant filters and ordered delivery per event type.
+- `packages/event-bus` exposes a typed `EventBusClient`, `createEventEnvelope`, `createInMemoryEventBus`, and `createRedisEventBus` (Redis pub/sub for cross-process dev — set `EVENT_BUS_IMPL=redis` + `REDIS_ENABLED=true` + shared `REDIS_URL` on platform-api, realtime-core, and jobs). In-memory remains the default per process.
 - `ConfigChanged` payload includes `lob` (line of business) and `status` (`draft` | `published`) so the UI and config-cache can scope and avoid stale swaps:
   ```ts
   type ConfigChangedPayload = {

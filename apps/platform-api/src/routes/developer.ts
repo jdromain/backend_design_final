@@ -1,16 +1,16 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { query } from "../persistence/dbClient";
 import { sendData, sendError } from "../lib/responses";
-import { authHook, optionalAuthHook } from "../auth/jwt";
+import { authHook, resolvedAuthHook } from "../auth/jwt";
+import { requireTenantForRequest } from "../auth/tenantScope";
 
-const isProduction = (process.env.NODE_ENV ?? "development") === "production";
 
 export function registerDeveloperRoutes(app: FastifyInstance) {
   app.get("/developer/api-keys", {
-    preHandler: isProduction ? authHook(["admin"]) : optionalAuthHook(),
+    preHandler: resolvedAuthHook(["admin"]),
   }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const tenantId = request.auth?.tenant_id ?? (request.query as any).tenantId;
-    if (!tenantId) return sendError(reply, 400, "missing_tenant", "tenantId required");
+    const tenantId = requireTenantForRequest(request, reply, (request.query as any).tenantId);
+    if (!tenantId) return;
 
     const result = await query(
       "SELECT id, name, prefix, status, created_at, last_used_at FROM api_keys WHERE tenant_id = $1 ORDER BY created_at DESC",

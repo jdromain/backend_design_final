@@ -14,9 +14,9 @@ import type {
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
 
-/** Default tenant for demo / dev when JWT has no org context yet. */
+/** Default tenant for demo / dev JWT fallback (must match DB seeds, e.g. test-tenant). */
 export const DEFAULT_TENANT_ID =
-  process.env.NEXT_PUBLIC_DEFAULT_TENANT_ID || "tenant-default";
+  process.env.NEXT_PUBLIC_DEFAULT_TENANT_ID || "test-tenant";
 
 /** Matches platform-api billingQuota soft cap. */
 export const BILLING_CONCURRENCY_LIMIT = 10;

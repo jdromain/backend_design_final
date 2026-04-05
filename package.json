@@ -19,7 +19,10 @@
     "stack:down": "bash scripts/stack-down.sh",
     "stack:logs": "bash scripts/stack-logs.sh",
     "stack:fresh": "bash scripts/fresh-demo-postgres.sh",
-    "stack:restart": "bash scripts/restart-demo-stack.sh"
+    "stack:restart": "bash scripts/restart-demo-stack.sh",
+    "smoke:local": "bash scripts/smoke-local.sh",
+    "db:apply": "bash scripts/apply-database.sh",
+    "test:integration": "pnpm --filter @rezovo/platform-api test:integration"
   },
   "devDependencies": {
     "@types/node": "^25.5.0",

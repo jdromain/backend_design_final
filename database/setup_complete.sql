@@ -12,22 +12,26 @@ CREATE EXTENSION IF NOT EXISTS "vector";
 -- 1. TENANTS
 -- ═══════════════════════════════════════════════════════════════
 CREATE TABLE IF NOT EXISTS public.tenants (
-  id            TEXT PRIMARY KEY,
-  name          TEXT NOT NULL,
-  business_id   TEXT,
-  business_name TEXT,
-  email         TEXT,
-  phone         TEXT,
-  plan_id       TEXT,
-  timezone      TEXT DEFAULT 'America/New_York',
-  settings      JSONB DEFAULT '{}'::JSONB,
-  metadata      JSONB DEFAULT '{}'::JSONB,
-  status        TEXT CHECK (status IN ('active','suspended','cancelled')) DEFAULT 'active',
-  created_at    TIMESTAMPTZ DEFAULT now(),
-  updated_at    TIMESTAMPTZ DEFAULT now()
+  id                      TEXT PRIMARY KEY,
+  name                    TEXT NOT NULL,
+  business_id             TEXT,
+  business_name           TEXT,
+  email                   TEXT,
+  phone                   TEXT,
+  plan_id                 TEXT,
+  timezone                TEXT DEFAULT 'America/New_York',
+  settings                JSONB DEFAULT '{}'::JSONB,
+  metadata                JSONB DEFAULT '{}'::JSONB,
+  clerk_organization_id   TEXT,
+  status                  TEXT CHECK (status IN ('active','suspended','cancelled')) DEFAULT 'active',
+  created_at              TIMESTAMPTZ DEFAULT now(),
+  updated_at              TIMESTAMPTZ DEFAULT now()
 );
 
 CREATE INDEX IF NOT EXISTS idx_tenants_status ON public.tenants(status);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tenants_clerk_organization_id
+  ON public.tenants (clerk_organization_id)
+  WHERE clerk_organization_id IS NOT NULL;
 
 -- ═══════════════════════════════════════════════════════════════
 -- 2. AGENT CONFIGURATIONS

@@ -2,7 +2,7 @@
 
 import { useAuth } from "@clerk/nextjs";
 import { useEffect } from "react";
-import { configureApiAuth } from "@/lib/api-client";
+import { clearAuthToken, configureApiAuth } from "@/lib/api-client";
 import { isClerkConfigured } from "@/lib/clerk-runtime";
 
 const jwtTemplate = process.env.NEXT_PUBLIC_CLERK_JWT_TEMPLATE ?? "platform-api";
@@ -13,7 +13,19 @@ function ClerkTokenBridgeInner() {
   useEffect(() => {
     if (!isLoaded) return;
     if (isSignedIn) {
-      configureApiAuth(() => getToken({ template: jwtTemplate }));
+      clearAuthToken();
+      configureApiAuth(async () => {
+        // Prefer the custom template (includes org_id / tenant_id claims).
+        // Fall back to the default session token so auth works even before
+        // the JWT template is created in the Clerk Dashboard.
+        try {
+          const custom = await getToken({ template: jwtTemplate });
+          if (custom) return custom;
+        } catch {
+          /* template may not exist yet — use default */
+        }
+        return getToken();
+      });
     } else {
       configureApiAuth(null);
     }

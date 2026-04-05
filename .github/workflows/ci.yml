@@ -17,6 +17,8 @@ jobs:
           cache: "pnpm"
       - run: corepack enable
       - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @rezovo/platform-api test
+      - run: pnpm test:integration
       - run: pnpm -r build
 
 

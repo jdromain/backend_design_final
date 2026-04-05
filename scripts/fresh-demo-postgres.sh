@@ -3,7 +3,7 @@ set -euo pipefail
 # Wipe and recreate only the Postgres data volume, then restart postgres.
 #
 # This script destroys ALL Postgres data and re-runs the init SQL
-# (supabase/setup_complete.sql + supabase/002_ui_tables.sql), restoring
+# (database/setup_complete.sql + database/002_ui_tables.sql + 003_clerk_tenant_mapping.sql), restoring
 # the seeded dev user (admin@example.com).
 #
 # It does NOT remove Redis or any other named volumes.

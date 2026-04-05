@@ -1,8 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { auth, APIError } from "@/lib/api";
+import { isClerkConfigured } from "@/lib/clerk-runtime";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -24,6 +25,20 @@ export default function DevLoginPage() {
   const [email, setEmail] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+
+  useEffect(() => {
+    if (isClerkConfigured()) {
+      router.replace("/sign-in");
+    }
+  }, [router]);
+
+  if (isClerkConfigured()) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background p-6 text-sm text-muted-foreground">
+        Redirecting to Clerk sign-in…
+      </div>
+    );
+  }
 
   if (!isDevLoginAllowed()) {
     return (
@@ -78,8 +93,8 @@ export default function DevLoginPage() {
             <span className="block text-xs">
               Default seeded email:{" "}
               <strong className="font-medium text-foreground">admin@example.com</strong>{" "}
-              (from <code className="text-xs">supabase/002_ui_tables.sql</code>, or first
-              boot of <code className="text-xs">docker compose up postgres</code>). If login
+              (from <code className="text-xs">database/002_ui_tables.sql</code>, or first
+              boot of Postgres with init scripts). If login
               still fails, your DB may be empty or an old Docker volume — re-apply that SQL
               or recreate the volume.
             </span>

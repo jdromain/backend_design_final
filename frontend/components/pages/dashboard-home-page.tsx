@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
-import { isClerkFeatureOn } from "@/lib/clerk-runtime";
+import { useState, useEffect, useRef, useMemo } from "react";
+import { isClerkConfigured } from "@/lib/clerk-runtime";
 import {
   Phone,
   CheckCircle,
@@ -40,6 +40,7 @@ import {
   getTopFailureReasons,
   getOnboardingSteps,
 } from "@/lib/data/dashboard";
+import { waitForAuthReady } from "@/lib/api-client";
 import { sparklinePercentDelta } from "@/lib/sparkline-delta";
 
 /**
@@ -63,6 +64,8 @@ export function DashboardHomePage() {
   const [callDrawerOpen, setCallDrawerOpen] = useState(false);
   const [dashboardLoading, setDashboardLoading] = useState(true);
   const [dashboardError, setDashboardError] = useState<string | null>(null);
+  const [fetchKey, setFetchKey] = useState(0);
+  const clerkRetryRef = useRef(0);
 
   type OutcomesData = Awaited<ReturnType<typeof getDashboardOutcomes>>;
   type CallsData = Awaited<ReturnType<typeof getDashboardCalls>>;
@@ -92,14 +95,26 @@ export function DashboardHomePage() {
   useEffect(() => {
     const onUnauthorized = () => {
       if (typeof window === "undefined") return;
-      if (
-        process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY?.trim() &&
-        isClerkFeatureOn()
-      ) {
-        window.location.href = "/sign-in";
-      } else {
-        window.location.href = "/dev-login";
+      if (isClerkConfigured()) {
+        // In Clerk mode a 401 usually means the Clerk session token wasn't
+        // ready when the dashboard first mounted (race with ClerkTokenBridge).
+        // Auto-retry up to 3 times with increasing delays before giving up.
+        clerkRetryRef.current += 1;
+        if (clerkRetryRef.current <= 3) {
+          const delay = clerkRetryRef.current * 1000;
+          setTimeout(() => {
+            setDashboardError(null);
+            setDashboardLoading(true);
+            setFetchKey((k) => k + 1);
+          }, delay);
+        } else {
+          setDashboardError(
+            "API returned 401. Confirm the 'platform-api' JWT template exists in Clerk Dashboard (Configure → JWT Templates) and that your account is a member of the linked organisation."
+          );
+        }
+        return;
       }
+      window.location.href = "/dev-login";
     };
     window.addEventListener("rezovo:unauthorized", onUnauthorized);
     return () => window.removeEventListener("rezovo:unauthorized", onUnauthorized);
@@ -108,55 +123,58 @@ export function DashboardHomePage() {
   useEffect(() => {
     let cancelled = false;
 
-    Promise.all([
-      getDashboardOutcomes(),
-      getDashboardCalls(),
-      getDashboardActivity(),
-      getSparklineData(),
-      getSystemHealth(),
-      getIncidents(),
-      getTopIntents(),
-      getTopHandoffReasons(),
-      getTopFailureReasons(),
-      getOnboardingSteps(),
-    ])
-      .then(
-        ([
-          outcomes,
-          calls,
-          activity,
-          spark,
-          health,
-          inc,
-          intents,
-          handoffs,
-          failures,
-          steps,
-        ]) => {
+    waitForAuthReady().then(() => {
+      if (cancelled) return;
+      Promise.all([
+        getDashboardOutcomes(),
+        getDashboardCalls(),
+        getDashboardActivity(),
+        getSparklineData(),
+        getSystemHealth(),
+        getIncidents(),
+        getTopIntents(),
+        getTopHandoffReasons(),
+        getTopFailureReasons(),
+        getOnboardingSteps(),
+      ])
+        .then(
+          ([
+            outcomes,
+            calls,
+            activity,
+            spark,
+            health,
+            inc,
+            intents,
+            handoffs,
+            failures,
+            steps,
+          ]) => {
+            if (cancelled) return;
+            setOutcomesData(outcomes);
+            setCallsData(calls);
+            setActivityData(activity);
+            setSparklineData(spark);
+            setSystemHealth(health);
+            setIncidents(inc);
+            setTopIntents(intents as InsightItem[]);
+            setTopHandoffReasons(handoffs as InsightItem[]);
+            setTopFailureReasons(failures as InsightItem[]);
+            setOnboardingSteps(steps as OnboardingStep[]);
+            setDashboardLoading(false);
+          }
+        )
+        .catch((err) => {
           if (cancelled) return;
-          setOutcomesData(outcomes);
-          setCallsData(calls);
-          setActivityData(activity);
-          setSparklineData(spark);
-          setSystemHealth(health);
-          setIncidents(inc);
-          setTopIntents(intents as InsightItem[]);
-          setTopHandoffReasons(handoffs as InsightItem[]);
-          setTopFailureReasons(failures as InsightItem[]);
-          setOnboardingSteps(steps as OnboardingStep[]);
+          setDashboardError(err instanceof Error ? err.message : "Failed to load dashboard");
           setDashboardLoading(false);
-        }
-      )
-      .catch((err) => {
-        if (cancelled) return;
-        setDashboardError(err instanceof Error ? err.message : "Failed to load dashboard");
-        setDashboardLoading(false);
-      });
+        });
+    });
 
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [fetchKey]);
 
   useEffect(() => {
     if (autoRefresh) {

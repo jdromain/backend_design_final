@@ -2,6 +2,7 @@ import {
   setAuthToken as syncAuthTokenFromApiModule,
   DEFAULT_TENANT_ID,
 } from "./api";
+import { isBrowserClerkApiMode } from "./clerk-runtime";
 
 const BASE_URL =
   process.env.NEXT_PUBLIC_API_URL ??
@@ -69,11 +70,42 @@ function getStoredToken(): string | null {
 
 let customGetToken: (() => Promise<string | null>) | null = null;
 
+// Resolves as soon as configureApiAuth is called with a non-null getter so
+// that components can await auth readiness before firing their first requests.
+let _authReadyResolve: (() => void) | null = null;
+let _authReady = false;
+const _authReadyPromise =
+  typeof window !== "undefined"
+    ? new Promise<void>((resolve) => {
+        _authReadyResolve = resolve;
+      })
+    : Promise.resolve();
+
 /** When using Clerk, pass a getter that returns a fresh JWT (e.g. `getToken({ template })`). Falls back to localStorage. */
 export function configureApiAuth(
   getter: (() => Promise<string | null>) | null
 ): void {
   customGetToken = getter;
+  if (!_authReady && getter !== null) {
+    _authReady = true;
+    _authReadyResolve?.();
+  }
+}
+
+/**
+ * In Clerk browser mode, resolves once `configureApiAuth` has been called
+ * (i.e. ClerkTokenBridge has finished wiring the token getter).
+ * Resolves immediately in SSR and non-Clerk mode.
+ * Has a 4-second safety timeout so callers are never permanently blocked.
+ */
+export function waitForAuthReady(): Promise<void> {
+  if (typeof window === "undefined") return Promise.resolve();
+  if (!isBrowserClerkApiMode()) return Promise.resolve();
+  if (_authReady) return Promise.resolve();
+  return Promise.race([
+    _authReadyPromise,
+    new Promise<void>((resolve) => setTimeout(resolve, 4000)),
+  ]);
 }
 
 async function resolveAuthToken(): Promise<string | null> {
@@ -112,8 +144,14 @@ export function resolveTenantIdForQuery(): string {
   return DEFAULT_TENANT_ID;
 }
 
-/** Appends `tenantId` for platform-api routes that use `auth ?? query.tenantId`. */
+/**
+ * Appends `tenantId` for dev-JWT mode only. In Clerk mode the API derives tenant from the Bearer
+ * token; query params must not be used for authorization.
+ */
 export function appendTenantQuery(path: string): string {
+  if (isBrowserClerkApiMode()) {
+    return path;
+  }
   const tenantId = encodeURIComponent(resolveTenantIdForQuery());
   return path.includes("?")
     ? `${path}&tenantId=${tenantId}`

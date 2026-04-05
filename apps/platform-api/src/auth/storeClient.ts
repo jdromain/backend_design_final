@@ -53,6 +53,24 @@ export class AuthStoreClient {
     }
   }
 
+  async findTenantIdByClerkOrganizationId(clerkOrganizationId: string): Promise<string | undefined> {
+    const result = await query(
+      "SELECT id FROM tenants WHERE clerk_organization_id = $1 AND status = 'active'",
+      [clerkOrganizationId]
+    );
+    return result.rows[0]?.id as string | undefined;
+  }
+
+  /**
+   * Links a Clerk org to an existing tenant row (via org public_metadata.tenant_id or manual flows).
+   */
+  async setTenantClerkOrganizationId(tenantId: string, clerkOrganizationId: string): Promise<void> {
+    await query(
+      `UPDATE tenants SET clerk_organization_id = $2, updated_at = now() WHERE id = $1`,
+      [tenantId, clerkOrganizationId]
+    );
+  }
+
   async upsertUser(user: {
     id: string;
     tenantId: string;

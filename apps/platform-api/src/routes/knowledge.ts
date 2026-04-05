@@ -1,9 +1,9 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { query } from "../persistence/dbClient";
 import { sendData, sendError } from "../lib/responses";
-import { authHook, optionalAuthHook } from "../auth/jwt";
+import { authHook, resolvedAuthHook } from "../auth/jwt";
+import { requireTenantForRequest } from "../auth/tenantScope";
 
-const isProduction = (process.env.NODE_ENV ?? "development") === "production";
 
 function mapKbStatus(status: string): "ready" | "processing" | "failed" | "uploading" {
   switch (status) {
@@ -17,10 +17,10 @@ function mapKbStatus(status: string): "ready" | "processing" | "failed" | "uploa
 
 export function registerKnowledgeRoutes(app: FastifyInstance) {
   app.get("/knowledge/documents", {
-    preHandler: isProduction ? authHook(["admin", "editor", "viewer"]) : optionalAuthHook(),
+    preHandler: resolvedAuthHook(["admin", "editor", "viewer"]),
   }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const tenantId = request.auth?.tenant_id ?? (request.query as any).tenantId;
-    if (!tenantId) return sendError(reply, 400, "missing_tenant", "tenantId required");
+    const tenantId = requireTenantForRequest(request, reply, (request.query as any).tenantId);
+    if (!tenantId) return;
 
     const result = await query(
       "SELECT * FROM kb_documents WHERE tenant_id = $1 ORDER BY created_at DESC",

@@ -2,7 +2,7 @@
 import "./env";
 
 import { createLogger } from "@rezovo/logging";
-import { createInMemoryEventBus } from "@rezovo/event-bus";
+import { createInMemoryEventBus, createRedisEventBus } from "@rezovo/event-bus";
 import { env } from "./env";
 import { ConfigChangedPayload, TypedEventEnvelope } from "@rezovo/core-types";
 import { setDefaultOpenAIClient } from "@openai/agents";
@@ -78,14 +78,18 @@ async function bootstrap(): Promise<void> {
 
   printEnvDiagnostics();
 
-  const bus = createInMemoryEventBus();
+  const bus =
+    env.EVENT_BUS_IMPL === "redis"
+      ? createRedisEventBus(env.REDIS_URL)
+      : createInMemoryEventBus();
+  logger.info("event bus", { impl: env.EVENT_BUS_IMPL });
   const cache = new ConfigCache();
   const events = new EventPublisher(bus);
 
   // Bootstrap cache from platform-api; fall back to default snapshot if unavailable.
   logger.info("hydrating config cache from platform-api...", { url: env.PLATFORM_API_URL });
   try {
-    const snapshot = await fetchConfigSnapshot("tenant-default", "default");
+    const snapshot = await fetchConfigSnapshot(env.REALTIME_BOOTSTRAP_TENANT_ID, "default");
     cache.replaceFromSnapshot(snapshot);
 
     // Log what we got
@@ -105,7 +109,7 @@ async function bootstrap(): Promise<void> {
     }
   } catch (err) {
     logger.warn("failed to hydrate from platform-api, using default snapshot", { error: (err as Error).message });
-    cache.hydrate(makeDefaultSnapshot("tenant-default"));
+    cache.hydrate(makeDefaultSnapshot(env.REALTIME_BOOTSTRAP_TENANT_ID));
   }
 
   await bus.subscribe("ConfigChanged", async (event: TypedEventEnvelope<"ConfigChanged">) => {

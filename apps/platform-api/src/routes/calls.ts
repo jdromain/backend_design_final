@@ -4,12 +4,13 @@ import { createLogger } from "@rezovo/logging";
 import { callStore, CallRecord, TranscriptEntry, CallEvent } from "../persistence/callStore";
 import { query } from "../persistence/dbClient";
 import { sendData, sendError } from "../lib/responses";
-import { authHook, optionalAuthHook } from "../auth/jwt";
+import { attachClerkAuthIfBearerPresent, authHook, resolvedAuthHook } from "../auth/jwt";
+import { isClerkEnabled } from "../auth/clerk";
+import { requireTenantForRequest } from "../auth/tenantScope";
 import { CallsListEnvelopeSchema } from "../contracts/httpSchemas";
 
 const logger = createLogger({ service: "platform-api", module: "callRoutes" });
 
-const isProduction = (process.env.NODE_ENV ?? "development") === "production";
 
 function mapOutcome(outcome: string | undefined | null): "completed" | "handoff" | "dropped" | "systemFailed" | "pending" {
   switch (outcome) {
@@ -202,16 +203,14 @@ export function registerCallRoutes(app: FastifyInstance) {
   // ----------------------------------------------------------------
 
   app.get("/calls", {
-    preHandler: isProduction ? authHook(["admin", "editor", "viewer"]) : optionalAuthHook(),
+    preHandler: resolvedAuthHook(["admin", "editor", "viewer"]),
     schema: {
       querystring: Type.Object({ tenantId: Type.Optional(Type.String()) }),
       response: { 200: CallsListEnvelopeSchema },
     },
   }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const tenantId = request.auth?.tenant_id ?? (request.query as any).tenantId;
-    if (!tenantId) {
-      return sendError(reply, 400, "missing_tenant", "tenantId required");
-    }
+    const tenantId = requireTenantForRequest(request, reply, (request.query as any).tenantId);
+    if (!tenantId) return;
 
     const calls = await callStore.getCallsByTenant(tenantId);
 
@@ -260,12 +259,10 @@ export function registerCallRoutes(app: FastifyInstance) {
   });
 
   app.get("/calls/live", {
-    preHandler: isProduction ? authHook(["admin", "editor", "viewer"]) : optionalAuthHook(),
+    preHandler: resolvedAuthHook(["admin", "editor", "viewer"]),
   }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const tenantId = request.auth?.tenant_id ?? (request.query as any).tenantId;
-    if (!tenantId) {
-      return sendError(reply, 400, "missing_tenant", "tenantId required");
-    }
+    const tenantId = requireTenantForRequest(request, reply, (request.query as any).tenantId);
+    if (!tenantId) return;
 
     const result = await query(
       `SELECT * FROM calls WHERE tenant_id = $1 AND status IN ('initiated','ringing','in_progress')
@@ -333,7 +330,7 @@ export function registerCallRoutes(app: FastifyInstance) {
   });
 
   app.get("/calls/:id/timeline", {
-    preHandler: isProduction ? authHook(["admin", "editor", "viewer"]) : optionalAuthHook(),
+    preHandler: resolvedAuthHook(["admin", "editor", "viewer"]),
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     const { id } = request.params as { id: string };
     const eventRows = (await query(
@@ -353,7 +350,7 @@ export function registerCallRoutes(app: FastifyInstance) {
   });
 
   app.get("/calls/:id/transcript", {
-    preHandler: isProduction ? authHook(["admin", "editor", "viewer"]) : optionalAuthHook(),
+    preHandler: resolvedAuthHook(["admin", "editor", "viewer"]),
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     const { id } = request.params as { id: string };
     const entries = await callStore.getTranscript(id);
@@ -369,7 +366,7 @@ export function registerCallRoutes(app: FastifyInstance) {
   });
 
   app.get("/calls/:id/tools", {
-    preHandler: isProduction ? authHook(["admin", "editor", "viewer"]) : optionalAuthHook(),
+    preHandler: resolvedAuthHook(["admin", "editor", "viewer"]),
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     const { id } = request.params as { id: string };
     const eventRows = (await query(
@@ -391,12 +388,22 @@ export function registerCallRoutes(app: FastifyInstance) {
     sendData(reply, tools);
   });
 
-  // Keep existing phone-numbers route (internal, backward compat)
-  app.get("/phone-numbers", async (request: FastifyRequest, reply: FastifyReply) => {
+  // Internal listing; in Clerk mode require auth + tenant (no broad list without tenant).
+  app.get(
+    "/phone-numbers",
+    { preHandler: attachClerkAuthIfBearerPresent() },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+    if (isClerkEnabled) {
+      const tenantId = requireTenantForRequest(request, reply, (request.query as any).tenantId);
+      if (!tenantId) return;
+      const numbers = await callStore.getPhoneNumbersByTenant(tenantId);
+      return { phoneNumbers: numbers, count: numbers.length };
+    }
     const { tenantId } = request.query as { tenantId?: string };
     const numbers = tenantId
       ? await callStore.getPhoneNumbersByTenant(tenantId)
       : await callStore.getAllPhoneNumbers();
     return { phoneNumbers: numbers, count: numbers.length };
-  });
+  }
+  );
 }

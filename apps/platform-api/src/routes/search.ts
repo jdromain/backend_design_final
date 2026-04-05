@@ -1,17 +1,17 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { query } from "../persistence/dbClient";
 import { sendData, sendError } from "../lib/responses";
-import { authHook, optionalAuthHook } from "../auth/jwt";
+import { authHook, resolvedAuthHook } from "../auth/jwt";
+import { requireTenantForRequest } from "../auth/tenantScope";
 
-const isProduction = (process.env.NODE_ENV ?? "development") === "production";
 
 export function registerSearchRoutes(app: FastifyInstance) {
   app.get("/search", {
-    preHandler: isProduction ? authHook(["admin", "editor", "viewer"]) : optionalAuthHook(),
+    preHandler: resolvedAuthHook(["admin", "editor", "viewer"]),
   }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const tenantId = request.auth?.tenant_id ?? (request.query as any).tenantId;
+    const tenantId = requireTenantForRequest(request, reply, (request.query as any).tenantId);
+    if (!tenantId) return;
     const q = ((request.query as any).q ?? "").trim();
-    if (!tenantId) return sendError(reply, 400, "missing_tenant", "tenantId required");
     if (!q) return sendData(reply, { calls: [], contacts: [], followUps: [], workflows: [], kbDocs: [], users: [], agents: [], integrations: [] });
 
     const pattern = `%${q}%`;

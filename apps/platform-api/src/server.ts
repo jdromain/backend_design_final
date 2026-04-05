@@ -10,6 +10,7 @@ import {
   LoginOkSchema,
 } from "./contracts/httpSchemas";
 import fastifyFormbody from "@fastify/formbody";
+import fastifyRawBody from "fastify-raw-body";
 
 import { createEventEnvelope, EventBusClient } from "@rezovo/event-bus";
 import { createLogger } from "@rezovo/logging";
@@ -77,6 +78,13 @@ export function buildServer(eventBus: EventBusClient): FastifyInstance<any, any,
   });
 
   app.register(fastifyFormbody);
+  // fastify-raw-body typings differ from @fastify/type-provider-typebox instance shape; safe at runtime.
+  app.register(fastifyRawBody as any, {
+    field: "rawBody",
+    global: false,
+    encoding: "utf8",
+    runFirst: true,
+  });
 
   const persistence = new PersistenceStore();
   const configStore = new ConfigStore(persistence);
@@ -119,7 +127,9 @@ export function buildServer(eventBus: EventBusClient): FastifyInstance<any, any,
   app.get("/", async (_request, reply) => {
     reply.status(200).send({
       service: "platform-api",
-      docs: "Use GET /health for dashboard status, POST /auth/login (dev JWT) when Clerk is off.",
+      docs: isClerkEnabled
+        ? "Clerk auth: Bearer session JWT. GET /health, GET /auth/me. Webhooks: POST /webhooks/clerk"
+        : "Use GET /health for dashboard status, POST /auth/login (dev JWT) when Clerk is off.",
     });
   });
 
@@ -183,8 +193,8 @@ export function buildServer(eventBus: EventBusClient): FastifyInstance<any, any,
     );
   }
 
-  // Clerk webhook
-  app.post("/webhooks/clerk", clerkSyncHandler);
+  // Clerk webhook (raw body required for Svix signature verification)
+  app.post("/webhooks/clerk", { config: { rawBody: true } }, clerkSyncHandler);
 
   const sessionReadPreHandler = isProduction
     ? authHook(["admin", "editor", "viewer"])

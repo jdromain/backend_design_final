@@ -3,15 +3,45 @@ import { FastifyReply, FastifyRequest } from "fastify";
 
 import { createLogger } from "@rezovo/logging";
 import { env } from "../env";
+import { sendError } from "../lib/responses";
 
 import { AuthRole, AuthUser } from "./types";
 import { findUserByEmail } from "./store";
-import { isClerkEnabled, verifyClerkToken } from "./clerk";
+import { isClerkEnabled, verifyClerkToken, type VerifiedClerkSession } from "./clerk";
 import { AuthStoreClient } from "./storeClient";
+import { tryProvisionUserFromClerkSession } from "./clerkProvision";
 
 const logger = createLogger({ service: "platform-api", module: "auth" });
 const JWT_SECRET = env.JWT_SECRET;
 const authStore = new AuthStoreClient();
+
+async function assertSessionTenantConsistency(
+  session: VerifiedClerkSession,
+  user: AuthUser
+): Promise<"tenant_claim_mismatch" | "org_tenant_mismatch" | null> {
+  if (session.tenantIdClaim && session.tenantIdClaim !== user.tenantId) {
+    return "tenant_claim_mismatch";
+  }
+  if (session.orgId) {
+    const tid = await authStore.findTenantIdByClerkOrganizationId(session.orgId);
+    if (tid && tid !== user.tenantId) {
+      return "org_tenant_mismatch";
+    }
+  }
+  return null;
+}
+
+/**
+ * Resolves DB user for a verified Clerk session (lookup + optional bootstrap).
+ */
+async function resolveClerkUser(session: VerifiedClerkSession): Promise<AuthUser | undefined> {
+  let user =
+    (await authStore.findByClerkId(session.sub)) ?? (await authStore.findByEmail(session.email));
+  if (!user) {
+    user = (await tryProvisionUserFromClerkSession(session)) ?? undefined;
+  }
+  return user;
+}
 
 export function issueToken(user: AuthUser): string {
   return jwt.sign(
@@ -27,7 +57,7 @@ export function issueToken(user: AuthUser): string {
 }
 
 const LOGIN_FAIL_HINT =
-  "No active user with that email. Default seed is admin@example.com (see supabase/002_ui_tables.sql). " +
+  "No active user with that email. Default seed is admin@example.com (see database/002_ui_tables.sql). " +
   "If you use docker-compose Postgres, run `docker compose up -d postgres` on a fresh volume, or re-apply that SQL to your DATABASE_URL.";
 
 export async function loginHandler(
@@ -50,7 +80,7 @@ export async function loginHandler(
       return {
         ok: false,
         error:
-          "database not migrated — public.users is missing. Apply supabase/setup_complete.sql and supabase/002_ui_tables.sql (docker-compose mounts them on first Postgres init).",
+          "database not migrated — public.users is missing. Apply database/setup_complete.sql and database/002_ui_tables.sql.",
       };
     }
     return {
@@ -86,13 +116,34 @@ export function authHook(allowedRoles?: AuthRole[]) {
 
     try {
       if (isClerkEnabled) {
-        const claims = await verifyClerkToken(token);
-        const user =
-          (await authStore.findByClerkId(claims.sub)) ??
-          (await authStore.findByEmail(claims.email));
-
+        const session = await verifyClerkToken(token);
+        const user = await resolveClerkUser(session);
         if (!user) {
-          reply.status(403).send({ error: "user not found in system" });
+          sendError(
+            reply,
+            403,
+            "not_provisioned",
+            "No Rezovo user for this Clerk account. Use a Clerk org linked to a tenant (public_metadata.tenant_id), accept an invite, or wait for webhook sync."
+          );
+          return;
+        }
+        const bad = await assertSessionTenantConsistency(session, user);
+        if (bad === "tenant_claim_mismatch") {
+          sendError(
+            reply,
+            403,
+            "tenant_claim_mismatch",
+            "JWT tenant_id claim does not match your Rezovo user."
+          );
+          return;
+        }
+        if (bad === "org_tenant_mismatch") {
+          sendError(
+            reply,
+            403,
+            "org_tenant_mismatch",
+            "Active Clerk organization is not mapped to your Rezovo tenant."
+          );
           return;
         }
 
@@ -127,10 +178,8 @@ export function authHook(allowedRoles?: AuthRole[]) {
 }
 
 /**
- * Development only: if `Authorization: Bearer …` is valid, attach `request.auth`
- * (tenant_id, roles, etc.). If missing or invalid, continue — routes may still use
- * `?tenantId=`. This matches production behavior after JWT dev-login without
- * requiring query params on every `lib/api-client` GET.
+ * Development: attach `request.auth` when Bearer is valid. Clerk mode uses the same resolution as authHook
+ * (including bootstrap); tenant mismatch leaves auth unset.
  */
 export function optionalAuthHook() {
   return async (request: FastifyRequest, _reply: FastifyReply): Promise<void> => {
@@ -142,11 +191,11 @@ export function optionalAuthHook() {
 
     try {
       if (isClerkEnabled) {
-        const claims = await verifyClerkToken(token);
-        const user =
-          (await authStore.findByClerkId(claims.sub)) ??
-          (await authStore.findByEmail(claims.email));
+        const session = await verifyClerkToken(token);
+        const user = await resolveClerkUser(session);
         if (!user) return;
+        const bad = await assertSessionTenantConsistency(session, user);
+        if (bad) return;
         request.auth = {
           sub: user.userId,
           tenant_id: user.tenantId,
@@ -164,6 +213,47 @@ export function optionalAuthHook() {
       }
     } catch {
       /* invalid / expired token — leave auth unset */
+    }
+  };
+}
+
+/**
+ * Returns `authHook` when in production **or** when Clerk is enabled, `optionalAuthHook` otherwise.
+ * Use this instead of the inline `isProduction ? authHook() : optionalAuthHook()` ternary so that
+ * Clerk-mode dev routes enforce full auth just like production.
+ */
+export function resolvedAuthHook(roles?: AuthRole[]) {
+  if (isClerkEnabled || env.NODE_ENV === "production") {
+    return authHook(roles);
+  }
+  return optionalAuthHook();
+}
+
+/**
+ * Clerk mode only: verify Bearer and set `request.auth` in **all** NODE_ENV values.
+ * Use on routes that must work with Clerk in production but are not wrapped in `authHook`
+ * (e.g. legacy internal GETs). No-op when Clerk is disabled.
+ */
+export function attachClerkAuthIfBearerPresent() {
+  return async (request: FastifyRequest, _reply: FastifyReply): Promise<void> => {
+    if (!isClerkEnabled) return;
+    const header = request.headers.authorization;
+    if (!header?.startsWith("Bearer ")) return;
+    const token = header.slice("Bearer ".length);
+    try {
+      const session = await verifyClerkToken(token);
+      const user = await resolveClerkUser(session);
+      if (!user) return;
+      const bad = await assertSessionTenantConsistency(session, user);
+      if (bad) return;
+      request.auth = {
+        sub: user.userId,
+        tenant_id: user.tenantId,
+        email: user.email,
+        roles: user.roles,
+      };
+    } catch {
+      /* leave auth unset */
     }
   };
 }

@@ -1,0 +1,15 @@
+# Optional merge file: copy to `docker-compose.override.yml` (gitignored) to customize.
+#
+# Host-run Node (fast iteration) + Docker infra only:
+#   docker compose up -d postgres redis
+#   export DATABASE_URL=postgresql://rezovo:rezovo_local@localhost:5432/rezovo
+#   export REDIS_URL=redis://localhost:6379
+#   # Match platform-api / realtime-core / jobs: EVENT_BUS_IMPL=redis REDIS_ENABLED=true
+#   pnpm dev:api
+#   pnpm dev:realtime
+#   pnpm dev:jobs
+#   pnpm dev:web
+#
+# Full stack in containers: use the root `docker-compose.yml` only (no override).
+version: "3.9"
+services: {}

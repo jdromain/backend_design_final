@@ -51,6 +51,11 @@ export async function registerKbReembedWorker(bus: EventBusClient): Promise<() =
 
     logger.info("kb ingest requested", { tenantId, docId, namespace });
 
+    if (!process.env.OPENAI_API_KEY?.trim()) {
+      logger.warn("skipping DocIngestRequested — OPENAI_API_KEY not set (idle local worker)");
+      return;
+    }
+
     const document = await persistenceClient.loadDocument(tenantId, docId);
     if (!document) {
       logger.warn("document not found for ingest", { docId });

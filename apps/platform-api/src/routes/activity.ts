@@ -1,16 +1,16 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { query } from "../persistence/dbClient";
-import { sendData, sendError } from "../lib/responses";
-import { authHook, optionalAuthHook } from "../auth/jwt";
+import { sendData } from "../lib/responses";
+import { authHook, resolvedAuthHook } from "../auth/jwt";
+import { requireTenantForRequest } from "../auth/tenantScope";
 
-const isProduction = (process.env.NODE_ENV ?? "development") === "production";
 
 export function registerActivityRoutes(app: FastifyInstance) {
   app.get("/activity", {
-    preHandler: isProduction ? authHook(["admin", "editor", "viewer"]) : optionalAuthHook(),
+    preHandler: resolvedAuthHook(["admin", "editor", "viewer"]),
   }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const tenantId = request.auth?.tenant_id ?? (request.query as any).tenantId;
-    if (!tenantId) return sendError(reply, 400, "missing_tenant", "tenantId required");
+    const tenantId = requireTenantForRequest(request, reply, (request.query as any).tenantId);
+    if (!tenantId) return;
 
     const events = await query(
       `SELECT id, event_type AS type, payload, occurred_at AS timestamp

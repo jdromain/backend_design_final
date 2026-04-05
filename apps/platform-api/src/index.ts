@@ -1,7 +1,7 @@
 // env MUST be the first import — loads .env before any other module reads process.env
 import "./env";
 
-import { createInMemoryEventBus } from "@rezovo/event-bus";
+import { createInMemoryEventBus, createRedisEventBus } from "@rezovo/event-bus";
 import { createLogger } from "@rezovo/logging";
 import { env } from "./env";
 import { buildServer } from "./server";
@@ -76,7 +76,11 @@ async function printStartupDiagnostics(): Promise<void> {
 async function bootstrap(): Promise<void> {
   await printStartupDiagnostics();
 
-  const bus = createInMemoryEventBus();
+  const bus =
+    env.EVENT_BUS_IMPL === "redis"
+      ? createRedisEventBus(env.REDIS_URL)
+      : createInMemoryEventBus();
+  logger.info("event bus", { impl: env.EVENT_BUS_IMPL, authMode: env.AUTH_MODE_EFFECTIVE });
   const app = buildServer(bus);
   const port = env.PORT;
   const host = "0.0.0.0";

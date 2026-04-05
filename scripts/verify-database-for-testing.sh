@@ -43,9 +43,47 @@ if [[ "$count" != "1" ]]; then
   done
 fi
 if [[ "$count" != "1" ]]; then
-  echo "ERROR: expected seeded user admin@example.com (active); count='$count'. Apply supabase/setup_complete.sql then supabase/002_ui_tables.sql, or bash scripts/fresh-demo-postgres.sh for a fresh volume." >&2
+  echo "ERROR: expected seeded user admin@example.com (active); count='$count'. Apply database/setup_complete.sql then database/002_ui_tables.sql (see scripts/apply-database.sh), or bash scripts/fresh-demo-postgres.sh for a fresh volume." >&2
   exit 1
 fi
 echo "OK: seeded dev user admin@example.com is present (JWT /dev-login will work)."
+
+# ── Clerk tenant mapping check ────────────────────────────────────────────────
+echo ""
+echo "==> Checking Clerk tenant mapping (003_clerk_tenant_mapping.sql) ..."
+
+clerk_col_exists() {
+  local sql="SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='tenants' AND column_name='clerk_organization_id';"
+  if [[ "$use_docker" == true ]]; then
+    docker compose exec -T postgres psql -U rezovo -d rezovo -tAc "$sql" | tr -d '[:space:]'
+  else
+    psql "$PGURL" -tAc "$sql" | tr -d '[:space:]'
+  fi
+}
+
+clerk_org_id() {
+  local sql="SELECT COALESCE(clerk_organization_id,'') FROM public.tenants WHERE id='test-tenant';"
+  if [[ "$use_docker" == true ]]; then
+    docker compose exec -T postgres psql -U rezovo -d rezovo -tAc "$sql" | tr -d '[:space:]'
+  else
+    psql "$PGURL" -tAc "$sql" | tr -d '[:space:]'
+  fi
+}
+
+col_count=$(clerk_col_exists)
+if [[ "$col_count" != "1" ]]; then
+  echo "WARN: tenants.clerk_organization_id column missing — run: bash scripts/apply-database.sh" >&2
+  echo "      (or: docker compose exec -T postgres psql -U rezovo -d rezovo -f - < database/003_clerk_tenant_mapping.sql)" >&2
+else
+  echo "OK: tenants.clerk_organization_id column exists."
+  org_id=$(clerk_org_id)
+  if [[ -z "$org_id" ]]; then
+    echo "WARN: test-tenant.clerk_organization_id is not set — Clerk bootstrap org-to-tenant mapping will fail." >&2
+    echo "      To fix, run: bash scripts/link-clerk-org.sh <your-clerk-org-id>" >&2
+    echo "      (Get your Clerk Org ID from Clerk Dashboard → Organizations)" >&2
+  else
+    echo "OK: test-tenant mapped to Clerk org $org_id"
+  fi
+fi
 
 exit 0

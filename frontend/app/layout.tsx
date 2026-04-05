@@ -59,7 +59,15 @@ export default function RootLayout({
 
   if (isClerkConfigured()) {
     return (
-      <ClerkProvider publishableKey={clerkPublishableKey}>{shell}</ClerkProvider>
+      <ClerkProvider
+        publishableKey={clerkPublishableKey}
+        signInUrl="/sign-in"
+        signUpUrl="/sign-up"
+        afterSignInUrl="/"
+        afterSignUpUrl="/"
+      >
+        {shell}
+      </ClerkProvider>
     );
   }
 

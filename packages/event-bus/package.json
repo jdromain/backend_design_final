@@ -13,7 +13,8 @@
     "test": "echo \"tests not yet configured\""
   },
   "dependencies": {
-    "@rezovo/core-types": "workspace:*"
+    "@rezovo/core-types": "workspace:*",
+    "ioredis": "^5.10.1"
   }
 }
 

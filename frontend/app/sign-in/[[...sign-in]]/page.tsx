@@ -8,7 +8,7 @@ export default function SignInPage() {
   }
   return (
     <div className="flex min-h-screen items-center justify-center bg-background">
-      <SignIn />
+      <SignIn afterSignInUrl="/" signUpUrl="/sign-up" />
     </div>
   )
 }

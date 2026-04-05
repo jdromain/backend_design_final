@@ -100,7 +100,7 @@ function wireDbMocks() {
         rows: [
           {
             id: "user-contract-1",
-            tenant_id: "tenant-default",
+            tenant_id: "test-tenant",
             email: "contract-demo@example.com",
             roles: ["admin"],
             name: "Contract Demo",
@@ -189,7 +189,7 @@ describe("platform-api HTTP contract (inject)", () => {
   it("GET /calls?tenantId=… returns { data: [] } matching CallsListEnvelopeSchema", async () => {
     const res = await app.inject({
       method: "GET",
-      url: "/calls?tenantId=tenant-default",
+      url: "/calls?tenantId=test-tenant",
     });
     expect(res.statusCode).toBe(200);
     const body = res.json();
@@ -200,7 +200,7 @@ describe("platform-api HTTP contract (inject)", () => {
   it("GET /calls/live?tenantId=… returns { data: [] } when no live rows", async () => {
     const res = await app.inject({
       method: "GET",
-      url: "/calls/live?tenantId=tenant-default",
+      url: "/calls/live?tenantId=tenant-without-live-calls",
     });
     expect(res.statusCode).toBe(200);
     const body = res.json();
@@ -211,7 +211,7 @@ describe("platform-api HTTP contract (inject)", () => {
   it("GET /analytics/summary?tenantId=… returns numeric summary envelope", async () => {
     const res = await app.inject({
       method: "GET",
-      url: "/analytics/summary?tenantId=tenant-default",
+      url: "/analytics/summary?tenantId=test-tenant",
     });
     expect(res.statusCode).toBe(200);
     const body = res.json();
@@ -230,7 +230,7 @@ describe("platform-api HTTP contract (inject)", () => {
     expect(res.statusCode).toBe(200);
     const body = res.json();
     expect(Value.Check(LoginOkSchema, body)).toBe(true);
-    expect(body.user.tenantId).toBe("tenant-default");
+    expect(body.user.tenantId).toBe("test-tenant");
   });
 
   it("POST /billing-quota/can-start-call returns BillingQuotaOkSchema", async () => {
