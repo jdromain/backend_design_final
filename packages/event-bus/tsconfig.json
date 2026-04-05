@@ -1,12 +1,13 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
+    "baseUrl": "../..",
     "outDir": "dist",
-    "rootDir": "src"
+    "rootDir": "src",
+    "composite": true,
+    "declaration": true
   },
   "include": ["src"],
-  "references": [
-    { "path": "../core-types" }
-  ]
+  "references": [{ "path": "../core-types" }]
 }
 

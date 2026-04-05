@@ -7,6 +7,5 @@ export function startBillingReconciliation(intervalMs = 10 * 60 * 1000): void {
   setInterval(() => {
     logger.info("billing reconciliation tick");
     // Placeholder: compare internal aggregates vs provider invoices.
-  }, intervalMs).unref();
+  }, intervalMs);
 }
-

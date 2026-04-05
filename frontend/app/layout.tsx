@@ -4,7 +4,7 @@ import { Analytics } from "@vercel/analytics/next";
 import "./globals.css";
 import { ClerkProvider } from "@clerk/nextjs";
 import { Providers } from "@/components/providers";
-import { isClerkFeatureOn } from "@/lib/clerk-runtime";
+import { getClerkPublishableKey, isClerkConfigured } from "@/lib/clerk-runtime";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -39,7 +39,7 @@ export const metadata: Metadata = {
   },
 };
 
-const clerkPublishableKey = process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY?.trim();
+const clerkPublishableKey = getClerkPublishableKey();
 
 export default function RootLayout({
   children,
@@ -57,7 +57,7 @@ export default function RootLayout({
     </html>
   );
 
-  if (clerkPublishableKey && isClerkFeatureOn()) {
+  if (isClerkConfigured()) {
     return (
       <ClerkProvider publishableKey={clerkPublishableKey}>{shell}</ClerkProvider>
     );

@@ -1,9 +1,9 @@
 import { SignIn } from '@clerk/nextjs'
 import { redirect } from 'next/navigation'
-import { isClerkFeatureOn } from '@/lib/clerk-runtime'
+import { isClerkConfigured } from '@/lib/clerk-runtime'
 
 export default function SignInPage() {
-  if (!isClerkFeatureOn()) {
+  if (!isClerkConfigured()) {
     redirect('/dev-login')
   }
   return (
@@ -12,7 +12,6 @@ export default function SignInPage() {
     </div>
   )
 }
-
 
 
 

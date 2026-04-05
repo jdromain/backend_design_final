@@ -7,9 +7,7 @@ import { Bell } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { api } from "@/lib/api";
-import { isClerkFeatureOn } from "@/lib/clerk-runtime";
-
-const clerkPublishableKey = process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY?.trim();
+import { isClerkConfigured } from "@/lib/clerk-runtime";
 
 export function Header() {
   const { data: healthData, error } = useQuery({
@@ -47,7 +45,7 @@ export function Header() {
           <Bell className="h-5 w-5" />
         </Button>
 
-        {clerkPublishableKey && isClerkFeatureOn() ? (
+        {isClerkConfigured() ? (
           <UserButton afterSignOutUrl="/sign-in" />
         ) : (
           <Button variant="outline" size="sm" asChild>
@@ -58,4 +56,3 @@ export function Header() {
     </div>
   );
 }
-

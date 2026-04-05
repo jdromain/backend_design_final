@@ -1,44 +1,62 @@
-# Multi-stage build for jobs worker
+# Build context: repo root (docker-compose.yml sets context: .)
+# Build: docker compose build jobs
+
+# ─── Stage 1: install + build ────────────────────────────────────────────────
 FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-# Copy package files
-COPY package*.json ./
-COPY tsconfig.json ./
+RUN corepack enable && corepack prepare pnpm@10.33.0 --activate
 
-# Copy packages (shared libraries)
-COPY packages/ ./packages/
+COPY pnpm-lock.yaml pnpm-workspace.yaml package.json tsconfig.base.json .npmrc ./
 
-# Copy jobs source
-COPY apps/jobs/ ./apps/jobs/
+COPY packages/core-types/package.json   packages/core-types/
+COPY packages/event-bus/package.json    packages/event-bus/
+COPY packages/logging/package.json      packages/logging/
+COPY packages/utils/package.json        packages/utils/
+COPY packages/vector-store/package.json packages/vector-store/
+COPY apps/jobs/package.json             apps/jobs/
 
-# Install dependencies
-RUN npm ci --workspace=apps/jobs --workspace=packages
+RUN pnpm install --frozen-lockfile
 
-# Build the application
-RUN npm run build --workspace=packages --if-present
-RUN npm run build --workspace=apps/jobs
+COPY packages/ packages/
+COPY apps/jobs/ apps/jobs/
 
-# Production stage
+RUN mkdir -p packages/event-bus/node_modules/@rezovo && \
+    ln -sfn ../../../core-types packages/event-bus/node_modules/@rezovo/core-types && \
+    mkdir -p apps/jobs/node_modules/@rezovo && \
+    ln -sfn ../../../../packages/core-types apps/jobs/node_modules/@rezovo/core-types
+
+RUN pnpm --filter "@rezovo/jobs..." run build
+
+# ─── Stage 2: production image ───────────────────────────────────────────────
 FROM node:20-alpine
 
 WORKDIR /app
 
-# Copy package files
-COPY package*.json ./
+RUN corepack enable && corepack prepare pnpm@10.33.0 --activate
 
-# Copy built artifacts from builder
-COPY --from=builder /app/packages ./packages
-COPY --from=builder /app/apps/jobs/dist ./apps/jobs/dist
-COPY --from=builder /app/node_modules ./node_modules
+COPY pnpm-lock.yaml pnpm-workspace.yaml package.json .npmrc ./
 
-# Set environment
+COPY packages/core-types/package.json   packages/core-types/
+COPY packages/event-bus/package.json    packages/event-bus/
+COPY packages/logging/package.json      packages/logging/
+COPY packages/utils/package.json        packages/utils/
+COPY packages/vector-store/package.json packages/vector-store/
+COPY apps/jobs/package.json             apps/jobs/
+
+COPY --from=builder /app/packages/core-types/dist   packages/core-types/dist
+COPY --from=builder /app/packages/event-bus/dist    packages/event-bus/dist
+COPY --from=builder /app/packages/logging/dist      packages/logging/dist
+COPY --from=builder /app/packages/utils/dist        packages/utils/dist
+COPY --from=builder /app/packages/vector-store/dist packages/vector-store/dist
+COPY --from=builder /app/apps/jobs/dist             apps/jobs/dist
+
+RUN pnpm install --frozen-lockfile --prod
+
 ENV NODE_ENV=production
 
-# Run the application
+# jobs is a background worker — no HTTP server, no health check, no exposed ports.
+# Monitor with: docker compose logs jobs
+
 CMD ["node", "apps/jobs/dist/index.js"]
-
-
-
-

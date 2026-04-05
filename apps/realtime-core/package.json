@@ -18,7 +18,7 @@
     "@rezovo/utils": "workspace:*",
     "@rezovo/voice-elevenlabs": "workspace:*",
     "dotenv": "^16.4.5",
-    "openai": "^4.75.0",
+    "openai": "^5.20.2",
     "ws": "^8.19.0",
     "zod": "^3.24.1"
   },

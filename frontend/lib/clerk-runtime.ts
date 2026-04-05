@@ -7,3 +7,11 @@ export function isClerkFeatureOn(): boolean {
   const v = process.env.CLERK_ENABLED?.trim().toLowerCase();
   return v !== "false";
 }
+
+export function getClerkPublishableKey(): string {
+  return process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY?.trim() ?? "";
+}
+
+export function isClerkConfigured(): boolean {
+  return isClerkFeatureOn() && Boolean(getClerkPublishableKey());
+}

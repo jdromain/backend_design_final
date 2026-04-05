@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "build": "tsc -b",
+    "start": "node dist/index.js",
     "lint": "echo \"lint not yet configured\"",
     "test": "echo \"tests not yet configured\""
   },

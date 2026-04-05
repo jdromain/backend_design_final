@@ -1,6 +1,32 @@
 version: "3.9"
 
+# ─── Rezovo full-stack Docker Compose ─────────────────────────────────────────
+#
+# Prerequisites:
+#   cp .env.docker.example .env.docker
+#   # Fill in JWT_SECRET and OPENAI_API_KEY at minimum
+#
+# Start everything:
+#   docker compose up -d          # uses cached images
+#   docker compose up -d --build  # rebuilds all images first
+#
+# Convenience aliases (from repo root):
+#   pnpm stack:up    pnpm stack:down    pnpm stack:logs
+#
+# Service DNS (internal, container-to-container):
+#   postgres      → postgres:5432
+#   redis         → redis:6379
+#   platform-api  → platform-api:3001
+#   realtime-core → realtime-core:3002
+#   rtp-bridge    → rtp-bridge:8080 (Twilio), rtp-bridge:8081 (internal WS)
+#
+# Internal service URLs are set directly in the environment blocks below — not
+# via .env.docker — so they cannot be overridden by a stale local file.
+# ─────────────────────────────────────────────────────────────────────────────
+
 services:
+
+  # ── Postgres ──────────────────────────────────────────────────────────────
   postgres:
     image: pgvector/pgvector:pg15
     container_name: rezovo-postgres
@@ -12,15 +38,17 @@ services:
       POSTGRES_PASSWORD: rezovo_local
     volumes:
       - pgdata:/var/lib/postgresql/data
-      # Auto-run schema on first start
-      - ./supabase/setup_complete.sql:/docker-entrypoint-initdb.d/01_schema.sql
-      - ./supabase/002_ui_tables.sql:/docker-entrypoint-initdb.d/02_ui_tables.sql
+      - ./database/setup_complete.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+      - ./database/002_ui_tables.sql:/docker-entrypoint-initdb.d/02_ui_tables.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U rezovo"]
       interval: 5s
       timeout: 3s
+      start_period: 15s
       retries: 5
+    restart: unless-stopped
 
+  # ── Redis ─────────────────────────────────────────────────────────────────
   redis:
     image: redis:7-alpine
     container_name: rezovo-redis
@@ -30,7 +58,158 @@ services:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 3s
+      start_period: 10s
       retries: 5
+    restart: unless-stopped
+
+  # ── platform-api ──────────────────────────────────────────────────────────
+  platform-api:
+    build:
+      context: .
+      dockerfile: apps/platform-api/Dockerfile
+    container_name: rezovo-platform-api
+    ports:
+      - "3001:3001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: "3001"
+      # Internal service URLs — hardcoded here, not sourced from .env.docker
+      DATABASE_URL: postgresql://rezovo:rezovo_local@postgres:5432/rezovo
+      REDIS_URL: redis://redis:6379
+      REDIS_ENABLED: "true"
+      REALTIME_CORE_URL: http://realtime-core:3002
+      CORS_ORIGINS: http://localhost:3000
+      DB_SSL: "false"
+      DB_POOL_MAX: "5"
+      KAFKA_ENABLED: "false"
+    env_file:
+      - .env.docker
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >
+          node -e "require('http').get('http://localhost:3001/health',
+          (r) => process.exit(r.statusCode === 200 ? 0 : 1))"
+      interval: 15s
+      timeout: 5s
+      start_period: 60s
+      retries: 5
+    restart: unless-stopped
+
+  # ── jobs worker ───────────────────────────────────────────────────────────
+  jobs:
+    build:
+      context: .
+      dockerfile: apps/jobs/Dockerfile
+    container_name: rezovo-jobs
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      # Internal service URLs
+      DATABASE_URL: postgresql://rezovo:rezovo_local@postgres:5432/rezovo
+      KAFKA_ENABLED: "false"
+    env_file:
+      - .env.docker
+    # No HTTP server — monitor with: docker compose logs -f jobs
+    restart: unless-stopped
+
+  # ── rtp-bridge ────────────────────────────────────────────────────────────
+  rtp-bridge:
+    build:
+      context: apps/rtp-bridge
+      dockerfile: Dockerfile
+    container_name: rezovo-rtp-bridge
+    ports:
+      - "8080:8080"  # Twilio Media Streams (public-facing)
+      - "8081:8081"  # Internal WebSocket for realtime-core
+      # 9090 (metrics) is intentionally not published to the host
+    environment:
+      HTTP_PORT: "8080"
+      INTERNAL_PORT: "8081"
+      METRICS_PORT: "9090"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:8080/healthz || exit 1"]
+      interval: 10s
+      timeout: 3s
+      start_period: 20s
+      retries: 3
+    restart: unless-stopped
+
+  # ── realtime-core ─────────────────────────────────────────────────────────
+  realtime-core:
+    build:
+      context: .
+      dockerfile: apps/realtime-core/Dockerfile.node
+    container_name: rezovo-realtime-core
+    ports:
+      - "3002:3002"  # Webhook + health endpoint
+      # 9100 (metrics) is intentionally not published to the host
+    depends_on:
+      platform-api:
+        condition: service_healthy
+      rtp-bridge:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      # Internal service URLs
+      PLATFORM_API_URL: http://platform-api:3001
+      RTP_BRIDGE_URL: ws://rtp-bridge:8081
+      REDIS_ENABLED: "false"
+      KAFKA_ENABLED: "false"
+      LLM_PROVIDER: openai
+      LLM_MODEL: gpt-4o-mini
+      LLM_MAX_TOKENS: "500"
+      STT_MODEL: nova-2-phonecall
+      CONCURRENCY_LIMIT: "20"
+      METRICS_PORT: "9100"
+      LOG_LEVEL: info
+    env_file:
+      - .env.docker
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >
+          node -e "require('http').get('http://localhost:3002/health',
+          (r) => process.exit(r.statusCode === 200 ? 0 : 1))"
+      interval: 15s
+      timeout: 5s
+      start_period: 90s
+      retries: 5
+    restart: unless-stopped
+
+  # ── frontend ──────────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        # These are baked into the Next.js JS bundle at image build time.
+        # NEXT_PUBLIC_API_URL must be reachable from the user's browser —
+        # use localhost (not the container DNS name) for local development.
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3001}
+        NEXT_PUBLIC_DEFAULT_TENANT_ID: ${NEXT_PUBLIC_DEFAULT_TENANT_ID:-tenant-default}
+        NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY:-}
+        NEXT_PUBLIC_ENABLE_DEV_LOGIN: ${NEXT_PUBLIC_ENABLE_DEV_LOGIN:-true}
+        CLERK_ENABLED: ${CLERK_ENABLED:-false}
+    container_name: rezovo-frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      platform-api:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      HOSTNAME: "0.0.0.0"
+    restart: unless-stopped
 
 volumes:
   pgdata:
+    name: rezovo_pgdata
