@@ -109,28 +109,47 @@ async function handleUserUpsert(data: Record<string, unknown>): Promise<void> {
   const last = (data.last_name as string) ?? "";
   const name = [first, last].filter(Boolean).join(" ") || undefined;
 
+  // User events do not carry authoritative org membership.
+  // Only update an already-provisioned user row; membership events create tenant assignments.
+  const existing = (await authStore.findByClerkId(id)) ?? (await authStore.findByEmail(email));
+  if (!existing) {
+    logger.debug("clerk user event skipped pending organization membership sync", { clerkId: id, email });
+    return;
+  }
+
   await authStore.upsertUser({
     id: `clerk-${id}`,
-    tenantId: env.CLERK_DEFAULT_TENANT_ID,
+    tenantId: existing.tenantId,
     email,
     clerkId: id,
     name,
+    roles: existing.roles,
   });
 
-  logger.info("clerk user synced (user.*)", { clerkId: id, email, type: "user" });
+  logger.info("clerk user profile synced on existing tenant assignment", {
+    clerkId: id,
+    email,
+    tenantId: existing.tenantId,
+  });
 }
 
 async function handleOrganizationUpsert(data: Record<string, unknown>): Promise<void> {
   const orgId = data.id as string | undefined;
-  const meta = (data.public_metadata ?? {}) as { tenant_id?: string };
-  const tenantId = typeof meta.tenant_id === "string" ? meta.tenant_id.trim() : "";
-  if (!orgId || !tenantId) {
-    logger.debug("organization event skipped — set public_metadata.tenant_id on the Clerk org", { orgId });
+  if (!orgId) {
     return;
   }
 
-  await authStore.setTenantClerkOrganizationId(tenantId, orgId);
-  logger.info("linked Clerk org to tenant", { orgId, tenantId });
+  await authStore.upsertTenantFromClerkOrg({
+    orgId,
+    name: (data.name as string | undefined) ?? orgId,
+    slug: data.slug as string | undefined,
+    imageUrl: data.image_url as string | undefined,
+    membersCount: typeof data.members_count === "number" ? data.members_count : undefined,
+    publicMetadata: (data.public_metadata as Record<string, unknown> | undefined) ?? {},
+    privateMetadata: (data.private_metadata as Record<string, unknown> | undefined) ?? {},
+  });
+
+  logger.info("upserted tenant from Clerk organization", { orgId });
 }
 
 async function handleOrganizationMembership(data: Record<string, unknown>): Promise<void> {
@@ -143,7 +162,7 @@ async function handleOrganizationMembership(data: Record<string, unknown>): Prom
     return;
   }
 
-  const tenantId = await authStore.findTenantIdByClerkOrganizationId(orgId);
+  const tenantId = await authStore.findActiveTenantId(orgId);
   if (!tenantId) {
     logger.warn("organizationMembership: org not linked to tenant", { orgId, clerkUserId });
     return;
@@ -165,10 +184,10 @@ async function handleOrganizationMembership(data: Record<string, unknown>): Prom
 
   await authStore.upsertUser({
     id: `clerk-${clerkUserId}`,
-    tenantId,
+    tenantId: orgId,
     email,
     clerkId: clerkUserId,
   });
 
-  logger.info("clerk user tenant set from membership", { clerkUserId, tenantId, orgId });
+  logger.info("clerk user tenant set from membership", { clerkUserId, tenantId: orgId, orgId });
 }

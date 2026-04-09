@@ -5,7 +5,7 @@ const BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL ??
   "http://localhost:3001";
 export const DEFAULT_TENANT_ID =
-  process.env.NEXT_PUBLIC_DEFAULT_TENANT_ID ?? "test-tenant";
+  process.env.NEXT_PUBLIC_DEFAULT_TENANT_ID ?? "org_localdemo";
 
 /** Shared browser auth token storage key used by API clients. */
 const TOKEN_KEY = "auth_token";

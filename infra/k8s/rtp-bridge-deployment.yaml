@@ -26,7 +26,7 @@ spec:
         env:
         - name: HTTP_PORT
           value: "8080"
-        - name: WS_PORT
+        - name: INTERNAL_PORT
           value: "8081"
         - name: METRICS_PORT
           value: "9090"
@@ -96,7 +96,6 @@ metadata:
 type: Opaque
 stringData:
   auth_token: "change-me-in-production"
-
 
 
 

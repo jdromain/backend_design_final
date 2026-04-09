@@ -31,7 +31,7 @@ export async function tryProvisionUserFromClerkSession(
 
   let tenantId: string | undefined;
   if (session.orgId) {
-    tenantId = await store.findTenantIdByClerkOrganizationId(session.orgId);
+    tenantId = await store.findActiveTenantId(session.orgId);
   }
 
   if (!tenantId) {
@@ -40,7 +40,7 @@ export async function tryProvisionUserFromClerkSession(
       for (const m of list.data ?? []) {
         const oid = m.organization?.id;
         if (!oid) continue;
-        const tid = await store.findTenantIdByClerkOrganizationId(oid);
+        const tid = await store.findActiveTenantId(oid);
         if (tid) {
           tenantId = tid;
           break;

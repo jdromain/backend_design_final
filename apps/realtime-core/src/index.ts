@@ -14,7 +14,6 @@ import { EventPublisher } from "./events/eventPublisher";
 import { BillingQuotaClient } from "./billingClient";
 import { RtpBridgeClient } from "./media/rtpBridgeClient";
 import { CallController } from "./telephony/callController";
-import { PbxBridge } from "./telephony/pbxBridge";
 import { startWebhookServer, WEBHOOK_LISTEN_PORT } from "./webhookServer";
 
 const logger = createLogger({ service: "realtime-core", module: "bootstrap" });
@@ -138,10 +137,6 @@ async function bootstrap(): Promise<void> {
     elevenApiKey: env.ELEVEN_API_KEY || undefined,
     elevenVoiceId: env.ELEVEN_VOICE_ID || undefined,
   });
-
-  const pbxBridge = new PbxBridge();
-  pbxBridge.registerHandler(async (call, ctx) => callController.handleInboundCall(call, ctx));
-  await pbxBridge.start();
 
   await startWebhookServer(callController);
 

@@ -23,19 +23,26 @@ function isInternalServiceToken(token: string | null): boolean {
   return Boolean(env.INTERNAL_SERVICE_TOKEN) && token === env.INTERNAL_SERVICE_TOKEN;
 }
 
-async function assertSessionTenantConsistency(
+function assertSessionTenantConsistency(
   session: VerifiedClerkSession,
   user: AuthUser,
-): Promise<"tenant_claim_mismatch" | "org_tenant_mismatch" | null> {
+): "missing_org" | "tenant_claim_mismatch" | "org_tenant_mismatch" | null {
+  if (!session.orgId) {
+    return "missing_org";
+  }
+
+  if (session.tenantIdClaim && session.tenantIdClaim !== session.orgId) {
+    return "tenant_claim_mismatch";
+  }
+
+  if (session.orgId !== user.tenantId) {
+    return "org_tenant_mismatch";
+  }
+
   if (session.tenantIdClaim && session.tenantIdClaim !== user.tenantId) {
     return "tenant_claim_mismatch";
   }
-  if (session.orgId) {
-    const mappedTenant = await authStore.findTenantIdByClerkOrganizationId(session.orgId);
-    if (mappedTenant && mappedTenant !== user.tenantId) {
-      return "org_tenant_mismatch";
-    }
-  }
+
   return null;
 }
 
@@ -70,7 +77,16 @@ export function authHook(allowedRoles?: AuthRole[]) {
         return;
       }
 
-      const mismatch = await assertSessionTenantConsistency(session, user);
+      const mismatch = assertSessionTenantConsistency(session, user);
+      if (mismatch === "missing_org") {
+        sendError(
+          reply,
+          403,
+          "missing_org",
+          "Active Clerk organization is required. Switch to an organization linked to your Rezovo tenant.",
+        );
+        return;
+      }
       if (mismatch === "tenant_claim_mismatch") {
         sendError(
           reply,

@@ -17,10 +17,12 @@ vi.hoisted(() => {
 vi.mock("./auth/clerk", () => ({
   isClerkEnabled: true,
   verifyClerkToken: vi.fn(async (token: string) => {
-    const tenantId = token.startsWith("tenant:") ? token.slice("tenant:".length) : "test-tenant";
+    const tenantId = token.startsWith("tenant:") ? token.slice("tenant:".length) : "org_testtenant";
     return {
       sub: `clerk-${tenantId}`,
       email: `contract+${tenantId}@example.com`,
+      orgId: tenantId,
+      tenantIdClaim: tenantId,
     };
   }),
   getClerkBackendClient: vi.fn(),
@@ -63,9 +65,11 @@ import {
   HealthEnvelopeSchema,
 } from "./contracts/httpSchemas";
 
+const TEST_TENANT_ID = "org_testtenant";
+
 const testTenantCallRow = {
   call_id: "call-list-contract-1",
-  tenant_id: "test-tenant",
+  tenant_id: TEST_TENANT_ID,
   phone_number: "+18005550199",
   caller_number: "+15551234567",
   twilio_call_sid: "CAcontract",
@@ -120,9 +124,9 @@ function wireDbMocks() {
       return { rows: [] };
     }
     if (s.includes("from users") && s.includes("email")) {
-      const rawEmail = typeof p0 === "string" ? p0 : "contract+test-tenant@example.com";
+      const rawEmail = typeof p0 === "string" ? p0 : `contract+${TEST_TENANT_ID}@example.com`;
       const tenantMatch = /contract\+(.+?)@/.exec(rawEmail);
-      const tenantId = tenantMatch?.[1] ?? "test-tenant";
+      const tenantId = tenantMatch?.[1] ?? TEST_TENANT_ID;
       return {
         rows: [
           {
@@ -150,7 +154,7 @@ function wireDbMocks() {
       return { rows: [] };
     }
     if (s.includes("in ('initiated'") && s.includes("from calls")) {
-      if (p0 === "test-tenant") {
+      if (p0 === TEST_TENANT_ID) {
         return { rows: [testTenantLiveRow] };
       }
       return { rows: [] };
@@ -174,7 +178,7 @@ function wireDbMocks() {
       return { rows: [{ tool_invocations: 5 }] };
     }
     if (s.includes("from calls") && s.includes("limit 100")) {
-      if (p0 === "test-tenant") {
+      if (p0 === TEST_TENANT_ID) {
         return { rows: [testTenantCallRow, testTenantFailedStatusOnlyRow] };
       }
       return { rows: [] };
@@ -214,7 +218,7 @@ describe("platform-api HTTP contract (inject)", () => {
   it("GET /calls?tenantId=… returns { data: [] } matching CallsListEnvelopeSchema", async () => {
     const res = await app.inject({
       method: "GET",
-      url: "/calls?tenantId=test-tenant",
+      url: `/calls?tenantId=${TEST_TENANT_ID}`,
       headers: { authorization: `Bearer ${bearerForTenant()}` },
     });
     expect(res.statusCode).toBe(200);
@@ -226,12 +230,12 @@ describe("platform-api HTTP contract (inject)", () => {
   it("GET /config/snapshot accepts internal service bearer token", async () => {
     const res = await app.inject({
       method: "GET",
-      url: "/config/snapshot?tenantId=test-tenant&lob=default",
+      url: `/config/snapshot?tenantId=${TEST_TENANT_ID}&lob=default`,
       headers: { authorization: "Bearer contract-internal-service-token" },
     });
     expect(res.statusCode).toBe(200);
     const body = res.json();
-    expect(body.tenantId).toBe("test-tenant");
+    expect(body.tenantId).toBe(TEST_TENANT_ID);
   });
 
   it("GET /calls/live?tenantId=… returns { data: [] } when no live rows", async () => {
@@ -249,7 +253,7 @@ describe("platform-api HTTP contract (inject)", () => {
   it("GET /analytics/summary?tenantId=… returns numeric summary envelope", async () => {
     const res = await app.inject({
       method: "GET",
-      url: "/analytics/summary?tenantId=test-tenant",
+      url: `/analytics/summary?tenantId=${TEST_TENANT_ID}`,
       headers: { authorization: `Bearer ${bearerForTenant()}` },
     });
     expect(res.statusCode).toBe(200);
@@ -291,7 +295,7 @@ describe("platform-api HTTP contract (inject)", () => {
     expect(body.allowed).toBe(true);
   });
 
-  function bearerForTenant(tenantId = "test-tenant"): string {
+  function bearerForTenant(tenantId = TEST_TENANT_ID): string {
     return `tenant:${tenantId}`;
   }
 
@@ -303,8 +307,8 @@ describe("platform-api HTTP contract (inject)", () => {
     });
     expect(res.statusCode).toBe(200);
     const body = res.json();
-    expect(body.data.tenantId).toBe("test-tenant");
-    expect(body.data.email).toBe("contract+test-tenant@example.com");
+    expect(body.data.tenantId).toBe(TEST_TENANT_ID);
+    expect(body.data.email).toBe(`contract+${TEST_TENANT_ID}@example.com`);
   });
 
   it("GET /calls/live with Bearer JWT returns live rows for that tenant", async () => {

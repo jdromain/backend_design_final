@@ -7,8 +7,8 @@
  *
  * Strongly recommended for tenant consistency:
  * - `org_id` — active organization id (`org_...`) when using Organizations
- * - `tenant_id` — optional custom claim, e.g. {{org.public_metadata.tenant_id}} or static test value;
- *   backend compares to `users.tenant_id` after DB resolution (must match if present).
+ * - `tenant_id` — optional custom claim; when present it should equal `org_id`.
+ *   backend compares claim/org/user tenant and rejects mismatches.
  *
  * @see docs/AUTH_CLERK.md
  */

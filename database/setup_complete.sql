@@ -340,18 +340,19 @@ CREATE INDEX IF NOT EXISTS idx_usage_recorded ON public.usage_records(recorded_a
 -- 14. SEED DATA (for local dev / testing)
 -- ═══════════════════════════════════════════════════════════════
 
--- Test tenant
-INSERT INTO public.tenants (id, name, business_id, business_name, email, timezone, status)
-VALUES ('test-tenant', 'Test Business', 'test-business', 'Test Business', 'test@example.com', 'America/New_York', 'active')
+-- Test tenant (Clerk org-id canonical)
+INSERT INTO public.tenants (id, name, business_id, business_name, email, timezone, clerk_organization_id, status)
+VALUES ('org_localdemo', 'Test Business', 'test-business', 'Test Business', 'test@example.com', 'America/New_York', 'org_localdemo', 'active')
 ON CONFLICT (id) DO UPDATE SET
   business_name = 'Test Business',
-  timezone      = 'America/New_York';
+  timezone      = 'America/New_York',
+  clerk_organization_id = EXCLUDED.clerk_organization_id;
 
 -- Test phone number (CHANGE to your actual Twilio values)
 INSERT INTO public.phone_numbers (
   tenant_id, phone_number, twilio_sid, route_type, status
 ) VALUES (
-  'test-tenant',
+  'org_localdemo',
   '+18737101393',
   'PNbdbce2ba55feb4f6f716dbe563f90fc8',
   'ai',

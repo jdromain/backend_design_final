@@ -62,7 +62,6 @@ export const env = {
   CLERK_JWT_AUDIENCE: optional("CLERK_JWT_AUDIENCE", ""),
   CLERK_JWT_ISSUER: optional("CLERK_JWT_ISSUER", ""),
   CLERK_JWT_PUBLIC_KEY: optional("CLERK_JWT_PUBLIC_KEY", ""),
-  CLERK_DEFAULT_TENANT_ID: optional("CLERK_DEFAULT_TENANT_ID", "test-tenant"),
   /** Svix signing secret from Clerk Dashboard → Webhooks → Endpoint → Signing Secret */
   CLERK_WEBHOOK_SECRET: optional("CLERK_WEBHOOK_SECRET", ""),
   /**

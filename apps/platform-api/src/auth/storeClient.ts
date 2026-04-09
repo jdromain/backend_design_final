@@ -5,6 +5,57 @@ import { AuthUser } from "./types";
 const logger = createLogger({ service: "platform-api", module: "authStore" });
 
 export class AuthStoreClient {
+  async findActiveTenantId(tenantId: string): Promise<string | undefined> {
+    const result = await query(
+      "SELECT id FROM tenants WHERE id = $1 AND status = 'active' LIMIT 1",
+      [tenantId]
+    );
+    return result.rows[0]?.id as string | undefined;
+  }
+
+  async upsertTenantFromClerkOrg(org: {
+    orgId: string;
+    name?: string;
+    slug?: string;
+    imageUrl?: string;
+    membersCount?: number;
+    publicMetadata?: Record<string, unknown>;
+    privateMetadata?: Record<string, unknown>;
+  }): Promise<void> {
+    const displayName = org.name?.trim() || org.orgId;
+    const metadata = {
+      clerk: {
+        slug: org.slug ?? null,
+        image_url: org.imageUrl ?? null,
+        members_count: org.membersCount ?? null,
+      },
+      public_metadata: org.publicMetadata ?? {},
+      private_metadata: org.privateMetadata ?? {},
+    };
+
+    await query(
+      `INSERT INTO tenants (
+         id, name, business_id, business_name, clerk_organization_id, metadata, status, created_at, updated_at
+       )
+       VALUES ($1, $2, $3, $4, $1, $5::jsonb, 'active', now(), now())
+       ON CONFLICT (id) DO UPDATE SET
+         name = EXCLUDED.name,
+         business_id = COALESCE(NULLIF(tenants.business_id, ''), EXCLUDED.business_id),
+         business_name = COALESCE(NULLIF(tenants.business_name, ''), EXCLUDED.business_name),
+         clerk_organization_id = EXCLUDED.clerk_organization_id,
+         metadata = COALESCE(tenants.metadata, '{}'::jsonb) || EXCLUDED.metadata,
+         status = 'active',
+         updated_at = now()`,
+      [
+        org.orgId,
+        displayName,
+        `business-${org.orgId}`,
+        displayName,
+        JSON.stringify(metadata),
+      ]
+    );
+  }
+
   async findByEmail(email: string): Promise<AuthUser | undefined> {
     const result = await query(
       "SELECT id, tenant_id, email, roles, name FROM users WHERE LOWER(email) = LOWER($1) AND status = 'active'",
@@ -51,24 +102,6 @@ export class AuthStoreClient {
       logger.warn("listByTenant failed", { error: (err as Error).message });
       return [];
     }
-  }
-
-  async findTenantIdByClerkOrganizationId(clerkOrganizationId: string): Promise<string | undefined> {
-    const result = await query(
-      "SELECT id FROM tenants WHERE clerk_organization_id = $1 AND status = 'active'",
-      [clerkOrganizationId]
-    );
-    return result.rows[0]?.id as string | undefined;
-  }
-
-  /**
-   * Links a Clerk org to an existing tenant row (via org public_metadata.tenant_id or manual flows).
-   */
-  async setTenantClerkOrganizationId(tenantId: string, clerkOrganizationId: string): Promise<void> {
-    await query(
-      `UPDATE tenants SET clerk_organization_id = $2, updated_at = now() WHERE id = $1`,
-      [tenantId, clerkOrganizationId]
-    );
   }
 
   async upsertUser(user: {

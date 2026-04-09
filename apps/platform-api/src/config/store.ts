@@ -4,6 +4,7 @@ import { createLogger } from "@rezovo/logging";
 import { createDefaultTenantConfig } from "./data";
 import { PersistenceStore } from "../persistence/store";
 import { callStore } from "../persistence/callStore";
+import { query } from "../persistence/dbClient";
 
 const logger = createLogger({ service: "platform-api", module: "configStore" });
 
@@ -20,6 +21,25 @@ type StoredConfig = {
 
 function key(tenantId: string, lob?: string): TenantLobKey {
   return `${tenantId}::${lob ?? "default"}`;
+}
+
+async function resolveTenantBusinessId(tenantId: string): Promise<string> {
+  try {
+    const result = await query<{ business_id: string | null }>(
+      "SELECT business_id FROM tenants WHERE id = $1 LIMIT 1",
+      [tenantId]
+    );
+    const value = result.rows[0]?.business_id;
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value.trim();
+    }
+  } catch (err) {
+    logger.warn("failed to resolve tenant business_id", {
+      tenantId,
+      error: (err as Error).message,
+    });
+  }
+  return `business-${tenantId}`;
 }
 
 export class ConfigStore {
@@ -60,6 +80,7 @@ export class ConfigStore {
 
   async getSnapshot(tenantId: string, lob = "default") {
     const cfg = this.ensure(tenantId, lob);
+    const tenantBusinessId = await resolveTenantBusinessId(tenantId);
 
     // Load actual phone numbers from the phone_numbers table (via callStore)
     let phoneNumbers = cfg.phoneNumbers;
@@ -71,7 +92,7 @@ export class ConfigStore {
           .map(pn => ({
             did: pn.phoneNumber,
             tenantId: pn.tenantId,
-            businessId: `business-${pn.tenantId}`, // TODO: Map to actual business
+            businessId: tenantBusinessId,
             routeType: (pn.routeType === "human" ? "queue" : pn.routeType ?? "ai") as "ai" | "queue" | "voicemail",
             agentConfigId: pn.agentConfigId ?? cfg.agentConfig.id,
           }));
@@ -91,13 +112,26 @@ export class ConfigStore {
       // Fall back to configured phone numbers
     }
 
+    const normalizedPhoneNumbers = phoneNumbers.map((pn) => ({
+      ...pn,
+      businessId: !pn.businessId || pn.businessId === "business-default" ? tenantBusinessId : pn.businessId,
+    }));
+    const normalizedAgentConfig = {
+      ...cfg.agentConfig,
+      tenantId,
+      businessId:
+        !cfg.agentConfig.businessId || cfg.agentConfig.businessId === "business-default"
+          ? tenantBusinessId
+          : cfg.agentConfig.businessId,
+    };
+
     return {
       tenantId,
       lob,
       version: cfg.version,
       status: cfg.status,
-      agentConfig: cfg.agentConfig,
-      phoneNumbers,
+      agentConfig: normalizedAgentConfig,
+      phoneNumbers: normalizedPhoneNumbers,
       plan: cfg.plan
     };
   }

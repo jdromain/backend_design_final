@@ -13,7 +13,8 @@ vi.mock("./auth/clerk", () => ({
   verifyClerkToken: vi.fn(async (_token: string) => ({
     sub: "clerk-integration-user",
     email: "admin@example.com",
-    tenantIdClaim: "test-tenant",
+    orgId: "org_localdemo",
+    tenantIdClaim: "org_localdemo",
   })),
   getClerkBackendClient: vi.fn(),
 }));
@@ -68,7 +69,7 @@ describe.skipIf(process.env.SKIP_TESTCONTAINERS === "true")(
       expect(body.ready).toBe(true);
     });
 
-    it("Clerk auth + GET /calls returns { data } for test-tenant", async () => {
+    it("Clerk auth + GET /calls returns { data } for org-local tenant", async () => {
       const calls = await app.inject({
         method: "GET",
         url: "/calls",

@@ -34,7 +34,7 @@ COPY pnpm-lock.yaml pnpm-workspace.yaml package.json .npmrc ./
 # NEXT_PUBLIC_* values are baked into the compiled JS at build time.
 # Default to localhost:3001 which works for local Compose with published ports.
 ARG NEXT_PUBLIC_API_URL=http://localhost:3001
-ARG NEXT_PUBLIC_DEFAULT_TENANT_ID=test-tenant
+ARG NEXT_PUBLIC_DEFAULT_TENANT_ID=org_localdemo
 ARG NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=
 ARG NEXT_PUBLIC_CLERK_ENABLED=false
 ARG NEXT_PUBLIC_CLERK_JWT_TEMPLATE=platform-api

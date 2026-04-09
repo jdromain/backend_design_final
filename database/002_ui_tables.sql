@@ -158,7 +158,7 @@ CREATE INDEX IF NOT EXISTS idx_api_keys_tenant ON public.api_keys(tenant_id);
 -- ================================================================
 
 INSERT INTO public.users (id, tenant_id, email, roles, name, status)
-VALUES ('user-admin', 'test-tenant', 'admin@example.com', '{admin}', 'Admin User', 'active')
+VALUES ('user-admin', 'org_localdemo', 'admin@example.com', '{admin}', 'Admin User', 'active')
 ON CONFLICT (email) DO UPDATE SET
   roles = '{admin}',
-  tenant_id = 'test-tenant';
+  tenant_id = 'org_localdemo';
