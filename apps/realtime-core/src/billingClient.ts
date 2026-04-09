@@ -1,4 +1,5 @@
 import { env } from "./env";
+import { internalApiHeaders } from "./platformApiAuth";
 
 export type BillingQuotaResponse = {
   allowed: boolean;
@@ -16,9 +17,9 @@ export class BillingQuotaClient {
   async canStartCall(tenantId: string): Promise<BillingQuotaResponse> {
     const res = await fetch(`${this.baseUrl}/billing-quota/can-start-call`, {
       method: "POST",
-      headers: {
+      headers: internalApiHeaders({
         "Content-Type": "application/json",
-      },
+      }),
       body: JSON.stringify({ tenantId })
     });
     if (!res.ok) {

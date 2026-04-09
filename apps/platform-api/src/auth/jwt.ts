@@ -15,6 +15,17 @@ const logger = createLogger({ service: "platform-api", module: "auth" });
 const JWT_SECRET = env.JWT_SECRET;
 const authStore = new AuthStoreClient();
 
+function extractBearerToken(request: FastifyRequest): string | null {
+  const header = request.headers.authorization;
+  if (!header || !header.startsWith("Bearer ")) return null;
+  return header.slice("Bearer ".length);
+}
+
+function isInternalServiceToken(token: string | null): boolean {
+  if (!token) return false;
+  return Boolean(env.INTERNAL_SERVICE_TOKEN) && token === env.INTERNAL_SERVICE_TOKEN;
+}
+
 async function assertSessionTenantConsistency(
   session: VerifiedClerkSession,
   user: AuthUser
@@ -107,12 +118,11 @@ export async function loginHandler(
 
 export function authHook(allowedRoles?: AuthRole[]) {
   return async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
-    const header = request.headers.authorization;
-    if (!header || !header.startsWith("Bearer ")) {
+    const token = extractBearerToken(request);
+    if (!token) {
       reply.status(401).send({ error: "unauthorized" });
       return;
     }
-    const token = header.slice("Bearer ".length);
 
     try {
       if (isClerkEnabled) {
@@ -178,6 +188,22 @@ export function authHook(allowedRoles?: AuthRole[]) {
 }
 
 /**
+ * Internal-service aware auth: accepts either a valid user Bearer token or the
+ * configured INTERNAL_SERVICE_TOKEN.
+ */
+export function authOrInternalHook(allowedRoles?: AuthRole[]) {
+  const userAuth = authHook(allowedRoles);
+  return async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
+    const token = extractBearerToken(request);
+    if (isInternalServiceToken(token)) {
+      request.internalServiceAuth = true;
+      return;
+    }
+    await userAuth(request, reply);
+  };
+}
+
+/**
  * Development: attach `request.auth` when Bearer is valid. Clerk mode uses the same resolution as authHook
  * (including bootstrap); tenant mismatch leaves auth unset.
  */
@@ -218,15 +244,19 @@ export function optionalAuthHook() {
 }
 
 /**
- * Returns `authHook` when in production **or** when Clerk is enabled, `optionalAuthHook` otherwise.
- * Use this instead of the inline `isProduction ? authHook() : optionalAuthHook()` ternary so that
- * Clerk-mode dev routes enforce full auth just like production.
+ * Clerk-first policy: always enforce Bearer auth in all NODE_ENV values.
+ * This keeps development behavior consistent with production and avoids accidental
+ * unauthenticated access paths.
  */
 export function resolvedAuthHook(roles?: AuthRole[]) {
-  if (isClerkEnabled || env.NODE_ENV === "production") {
-    return authHook(roles);
-  }
-  return optionalAuthHook();
+  return authHook(roles);
+}
+
+/**
+ * Clerk-first + internal service bridge for server-to-server routes.
+ */
+export function resolvedAuthOrInternalHook(roles?: AuthRole[]) {
+  return authOrInternalHook(roles);
 }
 
 /**

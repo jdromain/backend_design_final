@@ -1,8 +1,20 @@
-import { resolve } from "path";
+import { mkdirSync } from "node:fs";
+import path, { resolve } from "node:path";
 import { config } from "dotenv";
 
 const envPath = resolve(__dirname, "../.env");
 const result = config({ path: envPath });
+
+/** Default JSONL log path for platform-api (createLogger + HTTP access). Disabled when VITEST=true. Override with REZOVO_LOG_FILE. */
+if (process.env.VITEST !== "true" && !process.env.REZOVO_LOG_FILE?.trim()) {
+  const logPath = path.join(__dirname, "..", "logs", "platform-api.log");
+  try {
+    mkdirSync(path.dirname(logPath), { recursive: true });
+  } catch {
+    /* logging package will retry on first write */
+  }
+  process.env.REZOVO_LOG_FILE = logPath;
+}
 
 if (result.error && process.env.NODE_ENV !== "production") {
   if (process.env.VITEST === "true") {
@@ -115,6 +127,11 @@ export const env = {
 
   // Auth
   JWT_SECRET: optional("JWT_SECRET", "dev-secret-change-me"),
+  /** Shared bearer token for trusted server-to-server calls (realtime-core -> platform-api). */
+  INTERNAL_SERVICE_TOKEN: optional("INTERNAL_SERVICE_TOKEN", ""),
+
+  /** When true, include error stacks in `http_error` JSONL (default off in production). */
+  LOG_STACK_TRACES: optionalBool("LOG_STACK_TRACES", false),
 
   // Twilio
   TWILIO_ACCOUNT_SID: optional("TWILIO_ACCOUNT_SID", ""),
@@ -160,6 +177,13 @@ export function assertClerkEnvIfEnabled(): void {
     console.error(
       `[env] CLERK_AUTH_ENABLED=true but required Clerk variables are missing: ${missing.join(", ")}. ` +
         "See docs/AUTH_CLERK.md"
+    );
+    process.exit(1);
+  }
+
+  if (!env.INTERNAL_SERVICE_TOKEN?.trim()) {
+    console.error(
+      "[env] CLERK_AUTH_ENABLED=true requires INTERNAL_SERVICE_TOKEN so realtime-core can call protected internal routes."
     );
     process.exit(1);
   }

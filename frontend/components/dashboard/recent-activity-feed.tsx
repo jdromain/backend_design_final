@@ -31,7 +31,7 @@ interface ActivityItem {
   severity: ActivitySeverity
   type: string
   message: string
-  timestamp: Date
+  timestamp: Date | string | number
   agent?: string
   count?: number
   metadata?: Record<string, string>
@@ -74,6 +74,13 @@ const typeIcons: Record<string, React.ElementType> = {
 export function RecentActivityFeed({ activities, onActivityClick }: RecentActivityFeedProps) {
   const [filter, setFilter] = useState<ActivityFilter>("all")
 
+  const normalizeTimestamp = (value: ActivityItem["timestamp"]): Date => {
+    if (value instanceof Date) return value
+    const parsed = new Date(value)
+    if (!Number.isNaN(parsed.getTime())) return parsed
+    return new Date(0)
+  }
+
   const filteredActivities = activities.filter((activity) => {
     if (filter === "all") return true
     if (filter === "errors") return activity.severity === "error"
@@ -90,7 +97,7 @@ export function RecentActivityFeed({ activities, onActivityClick }: RecentActivi
       lastItem &&
       lastItem.message === activity.message &&
       lastItem.severity === activity.severity &&
-      Date.now() - activity.timestamp.getTime() < 10 * 60 * 1000 // within 10 minutes
+      Date.now() - normalizeTimestamp(activity.timestamp).getTime() < 10 * 60 * 1000 // within 10 minutes
     ) {
       lastItem.count = (lastItem.count || 1) + 1
       return acc
@@ -181,7 +188,7 @@ export function RecentActivityFeed({ activities, onActivityClick }: RecentActivi
                       <div className="flex items-center justify-between">
                         <p className="flex items-center text-xs text-muted-foreground">
                           <Clock className="mr-1 h-3 w-3" />
-                          {formatDistance(activity.timestamp, new Date(), { addSuffix: true })}
+                          {formatDistance(normalizeTimestamp(activity.timestamp), new Date(), { addSuffix: true })}
                         </p>
                         <Button variant="ghost" size="sm" className="h-6 px-2 text-xs">
                           Open <ChevronRight className="ml-1 h-3 w-3" />

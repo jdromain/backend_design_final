@@ -55,6 +55,7 @@ function printEnvDiagnostics(): void {
   // Platform API
   logger.info("Platform API", {
     PLATFORM_API_URL: env.PLATFORM_API_URL,
+    INTERNAL_SERVICE_TOKEN: env.INTERNAL_SERVICE_TOKEN ? "***set***" : "(NOT SET — internal API calls will 401 in Clerk mode)",
   });
 
   // Infrastructure
@@ -62,6 +63,8 @@ function printEnvDiagnostics(): void {
     REDIS_ENABLED: env.REDIS_ENABLED,
     KAFKA_ENABLED: env.KAFKA_ENABLED,
     CONCURRENCY_LIMIT: env.CONCURRENCY_LIMIT,
+    RTC_ORCHESTRATOR_V2_ENABLED: env.RTC_ORCHESTRATOR_V2_ENABLED,
+    RTC_ORCHESTRATOR_V2_TENANTS: env.RTC_ORCHESTRATOR_V2_TENANTS || "(all tenants)",
     NODE_ENV: env.NODE_ENV,
   });
 }

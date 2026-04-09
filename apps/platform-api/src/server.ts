@@ -7,13 +7,11 @@ import { Type, TypeBoxTypeProvider } from "@fastify/type-provider-typebox";
 import {
   BillingQuotaOkSchema,
   HealthEnvelopeSchema,
-  LoginOkSchema,
 } from "./contracts/httpSchemas";
 import fastifyFormbody from "@fastify/formbody";
 import fastifyRawBody from "fastify-raw-body";
 
 import { createEventEnvelope, EventBusClient } from "@rezovo/event-bus";
-import { createLogger } from "@rezovo/logging";
 import { withTimeout } from "@rezovo/utils";
 import { EventPayloadByType } from "@rezovo/core-types";
 
@@ -22,8 +20,7 @@ import { ConfigStore } from "./config/store";
 import { canStartCallHandler, registerUsageIngest } from "./billingQuota";
 import { toolCallHandler } from "./toolbus";
 import { kbRetrieveHandler, kbIngestHandler, kbStatusHandler } from "./kb";
-import { authHook, loginHandler, optionalAuthHook } from "./auth/jwt";
-import { isClerkEnabled } from "./auth/clerk";
+import { resolvedAuthHook, resolvedAuthOrInternalHook } from "./auth/jwt";
 import { AnalyticsStore } from "./analytics/store";
 import { registerAnalyticsConsumer } from "./analytics/consumer";
 import { PersistenceStore } from "./persistence/store";
@@ -53,13 +50,14 @@ import { registerKnowledgeRoutes } from "./routes/knowledge";
 import { registerSearchRoutes } from "./routes/search";
 import { clerkSyncHandler } from "./webhooks/clerkSync";
 import { calendlyWebhookHandler } from "./webhooks/calendly";
+import { registerHttpAccessLogging, registerHttpErrorLogging } from "./logging/httpAccessLog";
 
 const isProduction = env.NODE_ENV === "production";
 
-const logger = createLogger({ service: "platform-api", module: "http" });
-
 export function buildServer(eventBus: EventBusClient): FastifyInstance<any, any, any, any, TypeBoxTypeProvider> {
   const app = fastify().withTypeProvider<TypeBoxTypeProvider>();
+
+  registerHttpAccessLogging(app);
 
   // CORS -- env-driven origins + localhost defaults
   const corsOrigins: string[] = [
@@ -127,9 +125,7 @@ export function buildServer(eventBus: EventBusClient): FastifyInstance<any, any,
   app.get("/", async (_request, reply) => {
     reply.status(200).send({
       service: "platform-api",
-      docs: isClerkEnabled
-        ? "Clerk auth: Bearer session JWT. GET /health, GET /auth/me. Webhooks: POST /webhooks/clerk"
-        : "Use GET /health for dashboard status, POST /auth/login (dev JWT) when Clerk is off.",
+      docs: "Clerk auth: Bearer session JWT. GET /health, GET /auth/me. Webhooks: POST /webhooks/clerk",
     });
   });
 
@@ -174,31 +170,35 @@ export function buildServer(eventBus: EventBusClient): FastifyInstance<any, any,
     },
   }, async () => runHealthChecks());
 
-  // Auth -- dev-only login route
-  if (!isClerkEnabled) {
-    app.post(
-      "/auth/login",
-      {
-        schema: {
-          body: Type.Object({ email: Type.String() }),
-          response: {
-            200: LoginOkSchema,
-            400: Type.Object({ ok: Type.Literal(false), error: Type.String() }),
-            401: Type.Object({ ok: Type.Literal(false), error: Type.String() }),
-            503: Type.Object({ ok: Type.Literal(false), error: Type.String() }),
-          },
+  // Auth -- legacy dev login endpoint is intentionally retired in Clerk-first mode.
+  app.post(
+    "/auth/login",
+    {
+      schema: {
+        body: Type.Object({ email: Type.String() }),
+        response: {
+          410: Type.Object({
+            ok: Type.Literal(false),
+            error: Type.String(),
+            auth: Type.Literal("clerk"),
+          }),
         },
       },
-      loginHandler
-    );
-  }
+    },
+    async (_request, reply) => {
+      reply.status(410);
+      return {
+        ok: false,
+        error: "Dev JWT login is retired. Use Clerk sign-in at /sign-in.",
+        auth: "clerk",
+      };
+    }
+  );
 
   // Clerk webhook (raw body required for Svix signature verification)
   app.post("/webhooks/clerk", { config: { rawBody: true } }, clerkSyncHandler);
 
-  const sessionReadPreHandler = isProduction
-    ? authHook(["admin", "editor", "viewer"])
-    : optionalAuthHook();
+  const sessionReadPreHandler = resolvedAuthHook(["admin", "editor", "viewer"]);
 
   app.get("/auth/me", { preHandler: sessionReadPreHandler }, async (request: FastifyRequest, reply: FastifyReply) => {
     const auth = request.auth;
@@ -216,7 +216,7 @@ export function buildServer(eventBus: EventBusClient): FastifyInstance<any, any,
   // Config endpoints
   app.get("/config/schema", {
     schema: { querystring: Type.Object({ lob: Type.Optional(Type.String()) }) },
-    preHandler: isProduction ? authHook(["admin", "editor"]) : optionalAuthHook(),
+    preHandler: resolvedAuthHook(["admin", "editor"]),
   }, async (request) => {
     const { lob } = request.query as { lob?: string };
     return { lob: lob ?? "default", schema: getSchema(lob) };
@@ -224,7 +224,7 @@ export function buildServer(eventBus: EventBusClient): FastifyInstance<any, any,
 
   app.get("/config/templates", {
     schema: { querystring: Type.Object({ lob: Type.Optional(Type.String()) }) },
-    preHandler: isProduction ? authHook(["admin", "editor"]) : optionalAuthHook(),
+    preHandler: resolvedAuthHook(["admin", "editor"]),
   }, async (request) => {
     const { lob } = request.query as { lob?: string };
     return { lob: lob ?? "default", templates: getTemplates(lob) };
@@ -237,7 +237,7 @@ export function buildServer(eventBus: EventBusClient): FastifyInstance<any, any,
         lob: Type.Optional(Type.String()),
       }),
     },
-    preHandler: isProduction ? authHook(["admin", "editor", "viewer"]) : optionalAuthHook(),
+    preHandler: resolvedAuthOrInternalHook(["admin", "editor", "viewer"]),
   }, async (request) => {
     const { tenantId, lob } = request.query as { tenantId: string; lob?: string };
     return await configStore.getSnapshot(tenantId, lob ?? "default");
@@ -250,7 +250,7 @@ export function buildServer(eventBus: EventBusClient): FastifyInstance<any, any,
         config: Type.Record(Type.String(), Type.Any()),
       }),
     },
-    preHandler: isProduction ? authHook(["admin", "editor"]) : optionalAuthHook(),
+    preHandler: resolvedAuthHook(["admin", "editor"]),
   }, async (request, reply) => {
     const { lob, config } = request.body as { lob?: string; config: unknown };
     const result = validateConfig({ lob, config: config as any });
@@ -275,7 +275,7 @@ export function buildServer(eventBus: EventBusClient): FastifyInstance<any, any,
         config: Type.Optional(Type.Record(Type.String(), Type.Any())),
       }),
     },
-    preHandler: isProduction ? authHook(["admin", "editor"]) : optionalAuthHook(),
+    preHandler: resolvedAuthHook(["admin", "editor"]),
   }, async (request, reply) => {
     const body = request.body as {
       tenantId: string;
@@ -333,25 +333,25 @@ export function buildServer(eventBus: EventBusClient): FastifyInstance<any, any,
         400: Type.Object({ allowed: Type.Literal(false), reason: Type.String() }),
       },
     },
-    preHandler: isProduction ? authHook(["admin", "editor", "viewer"]) : optionalAuthHook(),
+    preHandler: resolvedAuthOrInternalHook(["admin", "editor", "viewer"]),
     handler: canStartCallHandler,
   });
   app.post("/usage/ingest", {
-    preHandler: isProduction ? authHook(["admin", "editor", "viewer"]) : optionalAuthHook(),
+    preHandler: resolvedAuthOrInternalHook(["admin", "editor", "viewer"]),
     handler: registerUsageIngest(eventBus),
   });
 
   // Toolbus and KB endpoints -- internal service calls
   app.post("/tool/call", {
-    preHandler: isProduction ? authHook(["admin", "editor"]) : optionalAuthHook(),
+    preHandler: resolvedAuthOrInternalHook(["admin", "editor"]),
     handler: toolCallHandler(eventBus),
   });
-  app.post("/kb/retrieve", { preHandler: isProduction ? authHook(["admin", "editor", "viewer"]) : optionalAuthHook(), handler: kbRetrieveHandler });
+  app.post("/kb/retrieve", { preHandler: resolvedAuthOrInternalHook(["admin", "editor", "viewer"]), handler: kbRetrieveHandler });
   app.post("/kb/docs", {
-    preHandler: isProduction ? authHook(["admin", "editor"]) : optionalAuthHook(),
+    preHandler: resolvedAuthHook(["admin", "editor"]),
     handler: (req, reply) => kbIngestHandler(eventBus, req as any, reply),
   });
-  app.get("/kb/status", { preHandler: isProduction ? authHook(["admin", "editor", "viewer"]) : optionalAuthHook(), handler: kbStatusHandler });
+  app.get("/kb/status", { preHandler: resolvedAuthHook(["admin", "editor", "viewer"]), handler: kbStatusHandler });
 
   // Credentials management
   credentialsRoutes(app as any);
@@ -381,10 +381,7 @@ export function buildServer(eventBus: EventBusClient): FastifyInstance<any, any,
   registerKnowledgeRoutes(app as any);
   registerSearchRoutes(app as any);
 
-  app.setErrorHandler((error, _request, reply) => {
-    logger.error("platform-api error", { error: (error as Error).message });
-    reply.status(500).send({ error: "internal_error" });
-  });
+  registerHttpErrorLogging(app);
 
   return app;
 }

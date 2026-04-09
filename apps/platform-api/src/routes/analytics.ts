@@ -127,10 +127,10 @@ export function registerAnalyticsRoutes(app: FastifyInstance, configStore: Confi
     if (!tenantId) return;
 
     const result = await query(
-      `SELECT end_reason AS label, COUNT(*)::int AS value
+      `SELECT COALESCE(NULLIF(failure_type, ''), end_reason, 'unknown') AS label, COUNT(*)::int AS value
        FROM calls
        WHERE tenant_id = $1 AND outcome = 'failed'
-       GROUP BY end_reason ORDER BY value DESC LIMIT 10`,
+       GROUP BY COALESCE(NULLIF(failure_type, ''), end_reason, 'unknown') ORDER BY value DESC LIMIT 10`,
       [tenantId]
     );
 

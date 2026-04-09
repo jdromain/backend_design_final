@@ -14,7 +14,7 @@ import type {
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
 
-/** Default tenant for demo / dev JWT fallback (must match DB seeds, e.g. test-tenant). */
+/** Default tenant fallback (must match seeded tenant, e.g. test-tenant). */
 export const DEFAULT_TENANT_ID =
   process.env.NEXT_PUBLIC_DEFAULT_TENANT_ID || "test-tenant";
 

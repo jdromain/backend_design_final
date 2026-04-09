@@ -21,6 +21,7 @@ import { createLogger } from "@rezovo/logging";
 import { callTool } from "../../toolClient";
 import * as calendly from "../../calendlyClient";
 import { env } from "../../env";
+import { resolveModelSettingsForModel } from "./modelGuardrails";
 
 const logger = createLogger({ service: "realtime-core", module: "agents" });
 
@@ -45,6 +46,13 @@ export interface CallContext {
 const VOICE_DIRECTIVE =
   "You are on a live phone call. Keep every reply to 1-2 short sentences. " +
   "Be warm and natural. Reply with ONLY what you would say out loud to the caller. Nothing else.";
+
+function agentModelSettings() {
+  return resolveModelSettingsForModel(env.LLM_MODEL, {
+    maxTokens: 120,
+    reasoning: { effort: "low" },
+  });
+}
 
 // ---- Dynamic instructions builder (Phase 2: injects KB passages at runtime) ----
 
@@ -343,7 +351,7 @@ const bookingAgent: Agent<CallContext> = new Agent({
     otSearchAvailability,
     otCreateReservation,
   ] as any,
-  modelSettings: { maxTokens: 120, reasoning: { effort: "low" } },
+  modelSettings: agentModelSettings(),
 });
 
 const cancelAgent: Agent<CallContext> = new Agent({
@@ -360,7 +368,7 @@ const cancelAgent: Agent<CallContext> = new Agent({
   ),
   model: env.LLM_MODEL,
   tools: [calendlyCancelBooking] as any,
-  modelSettings: { maxTokens: 120, reasoning: { effort: "low" } },
+  modelSettings: agentModelSettings(),
 });
 
 const complaintAgent: Agent<CallContext> = new Agent({
@@ -381,7 +389,7 @@ const complaintAgent: Agent<CallContext> = new Agent({
   ),
   model: env.LLM_MODEL,
   tools: [logComplaint] as any,
-  modelSettings: { maxTokens: 120, reasoning: { effort: "low" } },
+  modelSettings: agentModelSettings(),
 });
 
 const infoAgent: Agent<CallContext> = new Agent({
@@ -398,7 +406,7 @@ const infoAgent: Agent<CallContext> = new Agent({
   ),
   model: env.LLM_MODEL,
   tools: [],
-  modelSettings: { maxTokens: 120, reasoning: { effort: "low" } },
+  modelSettings: agentModelSettings(),
 });
 
 const triageAgent: Agent<CallContext> = new Agent({
@@ -416,7 +424,7 @@ const triageAgent: Agent<CallContext> = new Agent({
   ),
   model: env.LLM_MODEL,
   handoffs: [bookingAgent, cancelAgent, complaintAgent, infoAgent] as any,
-  modelSettings: { maxTokens: 120, reasoning: { effort: "low" } },
+  modelSettings: agentModelSettings(),
 });
 
 // Bidirectional handoffs: specialists can route back to triage

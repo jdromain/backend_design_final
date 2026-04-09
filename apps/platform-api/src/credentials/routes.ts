@@ -3,12 +3,11 @@ import { Type, Static } from "@sinclair/typebox";
 import { TypeBoxTypeProvider } from "@fastify/type-provider-typebox";
 import { createLogger } from "@rezovo/logging";
 import { PersistenceStore } from "../persistence/store";
-import { authHook, optionalAuthHook } from "../auth/jwt";
+import { resolvedAuthHook } from "../auth/jwt";
 import { requireTenantForRequest } from "../auth/tenantScope";
 
 const logger = createLogger({ service: "platform-api", module: "credentials" });
-const isProduction = (process.env.NODE_ENV ?? "development") === "production";
-const credPreHandler = isProduction ? authHook(["admin", "editor"]) : optionalAuthHook();
+const credPreHandler = resolvedAuthHook(["admin", "editor"]);
 const persistence = new PersistenceStore();
 
 // Schema definitions
@@ -437,4 +436,3 @@ async function testGoogleCalendarCredentials(credentials: Record<string, string>
     };
   }
 }
-

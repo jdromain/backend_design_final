@@ -114,7 +114,7 @@ export function DashboardShell({ children }: { children: ReactNode }) {
 
   const handleLogout = useCallback(() => {
     clearAuthToken();
-    router.push("/dev-login");
+    router.push("/sign-in");
   }, [router]);
 
   useEffect(() => {

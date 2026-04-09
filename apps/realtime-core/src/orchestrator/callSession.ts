@@ -18,9 +18,16 @@ import {
 } from "@rezovo/core-types";
 import type { Agent, AgentInputItem } from "@openai/agents";
 import { UsageTracker } from "./usageTracker";
-import { processTurn, triageAgent, fetchKbPassages, type OnSentenceCallback } from "./openai-agents";
-import { bookingAgent, cancelAgent, complaintAgent } from "./openai-agents/agents";
+import {
+  processTurn,
+  triageAgent,
+  fetchKbPassages,
+  TurnOrchestratorV2,
+  type OnSentenceCallback,
+  type TurnDiagnostics,
+} from "./openai-agents";
 import { traceLog } from "../traceLog";
+import { env } from "../env";
 
 export type OrchestratorResponse =
   | { type: "speak"; text: string }
@@ -37,10 +44,16 @@ export class CallSession {
   private turnCount = 0;
   private processing = false;
   private abortController: AbortController | null = null;
+  private latestIntent?: string;
+  private latestIntentConfidence = 0;
+  private latestSlots: Record<string, unknown> = {};
+  private lastTurnDiagnostics: TurnDiagnostics | null = null;
 
   // SDK-managed state: these are updated after each turn from stream.history / stream.currentAgent
   private history: AgentInputItem[] = [];
   private currentAgent: Agent<any, any> = triageAgent;
+  private readonly useOrchestratorV2: boolean;
+  private readonly turnOrchestratorV2: TurnOrchestratorV2 | null;
 
   // Track the last active agent name for persistence/logging
   private lastAgentName = "Receptionist";
@@ -68,11 +81,16 @@ export class CallSession {
     };
     this.usage = new UsageTracker();
     this.usage.startTimer();
+    this.useOrchestratorV2 = this.shouldUseOrchestratorV2(phoneConfig.tenantId);
+    this.turnOrchestratorV2 = this.useOrchestratorV2
+      ? new TurnOrchestratorV2(this.id, agentConfig, phoneConfig)
+      : null;
 
     logger.info("call session created", {
       callId: this.id,
       tenantId: phoneConfig.tenantId,
       businessId: phoneConfig.businessId,
+      orchestrator: this.useOrchestratorV2 ? "v2" : "legacy",
     });
   }
 
@@ -112,16 +130,6 @@ export class CallSession {
     return { type: "speak", text: greetingText };
   }
 
-  // ---- Keyword-based intent detection for turn 1 ----
-
-  private selectAgentForFirstTurn(utterance: string): Agent<any, any> {
-    const t = utterance.toLowerCase();
-    if (/\b(book|appointment|schedule|meeting|reservation|reserve)\b/.test(t)) return bookingAgent;
-    if (/\b(cancel)\b/.test(t)) return cancelAgent;
-    if (/\b(complaint|complain|unhappy|upset|frustrated|speak.*manager)\b/.test(t)) return complaintAgent;
-    return triageAgent;
-  }
-
   // ---- Streaming Turn Processing ----
 
   async receiveUserStreaming(
@@ -144,39 +152,52 @@ export class CallSession {
         this.kbFetchPromise = null;
       }
 
-      // On turn 1, use keyword intent detection to skip triage when intent is clear
-      if (this.turnCount === 1) {
-        this.currentAgent = this.selectAgentForFirstTurn(utterance);
-        logger.info("intent pre-detection", {
-          callId: this.id,
-          agent: this.currentAgent.name,
-          utterance: utterance.slice(0, 100),
-        });
-      }
-
       this.addTranscriptEntry({
         from: "user",
         text: utterance,
         timestamp: new Date().toISOString(),
       });
 
-      const result = await processTurn({
-        utterance,
-        callId: this.id,
-        history: this.history,
-        currentAgent: this.currentAgent,
-        agentConfig: this.context.agentConfig,
-        phoneConfig: this.context.phoneNumberConfig,
-        onSentence,
-        currentDateTime: this.context.startedAt.toISOString(),
-        signal: this.abortController.signal,
-        kbPassages: this.kbPassages,
-      });
+      const result =
+        this.turnOrchestratorV2
+          ? await this.turnOrchestratorV2.processTurn({
+              utterance,
+              history: this.history,
+              currentAgent: this.currentAgent,
+              onSentence,
+              currentDateTime: new Date().toISOString(),
+              signal: this.abortController.signal,
+              kbPassages: this.kbPassages,
+            })
+          : await processTurn({
+              utterance,
+              callId: this.id,
+              history: this.history,
+              currentAgent: this.currentAgent,
+              agentConfig: this.context.agentConfig,
+              phoneConfig: this.context.phoneNumberConfig,
+              onSentence,
+              currentDateTime: new Date().toISOString(),
+              signal: this.abortController.signal,
+              kbPassages: this.kbPassages,
+            });
 
       // SDK manages history and agent routing
       this.history = result.history;
       this.currentAgent = result.currentAgent;
       this.lastAgentName = result.agentName;
+      if (result.intent) this.latestIntent = result.intent;
+      if (typeof result.confidence === "number") this.latestIntentConfidence = result.confidence;
+      if (result.slots) {
+        this.latestSlots = { ...this.latestSlots, ...result.slots };
+        this.context.slots = {
+          ...(this.context.slots as Record<string, unknown>),
+          ...result.slots,
+        } as any;
+      }
+      if (result.diagnostics) {
+        this.lastTurnDiagnostics = result.diagnostics;
+      }
 
       traceLog.sessionResponse(this.id, result.turnId, result.action, result.text);
 
@@ -194,6 +215,12 @@ export class CallSession {
         agentName: result.agentName,
         agentText: result.text?.slice(0, 150),
         historyLen: this.history.length,
+        intent: this.latestIntent,
+        intentConfidence: this.latestIntentConfidence || undefined,
+        decisionMode: result.diagnostics?.decisionMode,
+        pendingAction: result.diagnostics?.pendingAction,
+        modelProfile: result.diagnostics?.modelProfile,
+        retryReason: result.diagnostics?.retryReason,
       });
 
       return this.mapActionToResponse(result);
@@ -206,12 +233,22 @@ export class CallSession {
 
       logger.error("error processing user input (streaming)", { callId: this.id, error: msg });
 
-      const fallback = "I apologize, I'm having a bit of trouble. Could you repeat that?";
+      const fallback = this.localFallbackForTurn(this.turnCount);
       this.addTranscriptEntry({
         from: "agent",
         text: fallback,
         timestamp: new Date().toISOString(),
       });
+      this.lastTurnDiagnostics = {
+        intent: this.latestIntent,
+        confidence: this.latestIntentConfidence || undefined,
+        decisionMode: "recovery",
+        pendingAction: null,
+        modelProfile: this.context.agentConfig.llmProfileId || env.LLM_MODEL,
+        retryReason: "session_exception",
+        turnLatencyMs: 0,
+        specialist: "general",
+      };
       return { type: "speak", text: fallback };
     } finally {
       this.processing = false;
@@ -293,13 +330,18 @@ export class CallSession {
    * Returns a minimal state object matching what the controller expects.
    */
   getStateMachine(): { current: { activeIntent?: string; intentConfidence?: number; slots: Record<string, unknown> } } {
+    const inferred = this.latestIntent ?? this.inferIntentFromAgent(this.lastAgentName);
     return {
       current: {
-        activeIntent: this.inferIntentFromAgent(this.lastAgentName),
-        intentConfidence: 0.9,
-        slots: this.context.slots ?? {},
+        activeIntent: inferred,
+        intentConfidence: this.latestIntentConfidence || (inferred ? 0.75 : undefined),
+        slots: Object.keys(this.latestSlots).length > 0 ? this.latestSlots : this.context.slots ?? {},
       },
     };
+  }
+
+  getLastTurnDiagnostics(): TurnDiagnostics | null {
+    return this.lastTurnDiagnostics;
   }
 
   getTurnCount(): number {
@@ -322,7 +364,26 @@ export class CallSession {
       "Customer Care Specialist": "complaint",
       "Information Specialist": "info_request",
       Receptionist: "triage",
+      "Voice Concierge": this.latestIntent ?? "other",
     };
     return map[agentName];
+  }
+
+  private shouldUseOrchestratorV2(tenantId: string): boolean {
+    if (!env.RTC_ORCHESTRATOR_V2_ENABLED) return false;
+    const allowList = env.RTC_ORCHESTRATOR_V2_TENANTS
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    return allowList.length === 0 || allowList.includes(tenantId);
+  }
+
+  private localFallbackForTurn(turn: number): string {
+    const fallbackPool = [
+      "I'm sorry, I missed that. Could you say it once more?",
+      "I didn't catch that clearly. Can you repeat it for me?",
+      "Let's try that again. What can I help you with?",
+    ] as const;
+    return fallbackPool[turn % fallbackPool.length];
   }
 }

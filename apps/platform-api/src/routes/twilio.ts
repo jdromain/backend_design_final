@@ -7,6 +7,87 @@ import { randomUUID } from "crypto";
 
 const logger = createLogger({ service: "platform-api", module: "twilioRoutes" });
 
+type TerminalUpdate = {
+  status: "completed" | "failed" | "abandoned";
+  outcome: "handled" | "failed" | "abandoned";
+  endReason: "agent_end" | "error" | "timeout" | "caller_hangup";
+  failureType?: string;
+};
+
+function firstHeader(value: string | string[] | undefined): string | undefined {
+  if (!value) return undefined;
+  if (Array.isArray(value)) return value[0];
+  return value.split(",")[0]?.trim();
+}
+
+function buildTwilioValidationUrl(request: FastifyRequest): string {
+  const forwardedProto = firstHeader(request.headers["x-forwarded-proto"]);
+  const forwardedHost = firstHeader(request.headers["x-forwarded-host"]);
+  const proto = forwardedProto || request.protocol;
+  const host = forwardedHost || request.hostname;
+  return `${proto}://${host}${request.url}`;
+}
+
+export function mapTwilioTerminalStatus(
+  callStatus: string | undefined,
+  body: Record<string, string>
+): TerminalUpdate | null {
+  const status = (callStatus || "").toLowerCase();
+  switch (status) {
+    case "completed":
+      return {
+        status: "completed",
+        outcome: "handled",
+        endReason: "agent_end",
+      };
+    case "busy":
+      return {
+        status: "failed",
+        outcome: "failed",
+        endReason: "error",
+        failureType: "busy",
+      };
+    case "no-answer":
+      return {
+        status: "failed",
+        outcome: "failed",
+        endReason: "timeout",
+        failureType: "no-answer",
+      };
+    case "failed":
+      return {
+        status: "failed",
+        outcome: "failed",
+        endReason: "error",
+        failureType: body.ErrorMessage || body.ErrorCode || "carrier_failed",
+      };
+    case "canceled":
+    case "cancelled":
+      return {
+        status: "abandoned",
+        outcome: "abandoned",
+        endReason: "caller_hangup",
+        failureType: "canceled",
+      };
+    default:
+      return null;
+  }
+}
+
+function isFinalizedByRealtime(call: {
+  status?: string;
+  outcome?: string;
+  endedAt?: string;
+}): boolean {
+  if (call.outcome === "handled" || call.outcome === "failed" || call.outcome === "transferred" || call.outcome === "abandoned") {
+    return true;
+  }
+  if (call.endedAt && ["completed", "failed", "abandoned", "transferred"].includes(call.status ?? "")) {
+    return true;
+  }
+  return false;
+}
+
 export function registerTwilioRoutes(app: FastifyInstance): void {
   app.post("/twilio/voice", async (request: FastifyRequest, reply: FastifyReply) => {
     try {
@@ -106,7 +187,7 @@ export function registerTwilioRoutes(app: FastifyInstance): void {
   app.post("/twilio/status", async (request: FastifyRequest, reply: FastifyReply) => {
     try {
       const signature = request.headers["x-twilio-signature"] as string;
-      const url = `${request.protocol}://${request.hostname}${request.url}`;
+      const url = buildTwilioValidationUrl(request);
 
       if (env.TWILIO_AUTH_TOKEN && !twilio.validateRequest(env.TWILIO_AUTH_TOKEN, signature, url, request.body as any)) {
         logger.warn("invalid Twilio signature", { url });
@@ -136,21 +217,73 @@ export function registerTwilioRoutes(app: FastifyInstance): void {
         payload: body as unknown as Record<string, unknown>,
       });
 
-      // Update call status if completed/failed
-      if (["completed", "failed", "busy", "no-answer"].includes(CallStatus)) {
-        await callStore.upsertCall({
-          callId: call.callId,
-          tenantId: call.tenantId,
-          phoneNumber: call.phoneNumber,
-          callerNumber: call.callerNumber,
-          status: CallStatus,
-          endedAt: new Date().toISOString(),
-          endReason: CallStatus,
-          durationSec: CallDuration ? parseInt(CallDuration, 10) : undefined,
-          startedAt: call.startedAt,
-        });
-        logger.info("call ended", { callId: call.callId, callSid: CallSid, status: CallStatus });
+      const terminal = mapTwilioTerminalStatus(CallStatus, body);
+      if (!terminal) {
+        // Non-terminal status updates.
+        if ((CallStatus === "ringing" || CallStatus === "in-progress") && !isFinalizedByRealtime(call)) {
+          await callStore.upsertCall({
+            callId: call.callId,
+            tenantId: call.tenantId,
+            phoneNumber: call.phoneNumber,
+            callerNumber: call.callerNumber,
+            status: CallStatus === "in-progress" ? "in_progress" : "ringing",
+            startedAt: call.startedAt,
+            twilioCallSid: call.twilioCallSid,
+          });
+        }
+        reply.send({ ok: true });
+        return;
       }
+
+      if (isFinalizedByRealtime(call)) {
+        // Avoid overwriting richer realtime-core finalization (intent, transcript, outcomes).
+        if (!call.failureType && terminal.failureType) {
+          await callStore.upsertCall({
+            callId: call.callId,
+            tenantId: call.tenantId,
+            phoneNumber: call.phoneNumber,
+            callerNumber: call.callerNumber,
+            status: call.status,
+            startedAt: call.startedAt,
+            endedAt: call.endedAt,
+            outcome: call.outcome,
+            endReason: call.endReason,
+            failureType: terminal.failureType,
+            twilioCallSid: call.twilioCallSid,
+          });
+        }
+        logger.info("skipping Twilio terminal overwrite; call already finalized", {
+          callId: call.callId,
+          callSid: CallSid,
+          callStatus: CallStatus,
+          existingStatus: call.status,
+          existingOutcome: call.outcome,
+        });
+        reply.send({ ok: true });
+        return;
+      }
+
+      await callStore.upsertCall({
+        callId: call.callId,
+        tenantId: call.tenantId,
+        phoneNumber: call.phoneNumber,
+        callerNumber: call.callerNumber,
+        status: terminal.status,
+        endedAt: new Date().toISOString(),
+        endReason: terminal.endReason,
+        outcome: terminal.outcome,
+        failureType: terminal.failureType,
+        durationSec: CallDuration ? parseInt(CallDuration, 10) : undefined,
+        startedAt: call.startedAt,
+        twilioCallSid: call.twilioCallSid,
+      });
+      logger.info("call ended", {
+        callId: call.callId,
+        callSid: CallSid,
+        status: terminal.status,
+        outcome: terminal.outcome,
+        failureType: terminal.failureType,
+      });
 
       reply.send({ ok: true });
     } catch (err) {

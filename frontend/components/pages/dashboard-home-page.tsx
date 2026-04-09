@@ -114,7 +114,7 @@ export function DashboardHomePage() {
         }
         return;
       }
-      window.location.href = "/dev-login";
+      window.location.href = "/sign-in";
     };
     window.addEventListener("rezovo:unauthorized", onUnauthorized);
     return () => window.removeEventListener("rezovo:unauthorized", onUnauthorized);
@@ -265,9 +265,9 @@ export function DashboardHomePage() {
         <h1 className="text-3xl font-bold tracking-tight">Dashboard</h1>
         <p className="text-destructive">{dashboardError}</p>
         <p className="text-sm text-muted-foreground">
-          Confirm platform-api is running and you are signed in (Clerk or{" "}
-          <a href="/dev-login" className="underline">
-            dev login
+          Confirm platform-api is running and you are signed in with Clerk (
+          <a href="/sign-in" className="underline">
+            sign in
           </a>
           ).
         </p>

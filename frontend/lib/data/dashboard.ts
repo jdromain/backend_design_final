@@ -32,6 +32,24 @@ type ApiSparklines = {
   latency: number[]
 }
 
+type DashboardActivity = ReturnType<typeof generateActivityData>[number]
+
+function toDateSafe(value: unknown): Date {
+  if (value instanceof Date) return value
+  if (typeof value === "string" || typeof value === "number") {
+    const d = new Date(value)
+    if (!Number.isNaN(d.getTime())) return d
+  }
+  return new Date(0)
+}
+
+function normalizeActivityItem(item: DashboardActivity | Record<string, unknown>): DashboardActivity {
+  return {
+    ...(item as DashboardActivity),
+    timestamp: toDateSafe((item as { timestamp?: unknown }).timestamp),
+  }
+}
+
 function mapSparklinesFromApi(api: ApiSparklines): typeof sparklineData {
   return {
     calls: api.totalCalls ?? [],
@@ -94,7 +112,8 @@ export async function getDashboardCalls(): Promise<CallRecord[]> {
 
 export async function getDashboardActivity() {
   if (useMocks) return generateActivityData()
-  return get<ReturnType<typeof generateActivityData>>(appendTenantQuery("/activity"))
+  const rows = await get<Array<Record<string, unknown>>>(appendTenantQuery("/activity"))
+  return Array.isArray(rows) ? rows.map((r) => normalizeActivityItem(r)) : []
 }
 
 export async function getSparklineData() {

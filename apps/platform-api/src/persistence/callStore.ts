@@ -29,6 +29,7 @@ export interface CallRecord {
   durationSec?: number;
   endReason?: string;
   outcome?: string;
+  failureType?: string;
   slotsCollected?: Record<string, unknown>;
   summary?: string;
   turnCount?: number;
@@ -81,9 +82,9 @@ export class CallStore {
           call_id, tenant_id, phone_number, caller_number, twilio_call_sid,
           direction, classified_intent, intent_confidence, final_intent,
           agent_config_id, agent_config_ver, status, started_at, answered_at,
-          ended_at, duration_sec, end_reason, outcome, slots_collected,
+          ended_at, duration_sec, end_reason, outcome, failure_type, slots_collected,
           summary, turn_count, llm_tokens_in, llm_tokens_out, tts_chars, stt_seconds
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)
         ON CONFLICT (call_id) DO UPDATE SET
           status = EXCLUDED.status,
           classified_intent = COALESCE(EXCLUDED.classified_intent, calls.classified_intent),
@@ -96,6 +97,7 @@ export class CallStore {
           duration_sec = COALESCE(EXCLUDED.duration_sec, calls.duration_sec),
           end_reason = COALESCE(EXCLUDED.end_reason, calls.end_reason),
           outcome = COALESCE(EXCLUDED.outcome, calls.outcome),
+          failure_type = COALESCE(EXCLUDED.failure_type, calls.failure_type),
           slots_collected = COALESCE(EXCLUDED.slots_collected, calls.slots_collected),
           summary = COALESCE(EXCLUDED.summary, calls.summary),
           turn_count = COALESCE(EXCLUDED.turn_count, calls.turn_count),
@@ -112,10 +114,10 @@ export class CallStore {
           call.startedAt, call.answeredAt ?? null,
           call.endedAt ?? null, call.durationSec ?? null,
           call.endReason ?? null, call.outcome ?? null,
+          call.failureType ?? null,
           JSON.stringify(call.slotsCollected ?? {}),
           call.summary ?? null, call.turnCount ?? 0,
-          call.llmTokensIn ?? 0, call.llmTokensOut ?? 0,
-          call.ttsChars ?? 0, call.sttSeconds ?? 0,
+          call.llmTokensIn ?? 0, call.llmTokensOut ?? 0, call.ttsChars ?? 0, call.sttSeconds ?? 0,
         ]
       );
     } catch (err) {
@@ -280,6 +282,7 @@ export class CallStore {
       durationSec: row.duration_sec,
       endReason: row.end_reason,
       outcome: row.outcome,
+      failureType: row.failure_type,
       slotsCollected: row.slots_collected,
       summary: row.summary,
       turnCount: row.turn_count,

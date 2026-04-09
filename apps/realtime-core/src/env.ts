@@ -80,6 +80,8 @@ export const env = {
 
   // Platform API (internal)
   PLATFORM_API_URL: optional("PLATFORM_API_URL", "http://localhost:3001"),
+  /** Shared bearer token for platform-api protected internal routes. */
+  INTERNAL_SERVICE_TOKEN: optional("INTERNAL_SERVICE_TOKEN", ""),
   /** First snapshot tenant — must match SQL seeds (e.g. test-tenant). */
   REALTIME_BOOTSTRAP_TENANT_ID: optional("REALTIME_BOOTSTRAP_TENANT_ID", "test-tenant"),
 
@@ -88,6 +90,9 @@ export const env = {
   TWILIO_AUTH_TOKEN: optional("TWILIO_AUTH_TOKEN", ""),
 
   // Runtime
+  RTC_ORCHESTRATOR_V2_ENABLED: optionalBool("RTC_ORCHESTRATOR_V2_ENABLED", false),
+  /** Comma-separated tenant IDs for canary rollout; empty means all tenants when V2 is enabled. */
+  RTC_ORCHESTRATOR_V2_TENANTS: optional("RTC_ORCHESTRATOR_V2_TENANTS", ""),
   CONCURRENCY_LIMIT: optionalInt("CONCURRENCY_LIMIT", 20),
   METRICS_PORT: optionalInt("METRICS_PORT", 9100),
   LOG_LEVEL: optional("LOG_LEVEL", "info"),

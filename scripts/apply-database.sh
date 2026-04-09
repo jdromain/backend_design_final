@@ -28,7 +28,7 @@ if ! command -v psql >/dev/null 2>&1; then
   exit 1
 fi
 
-for f in setup_complete.sql 002_ui_tables.sql 003_clerk_tenant_mapping.sql; do
+for f in setup_complete.sql 002_ui_tables.sql 003_clerk_tenant_mapping.sql 004_call_failure_type.sql; do
   echo "==> Applying database/$f"
   psql "$PGURL" -v ON_ERROR_STOP=1 -f "$ROOT/database/$f"
 done

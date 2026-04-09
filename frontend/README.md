@@ -35,19 +35,15 @@ Or install only the frontend workspace package after `cd frontend` (still use **
 Create a `.env.local` file with:
 
 ```env
-# platform-api (used by lib/api.ts and /dev-login)
+# platform-api
 NEXT_PUBLIC_API_URL=http://localhost:3001
 
 # Tenant id for API query params — use test-tenant for seeded demo (see supabase/002_ui_tables.sql)
 # NEXT_PUBLIC_DEFAULT_TENANT_ID=test-tenant
 
-# Optional: Clerk — if unset/empty, the app does not enforce Clerk on dashboard routes
-# (JWT dev login works without a Clerk session). Set both to use Clerk sign-in + protect().
+# Clerk-first auth
 NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=
 CLERK_SECRET_KEY=
-
-# Optional: allow /dev-login when running `next start` (production build) for local demos
-# NEXT_PUBLIC_ENABLE_DEV_LOGIN=true
 ```
 
 ### Development
@@ -60,13 +56,11 @@ From repo root you can also run `pnpm dev:web`.
 
 Open [http://localhost:3000](http://localhost:3000) in your browser.
 
-### Login (demo milestone — JWT / dev auth)
+### Login (Clerk-first)
 
-1. Run **platform-api** with **`CLERK_AUTH_ENABLED=false`** (see `apps/platform-api/env.example`) and a **`JWT_SECRET`**.
-2. Seed or use an email that exists in the API auth store (`apps/platform-api` — `findUserByEmail`).
-3. Open **`http://localhost:3000/dev-login`**, enter that email, submit. The app calls **`POST /auth/login`** and stores the bearer in **`localStorage`** (`auth_token`).
-
-**Clerk:** If **`NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`** is **not** set, the Next.js **`proxy`** does not run `auth.protect()`, so the dashboard is reachable after JWT dev login. If Clerk **is** configured, you need a Clerk session **or** use public routes only until the Clerk token bridge is implemented.
+1. Run **platform-api** in Clerk mode.
+2. Open **`http://localhost:3000/sign-in`**.
+3. Sign in with Clerk; frontend uses Clerk session JWT for API requests.
 
 **Next.js 16:** Auth boundary lives in root **`proxy.ts`** (not `middleware.ts`).
 
@@ -103,7 +97,7 @@ frontend/
 The frontend connects to the backend API at `http://localhost:3001` (configurable via `NEXT_PUBLIC_API_BASE_URL`).
 
 Key endpoints used:
-- `/auth/login` - Authentication
+- `/auth/me` - Authenticated session identity
 - `/analytics/aggregate` - Dashboard metrics
 - `/analytics/calls` - Call records
 - `/config/agents` - Agent management

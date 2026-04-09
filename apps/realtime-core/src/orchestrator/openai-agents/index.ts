@@ -15,7 +15,6 @@
  */
 
 import { randomUUID } from "crypto";
-import { run } from "@openai/agents";
 import type { Agent, AgentInputItem, StreamedRunResult } from "@openai/agents";
 import { createLogger } from "@rezovo/logging";
 import { triageAgent, type CallContext } from "./agents";
@@ -24,6 +23,9 @@ import { retrieveKb } from "../../kbClient";
 import { env } from "../../env";
 import type { AgentConfigSnapshot, PhoneNumberConfig } from "@rezovo/core-types";
 import { traceLog, summarizeHistoryForTrace } from "../../traceLog";
+import { runWithModelGuardrails } from "./modelGuardrails";
+import { TurnOrchestratorV2, type TurnOrchestratorV2Result } from "./turnOrchestratorV2";
+import type { TurnDiagnostics } from "./contracts";
 
 const logger = createLogger({ service: "realtime-core", module: "openai-agents" });
 
@@ -38,6 +40,10 @@ export interface TurnResult {
   agentName: string;
   history: AgentInputItem[];
   currentAgent: Agent<any, any>;
+  intent?: string;
+  confidence?: number;
+  slots?: Record<string, unknown>;
+  diagnostics?: TurnDiagnostics;
 }
 
 // ---- Sentence buffer for streaming LLM tokens into speakable chunks ----
@@ -80,6 +86,22 @@ class SentenceBuffer {
     this.buffer = "";
     return remaining.length > 0 ? remaining : null;
   }
+}
+
+const LEGACY_RECOVERY_FALLBACKS = [
+  "I'm sorry, I missed that. Could you repeat it for me?",
+  "I didn't catch that clearly. Could you say it once more?",
+  "Let's try that again. What would you like to do?",
+] as const;
+
+function pickLegacyFallback(seed: string): string {
+  let hash = 0;
+  for (let i = 0; i < seed.length; i++) {
+    hash = (hash << 5) - hash + seed.charCodeAt(i);
+    hash |= 0;
+  }
+  const idx = Math.abs(hash) % LEGACY_RECOVERY_FALLBACKS.length;
+  return LEGACY_RECOVERY_FALLBACKS[idx];
 }
 
 // ---- Action detection from agent text ----
@@ -269,11 +291,16 @@ export async function processTurn(opts: {
     logger.info("running agent", { callId, agent: currentAgent.name });
     const llmStart = Date.now();
 
-    const stream = (await run(currentAgent as any, history, {
-      stream: true,
-      context: callContext,
-      signal,
-    })) as unknown as StreamedRunResult<CallContext, Agent<any, any>>;
+    const guardedRun = await runWithModelGuardrails({
+      agent: currentAgent as any,
+      input: history,
+      runOptions: {
+        stream: true,
+        context: callContext,
+        signal,
+      },
+    });
+    const stream = guardedRun.result as StreamedRunResult<CallContext, Agent<any, any>>;
 
     // 5. Stream text through sentence buffer for TTS
     const buffer = new SentenceBuffer();
@@ -339,7 +366,7 @@ export async function processTurn(opts: {
     });
 
     if (!fullText) {
-      const fallback = "I'm sorry, could you say that again?";
+      const fallback = pickLegacyFallback(`${callId}:${turnId}:empty`);
       await onSentence(fallback);
       traceLog.runOutput(callId, turnId, agentName, "speak", 0, newHistory.length, fallback, { emptyResponse: true });
       traceLog.turnEnd(callId, turnId, "speak", { emptyResponse: true, totalTurnMs });
@@ -350,6 +377,14 @@ export async function processTurn(opts: {
         agentName,
         history: newHistory,
         currentAgent: newAgent,
+        diagnostics: {
+          decisionMode: "direct_response",
+          pendingAction: null,
+          modelProfile: typeof currentAgent.model === "string" ? currentAgent.model : "custom-model",
+          retryReason: guardedRun.retryReason,
+          turnLatencyMs: totalTurnMs,
+          specialist: "general",
+        },
       };
     }
 
@@ -365,6 +400,14 @@ export async function processTurn(opts: {
       agentName,
       history: newHistory,
       currentAgent: newAgent,
+      diagnostics: {
+        decisionMode: "direct_response",
+        pendingAction: null,
+        modelProfile: typeof currentAgent.model === "string" ? currentAgent.model : "custom-model",
+        retryReason: guardedRun.retryReason,
+        turnLatencyMs: totalTurnMs,
+        specialist: "general",
+      },
     };
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
@@ -379,7 +422,7 @@ export async function processTurn(opts: {
     logger.error("agent run failed", { callId, error: msg, elapsed });
 
     traceLog.turnEnd(callId, turnId, "speak", { error: true, totalTurnMs: elapsed });
-    const fallback = "I apologize, I'm having a bit of trouble. Could you repeat that?";
+    const fallback = pickLegacyFallback(`${callId}:${turnId}:error`);
     await onSentence(fallback);
     // Prevent orphaned user entry — pair it with a synthetic assistant reply so history stays valid
     history.push({ role: "assistant", content: [{ type: "output_text", text: fallback }] } as AgentInputItem);
@@ -390,6 +433,14 @@ export async function processTurn(opts: {
       agentName: currentAgent.name,
       history,
       currentAgent,
+      diagnostics: {
+        decisionMode: "recovery",
+        pendingAction: null,
+        modelProfile: typeof currentAgent.model === "string" ? currentAgent.model : "custom-model",
+        retryReason: "legacy_exception",
+        turnLatencyMs: elapsed,
+        specialist: "general",
+      },
     };
   }
 }
@@ -397,3 +448,5 @@ export async function processTurn(opts: {
 // Re-exports
 export { triageAgent } from "./agents";
 export type { CallContext } from "./agents";
+export { TurnOrchestratorV2 };
+export type { TurnOrchestratorV2Result, TurnDiagnostics };

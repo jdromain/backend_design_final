@@ -10,6 +10,7 @@
 
 import { createLogger } from "@rezovo/logging";
 import { env } from "./env";
+import { internalApiHeaders } from "./platformApiAuth";
 
 const logger = createLogger({ service: "realtime-core", module: "callPersistence" });
 
@@ -36,6 +37,7 @@ export interface CallEndPayload {
   tenantId: string;
   endReason?: string;
   outcome?: string;
+  failureType?: string;
   durationSec?: number;
   classifiedIntent?: string;
   intentConfidence?: number;
@@ -73,7 +75,7 @@ async function safeFetch(path: string, body: unknown): Promise<void> {
   try {
     const res = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: internalApiHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify(body),
     });
     if (!res.ok) {
@@ -101,6 +103,7 @@ export async function persistCallEnd(payload: CallEndPayload): Promise<void> {
   logger.info("persisted call end", {
     callId: payload.callId,
     outcome: payload.outcome,
+    failureType: payload.failureType,
     durationSec: payload.durationSec,
     intent: payload.classifiedIntent,
     turns: payload.turnCount,

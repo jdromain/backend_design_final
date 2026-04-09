@@ -56,6 +56,7 @@ export class CallController {
 
     if (!phoneConfig) {
       logger.warn("no phone config after lazy fetch, routing to voicemail", { did, tenantId, lob });
+      await this.persistFallbackFailure(callId, tenantId, "missing_config", "error");
       this.routeToFallback("missing_config");
       return;
     }
@@ -68,6 +69,7 @@ export class CallController {
     const agentConfig = this.deps.cache.getAgent(phoneConfig.agentConfigId ?? "");
     if (!agentConfig) {
       logger.warn("missing agent config", { agentConfigId: phoneConfig.agentConfigId });
+      await this.persistFallbackFailure(callId, tenantId, "missing_agent_config", "error");
       this.routeToFallback("missing_agent_config", phoneConfig);
       return;
     }
@@ -76,11 +78,13 @@ export class CallController {
       const quota = await this.deps.billing.canStartCall(tenantId);
       if (!quota.allowed) {
         logger.warn("quota denied, routing to voicemail", { tenantId, reason: quota.reason });
+        await this.persistFallbackFailure(callId, tenantId, quota.reason ?? "quota_denied", "quota_denied");
         this.routeToFallback("quota_denied", phoneConfig);
         return;
       }
     } catch (err) {
       logger.error("billing quota failed", { error: (err as Error).message });
+      await this.persistFallbackFailure(callId, tenantId, "quota_error", "error");
       this.routeToFallback("quota_error", phoneConfig);
       return;
     }
@@ -113,6 +117,7 @@ export class CallController {
         logger.error("call handling failed", { did, tenantId, error: error.message });
       }
       if (!callStarted) {
+        await this.persistFallbackFailure(callId, tenantId, "call_start_failure", "error");
         this.routeToFallback("call_start_failure", phoneConfig);
       }
     } finally {
@@ -215,6 +220,20 @@ export class CallController {
             }
           }
         );
+
+        const turnDiagnostics = session.getLastTurnDiagnostics();
+        if (turnDiagnostics) {
+          persistCallEvent({
+            callId: session.id,
+            tenantId: session.context.tenantId,
+            eventType: "turn_diagnostic",
+            payload: turnDiagnostics,
+          }).catch((err) => logger.warn("turn diagnostics persistence failed", {
+            callId: session.id,
+            error: err instanceof Error ? err.message : String(err),
+          }));
+        }
+
         if (response.type === "handoff" || response.type === "end") {
           callEnded = true;
           sttStreamRef.close();
@@ -449,6 +468,25 @@ export class CallController {
     });
   }
 
+  private async persistFallbackFailure(
+    callId: string | undefined,
+    tenantId: string,
+    failureType: string,
+    endReason: "error" | "timeout" | "quota_denied"
+  ): Promise<void> {
+    if (!callId) return;
+    await persistCallEnd({
+      callId,
+      tenantId,
+      endReason,
+      outcome: "failed",
+      failureType,
+      durationSec: 0,
+      turnCount: 0,
+      transcript: [],
+    }).catch((err) => logger.warn("fallback call-end persistence failed", { callId, error: (err as Error).message }));
+  }
+
   /**
    * Synthesize TTS and send audio through bridge back to caller.
    * Returns synthesis duration in ms, or 0 if synthesis failed.
@@ -495,5 +533,3 @@ export class CallController {
     }
   }
 }
-
-

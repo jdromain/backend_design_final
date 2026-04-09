@@ -1,5 +1,6 @@
 import { randomUUID } from "crypto";
 import { env } from "./env";
+import { internalApiHeaders } from "./platformApiAuth";
 
 export async function callTool(opts: {
   tenantId: string;
@@ -12,9 +13,9 @@ export async function callTool(opts: {
   const url = new URL("/tool/call", base);
   const res = await fetch(url.toString(), {
     method: "POST",
-    headers: {
+    headers: internalApiHeaders({
       "Content-Type": "application/json",
-    },
+    }),
     body: JSON.stringify({
       tenantId: opts.tenantId,
       toolName: opts.toolName,

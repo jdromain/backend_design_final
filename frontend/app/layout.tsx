@@ -4,7 +4,11 @@ import { Analytics } from "@vercel/analytics/next";
 import "./globals.css";
 import { ClerkProvider } from "@clerk/nextjs";
 import { Providers } from "@/components/providers";
-import { getClerkPublishableKey, isClerkConfigured } from "@/lib/clerk-runtime";
+import {
+  clerkExplicitlyEnabled,
+  getClerkPublishableKey,
+  isClerkConfigured,
+} from "@/lib/clerk-runtime";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -38,16 +42,24 @@ export const metadata: Metadata = {
     apple: "/apple-icon.png",
   },
 };
-
-const clerkPublishableKey = getClerkPublishableKey();
+export const dynamic = "force-dynamic";
 
 export default function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  const clerkEnabled = clerkExplicitlyEnabled();
+  const clerkConfigured = isClerkConfigured();
+  const clerkPublishableKey = getClerkPublishableKey();
+
   const shell = (
-    <html lang="en" suppressHydrationWarning>
+    <html
+      lang="en"
+      suppressHydrationWarning
+      data-clerk-enabled={clerkEnabled ? "true" : "false"}
+      data-clerk-configured={clerkConfigured ? "true" : "false"}
+    >
       <body
         className={`${geistSans.variable} ${geistMono.variable} font-sans antialiased`}
       >
@@ -57,7 +69,7 @@ export default function RootLayout({
     </html>
   );
 
-  if (isClerkConfigured()) {
+  if (clerkConfigured) {
     return (
       <ClerkProvider
         publishableKey={clerkPublishableKey}

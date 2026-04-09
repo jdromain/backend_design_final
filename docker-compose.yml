@@ -39,6 +39,7 @@ services:
       - ./database/setup_complete.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
       - ./database/002_ui_tables.sql:/docker-entrypoint-initdb.d/02_ui_tables.sql:ro
       - ./database/003_clerk_tenant_mapping.sql:/docker-entrypoint-initdb.d/03_clerk_tenant_mapping.sql:ro
+      - ./database/004_call_failure_type.sql:/docker-entrypoint-initdb.d/04_call_failure_type.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U rezovo"]
       interval: 5s
@@ -88,6 +89,9 @@ services:
       DB_POOL_MAX: "5"
       KAFKA_ENABLED: "false"
       EVENT_BUS_IMPL: redis
+      # Shared internal service bearer token (realtime-core -> platform-api).
+      # Keep identical between platform-api and realtime-core.
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-rezovo-local-internal-token}
       # Clerk auth vars (AUTH_MODE, CLERK_*) come from .env.docker via env_file.
       # Do NOT redeclare them here — ${} interpolation reads from the host shell,
       # not from env_file, so multiline keys (PEM) and secrets would be empty.
@@ -182,6 +186,8 @@ services:
       CONCURRENCY_LIMIT: "20"
       METRICS_PORT: "9100"
       LOG_LEVEL: info
+      # Must match platform-api INTERNAL_SERVICE_TOKEN for protected internal routes.
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-rezovo-local-internal-token}
     env_file:
       - .env.docker
     healthcheck:

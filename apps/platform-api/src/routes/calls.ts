@@ -11,14 +11,40 @@ import { CallsListEnvelopeSchema } from "../contracts/httpSchemas";
 
 const logger = createLogger({ service: "platform-api", module: "callRoutes" });
 
+type TimelineUiType =
+  | "call_started"
+  | "agent_spoke"
+  | "caller_spoke"
+  | "tool_called"
+  | "call_ended"
+  | "transfer"
+  | "error";
 
-function mapOutcome(outcome: string | undefined | null): "completed" | "handoff" | "dropped" | "systemFailed" | "pending" {
-  switch (outcome) {
-    case "handled": return "completed";
-    case "transferred": return "handoff";
-    case "abandoned": return "dropped";
-    case "failed": return "systemFailed";
-    default: return "pending";
+function mapOutcome(
+  outcome: string | undefined | null,
+  status?: string | undefined | null
+): "completed" | "handoff" | "dropped" | "systemFailed" | "pending" {
+  if (outcome) {
+    switch (outcome) {
+      case "handled": return "completed";
+      case "transferred": return "handoff";
+      case "abandoned": return "dropped";
+      case "failed": return "systemFailed";
+      default: break;
+    }
+  }
+
+  switch (status) {
+    case "completed":
+      return "completed";
+    case "transferred":
+      return "handoff";
+    case "abandoned":
+      return "dropped";
+    case "failed":
+      return "systemFailed";
+    default:
+      return "pending";
   }
 }
 
@@ -41,6 +67,53 @@ function mapLiveState(status: string): "ringing" | "active" | "at_risk" | "hando
     default:
       return "active";
   }
+}
+
+function mapTimelineType(rawType: string, payload: Record<string, unknown> | undefined): TimelineUiType {
+  switch (rawType) {
+    case "call_started":
+    case "carrier_voice":
+      return "call_started";
+    case "agent_spoke":
+      return "agent_spoke";
+    case "caller_spoke":
+    case "user_spoke":
+      return "caller_spoke";
+    case "tool_called":
+      return "tool_called";
+    case "call_ended":
+      return "call_ended";
+    case "transfer":
+    case "handoff_requested":
+      return "transfer";
+    case "carrier_status": {
+      const callStatus = typeof payload?.CallStatus === "string" ? payload.CallStatus : "";
+      if (["failed", "busy", "no-answer", "canceled"].includes(callStatus)) return "error";
+      if (callStatus === "completed") return "call_ended";
+      return "call_started";
+    }
+    default:
+      return "error";
+  }
+}
+
+function mapTimelineEvent(e: any) {
+  const rawType = String(e.event_type ?? "unknown");
+  const payload = (e.payload ?? {}) as Record<string, unknown>;
+  const mappedType = mapTimelineType(rawType, payload);
+  const rawDetail = mappedType !== rawType ? `raw event: ${rawType}` : undefined;
+  const description = rawType.replace(/_/g, " ");
+  const details = [payload?.description, rawDetail]
+    .filter((x): x is string => typeof x === "string" && x.length > 0)
+    .join(" • ");
+
+  return {
+    id: e.id,
+    type: mappedType,
+    timestamp: e.occurred_at,
+    description,
+    details: details.length > 0 ? details : undefined,
+  };
 }
 
 export function registerCallRoutes(app: FastifyInstance) {
@@ -95,6 +168,7 @@ export function registerCallRoutes(app: FastifyInstance) {
       classifiedIntent?: string;
       intentConfidence?: number;
       finalIntent?: string;
+      failureType?: string;
       slotsCollected?: Record<string, unknown>;
       turnCount?: number;
       llmTokensIn?: number;
@@ -129,6 +203,7 @@ export function registerCallRoutes(app: FastifyInstance) {
       durationSec: body.durationSec,
       endReason: body.endReason,
       outcome: body.outcome,
+      failureType: body.failureType ?? (body.outcome === "failed" ? body.endReason : undefined),
       classifiedIntent: body.classifiedIntent,
       intentConfidence: body.intentConfidence,
       finalIntent: body.finalIntent,
@@ -247,8 +322,9 @@ export function registerCallRoutes(app: FastifyInstance) {
         intent: capitalizeFirst(c.classifiedIntent) as any,
         direction: c.direction ?? "inbound",
         durationMs: (c.durationSec ?? 0) * 1000,
-        result: mapOutcome(c.outcome),
+        result: mapOutcome(c.outcome, c.status),
         endReason: c.endReason,
+        failureType: c.failureType,
         turnCount: c.turnCount,
         toolsUsed: tools,
         toolErrors: tools.filter((t) => !t.success).length,
@@ -299,13 +375,7 @@ export function registerCallRoutes(app: FastifyInstance) {
           durationSeconds: Math.floor((nowMs - startMs) / 1000),
           lastEvent: eventRows.length > 0 ? eventRows[eventRows.length - 1].event_type : "call_started",
           riskFlags: [] as string[],
-          timeline: eventRows.map((e: any) => ({
-            id: e.id,
-            type: e.event_type,
-            timestamp: e.occurred_at,
-            description: e.event_type.replace(/_/g, " "),
-            details: e.payload?.description ?? undefined,
-          })),
+          timeline: eventRows.map(mapTimelineEvent),
           transcript: transcriptRows.map((t: any) => ({
             id: t.id,
             role: t.speaker === "user" ? "caller" : "agent",
@@ -338,13 +408,7 @@ export function registerCallRoutes(app: FastifyInstance) {
       [id]
     )).rows;
 
-    const timeline = eventRows.map((e: any) => ({
-      id: e.id,
-      type: e.event_type,
-      timestamp: e.occurred_at,
-      description: e.event_type.replace(/_/g, " "),
-      details: e.payload?.description ?? undefined,
-    }));
+    const timeline = eventRows.map(mapTimelineEvent);
 
     sendData(reply, timeline);
   });

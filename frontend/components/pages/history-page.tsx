@@ -39,6 +39,7 @@ import type { Contact } from "@/lib/actions-store"
 import { subDays } from "date-fns"
 
 import { getCallHistory, getPhoneLines, getTools } from "@/lib/data/call-history"
+import { ApiError, waitForAuthReady } from "@/lib/api-client"
 
 interface SavedView {
   id: string
@@ -190,28 +191,53 @@ export function HistoryPage({ initialFilter, initialIntent, initialReason }: His
 
   // Load data on mount
   useEffect(() => {
+    let cancelled = false
+
     const loadData = async () => {
-      try {
-        const [callsData, phoneLinesData, toolsData] = await Promise.all([
-          getCallHistory(),
-          getPhoneLines(),
-          getTools(),
-        ])
-        setCalls(callsData)
-        setPhoneLines(phoneLinesData)
-        setTools(toolsData)
-      } catch (error) {
-        console.error("Failed to load call history data:", error)
-        toast({
-          title: "Error",
-          description: "Failed to load call history data.",
-          variant: "destructive",
-        })
-      } finally {
-        setLoading(false)
+      await waitForAuthReady()
+
+      let loadError: unknown = null
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+          const [callsData, phoneLinesData, toolsData] = await Promise.all([
+            getCallHistory(),
+            getPhoneLines(),
+            getTools(),
+          ])
+          if (cancelled) return
+          setCalls(callsData)
+          setPhoneLines(phoneLinesData)
+          setTools(toolsData)
+          setLoading(false)
+          return
+        } catch (error) {
+          loadError = error
+          if (error instanceof ApiError && error.status === 401 && attempt < 2) {
+            await new Promise((resolve) => setTimeout(resolve, (attempt + 1) * 1000))
+            continue
+          }
+          break
+        }
       }
+
+      if (cancelled) return
+
+      console.error("Failed to load call history data:", loadError)
+      toast({
+        title: "Error",
+        description:
+          loadError instanceof ApiError && loadError.status === 401
+            ? "API returned 401. Sign in with Clerk and confirm the 'platform-api' JWT template exists."
+            : "Failed to load call history data.",
+        variant: "destructive",
+      })
+      setLoading(false)
     }
+
     loadData()
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   useEffect(() => {

@@ -187,14 +187,17 @@ export function CallDetailDrawer({ call, open, onOpenChange }: CallDetailDrawerP
                 <CardContent>
                   <div className="space-y-4">
                     {timeline.map((event, index) => {
-                      const Icon = eventIcons[event.type]
+                      const Icon =
+                        eventIcons[event.type as keyof typeof eventIcons] ?? AlertTriangle
+                      const colorClass =
+                        eventColors[event.type as keyof typeof eventColors] ?? eventColors.error
                       return (
                         <div key={event.id} className="flex gap-3">
                           <div className="flex flex-col items-center">
                             <div
                               className={cn(
                                 "flex h-8 w-8 items-center justify-center rounded-full",
-                                eventColors[event.type],
+                                colorClass,
                               )}
                             >
                               <Icon className="h-4 w-4" />

@@ -9,7 +9,7 @@ const BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL ??
   "http://localhost:3001";
 
-/** Matches `lib/api` dev-login / JWT storage so both clients stay in sync. */
+/** Shared browser auth token storage key used by API clients. */
 const TOKEN_KEY = "auth_token";
 
 // ============================================================================

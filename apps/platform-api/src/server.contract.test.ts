@@ -9,8 +9,10 @@ import { createInMemoryEventBus } from "@rezovo/event-bus";
 
 const { CONTRACT_JWT_SECRET } = vi.hoisted(() => {
   const secret = "contract-test-jwt-secret";
+  process.env.AUTH_MODE = "dev_jwt";
   process.env.CLERK_AUTH_ENABLED = "false";
   process.env.JWT_SECRET = secret;
+  process.env.INTERNAL_SERVICE_TOKEN = "contract-internal-service-token";
   return { CONTRACT_JWT_SECRET: secret };
 });
 
@@ -49,7 +51,6 @@ import {
   BillingQuotaOkSchema,
   CallsListEnvelopeSchema,
   HealthEnvelopeSchema,
-  LoginOkSchema,
 } from "./contracts/httpSchemas";
 
 const testTenantCallRow = {
@@ -71,6 +72,7 @@ const testTenantCallRow = {
   duration_sec: 120,
   end_reason: null,
   outcome: "handled",
+  failure_type: null,
   slots_collected: {},
   summary: null,
   turn_count: 3,
@@ -78,6 +80,15 @@ const testTenantCallRow = {
   llm_tokens_out: 0,
   tts_chars: 0,
   stt_seconds: 0,
+};
+
+const testTenantFailedStatusOnlyRow = {
+  ...testTenantCallRow,
+  call_id: "call-list-contract-2",
+  status: "failed",
+  outcome: null,
+  end_reason: "error",
+  failure_type: "busy",
 };
 
 const testTenantLiveRow = {
@@ -148,7 +159,7 @@ function wireDbMocks() {
     }
     if (s.includes("from calls") && s.includes("limit 100")) {
       if (p0 === "test-tenant") {
-        return { rows: [testTenantCallRow] };
+        return { rows: [testTenantCallRow, testTenantFailedStatusOnlyRow] };
       }
       return { rows: [] };
     }
@@ -190,6 +201,7 @@ describe("platform-api HTTP contract (inject)", () => {
     const res = await app.inject({
       method: "GET",
       url: "/calls?tenantId=test-tenant",
+      headers: { authorization: `Bearer ${bearerForTenant()}` },
     });
     expect(res.statusCode).toBe(200);
     const body = res.json();
@@ -197,10 +209,22 @@ describe("platform-api HTTP contract (inject)", () => {
     expect(Array.isArray(body.data)).toBe(true);
   });
 
+  it("GET /config/snapshot accepts internal service bearer token", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: "/config/snapshot?tenantId=test-tenant&lob=default",
+      headers: { authorization: "Bearer contract-internal-service-token" },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.tenantId).toBe("test-tenant");
+  });
+
   it("GET /calls/live?tenantId=… returns { data: [] } when no live rows", async () => {
     const res = await app.inject({
       method: "GET",
       url: "/calls/live?tenantId=tenant-without-live-calls",
+      headers: { authorization: `Bearer ${bearerForTenant("tenant-without-live-calls")}` },
     });
     expect(res.statusCode).toBe(200);
     const body = res.json();
@@ -212,6 +236,7 @@ describe("platform-api HTTP contract (inject)", () => {
     const res = await app.inject({
       method: "GET",
       url: "/analytics/summary?tenantId=test-tenant",
+      headers: { authorization: `Bearer ${bearerForTenant()}` },
     });
     expect(res.statusCode).toBe(200);
     const body = res.json();
@@ -220,24 +245,24 @@ describe("platform-api HTTP contract (inject)", () => {
     expect(body.data.toolInvocations).toBe(5);
   });
 
-  it("POST /auth/login returns LoginOkSchema for a known user row", async () => {
+  it("POST /auth/login returns 410 in Clerk-first mode", async () => {
     const res = await app.inject({
       method: "POST",
       url: "/auth/login",
       headers: { "content-type": "application/json" },
       payload: { email: "contract-demo@example.com" },
     });
-    expect(res.statusCode).toBe(200);
+    expect(res.statusCode).toBe(410);
     const body = res.json();
-    expect(Value.Check(LoginOkSchema, body)).toBe(true);
-    expect(body.user.tenantId).toBe("test-tenant");
+    expect(body.ok).toBe(false);
+    expect(body.auth).toBe("clerk");
   });
 
   it("POST /billing-quota/can-start-call returns BillingQuotaOkSchema", async () => {
     const res = await app.inject({
       method: "POST",
       url: "/billing-quota/can-start-call",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", authorization: `Bearer ${bearerForTenant()}` },
       payload: { tenantId: `quota-${Date.now()}` },
     });
     expect(res.statusCode).toBe(200);
@@ -246,11 +271,11 @@ describe("platform-api HTTP contract (inject)", () => {
     expect(body.allowed).toBe(true);
   });
 
-  function bearerTestTenant(): string {
+  function bearerForTenant(tenantId = "test-tenant"): string {
     return jwt.sign(
       {
         sub: "jwt-contract-user",
-        tenant_id: "test-tenant",
+        tenant_id: tenantId,
         email: "contract-tenant@example.com",
         roles: ["viewer"],
       },
@@ -263,7 +288,7 @@ describe("platform-api HTTP contract (inject)", () => {
     const res = await app.inject({
       method: "GET",
       url: "/auth/me",
-      headers: { authorization: `Bearer ${bearerTestTenant()}` },
+      headers: { authorization: `Bearer ${bearerForTenant()}` },
     });
     expect(res.statusCode).toBe(200);
     const body = res.json();
@@ -275,7 +300,7 @@ describe("platform-api HTTP contract (inject)", () => {
     const res = await app.inject({
       method: "GET",
       url: "/calls/live",
-      headers: { authorization: `Bearer ${bearerTestTenant()}` },
+      headers: { authorization: `Bearer ${bearerForTenant()}` },
     });
     expect(res.statusCode).toBe(200);
     const body = res.json();
@@ -288,12 +313,15 @@ describe("platform-api HTTP contract (inject)", () => {
     const res = await app.inject({
       method: "GET",
       url: "/calls",
-      headers: { authorization: `Bearer ${bearerTestTenant()}` },
+      headers: { authorization: `Bearer ${bearerForTenant()}` },
     });
     expect(res.statusCode).toBe(200);
     const body = res.json();
     expect(Value.Check(CallsListEnvelopeSchema, body)).toBe(true);
-    expect(body.data).toHaveLength(1);
-    expect(body.data[0].callId).toBe("call-list-contract-1");
+    expect(body.data).toHaveLength(2);
+    expect(body.data.some((row: any) => row.callId === "call-list-contract-1")).toBe(true);
+    const failed = body.data.find((row: any) => row.callId === "call-list-contract-2");
+    expect(failed.result).toBe("systemFailed");
+    expect(failed.failureType).toBe("busy");
   });
 });

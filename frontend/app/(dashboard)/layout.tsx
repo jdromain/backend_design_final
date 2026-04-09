@@ -1,5 +1,6 @@
 import { DashboardShell } from "@/components/layout/dashboard-shell";
 import { ErrorBoundary } from "@/components/error-boundary";
+import { RouteErrorBoundary } from "@/components/route-error-boundary";
 
 export default function DashboardLayout({
   children,
@@ -9,9 +10,8 @@ export default function DashboardLayout({
   return (
     <ErrorBoundary>
       <DashboardShell>
-        <ErrorBoundary>{children}</ErrorBoundary>
+        <RouteErrorBoundary>{children}</RouteErrorBoundary>
       </DashboardShell>
     </ErrorBoundary>
   );
 }
-

@@ -49,7 +49,7 @@ export function Header() {
           <UserButton afterSignOutUrl="/sign-in" />
         ) : (
           <Button variant="outline" size="sm" asChild>
-            <Link href="/dev-login">Account</Link>
+            <Link href="/sign-in">Sign in</Link>
           </Button>
         )}
       </div>

@@ -227,6 +227,7 @@ CREATE TABLE IF NOT EXISTS public.calls (
                       CHECK (outcome IS NULL OR outcome IN (
                         'handled', 'abandoned', 'transferred', 'failed'
                       )),
+  failure_type      TEXT,
 
   -- Collected data
   slots_collected   JSONB DEFAULT '{}'::JSONB,
@@ -248,6 +249,7 @@ CREATE INDEX IF NOT EXISTS idx_calls_twilio         ON public.calls(twilio_call_
 CREATE INDEX IF NOT EXISTS idx_calls_started        ON public.calls(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_calls_tenant_started ON public.calls(tenant_id, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_calls_status         ON public.calls(status);
+CREATE INDEX IF NOT EXISTS idx_calls_failure_type   ON public.calls(failure_type);
 
 -- ═══════════════════════════════════════════════════════════════
 -- 9. CALL TRANSCRIPT — per-utterance with timestamps

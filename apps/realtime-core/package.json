@@ -7,7 +7,7 @@
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
     "lint": "echo \"lint not yet configured\"",
-    "test": "echo \"tests not yet configured\""
+    "test": "tsx --test src/**/*.test.ts"
   },
   "dependencies": {
     "@openai/agents": "^0.1.0",

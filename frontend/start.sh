@@ -23,7 +23,7 @@ if [[ ! -f ".env.local" ]]; then
 NEXT_PUBLIC_API_URL=http://localhost:3001
 NEXT_PUBLIC_API_BASE_URL=http://localhost:3001
 
-# Optional Clerk — leave empty to use JWT dev login without Clerk
+# Clerk-first auth
 NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=
 CLERK_SECRET_KEY=
 
@@ -39,7 +39,7 @@ echo "  1. platform-api on http://localhost:3001 (see apps/platform-api/env.exam
 echo "  2. Postgres running if you want real data (otherwise API logs a DB warning but still listens)"
 echo "  3. If port 3001 or 3000 is busy, from repo root run: pnpm kill-ports"
 echo ""
-echo "Login: http://localhost:3000/dev-login (email only — matches POST /auth/login)"
+echo "Login: http://localhost:3000/sign-in (Clerk)"
 echo ""
 
 pnpm run dev

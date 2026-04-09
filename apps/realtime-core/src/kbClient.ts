@@ -1,4 +1,5 @@
 import { env } from "./env";
+import { internalApiHeaders } from "./platformApiAuth";
 
 export type RetrieveRequest = {
   tenant_id: string;
@@ -12,9 +13,9 @@ export async function retrieveKb(req: RetrieveRequest): Promise<{ passages: Arra
   const base = env.PLATFORM_API_URL;
   const res = await fetch(`${base}/kb/retrieve`, {
     method: "POST",
-    headers: {
+    headers: internalApiHeaders({
       "Content-Type": "application/json",
-    },
+    }),
     body: JSON.stringify(req)
   });
   if (!res.ok) {

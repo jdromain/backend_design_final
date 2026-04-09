@@ -18,6 +18,9 @@ export default defineConfig({
     },
   },
   test: {
+    env: {
+      VITEST: "true"
+    },
     globals: false,
     environment: "node",
     include: ["src/**/*.integration.test.ts"],
