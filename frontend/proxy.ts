@@ -6,15 +6,11 @@ import { getClerkPublishableKey, isClerkConfigured } from "@/lib/clerk-runtime";
  * Next.js 16+ network boundary — use `proxy.ts` + named `proxy` export
  * (replaces root `middleware.ts`). See:
  * https://nextjs.org/docs/messages/middleware-to-proxy
- *
- * Public routes include legacy paths that now forward into Clerk sign-in.
  */
 const isPublicRoute = createRouteMatcher([
   "/sign-in(.*)",
   "/sign-up(.*)",
-  "/login(.*)",
   "/api/webhooks(.*)",
-  "/dev-login(.*)",
 ]);
 
 function runClerkProxy(request: NextRequest, event: NextFetchEvent) {

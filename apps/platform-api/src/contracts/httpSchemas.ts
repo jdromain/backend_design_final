@@ -60,18 +60,6 @@ export const AnalyticsSummaryEnvelopeSchema = Type.Object({
   data: AnalyticsSummarySchema,
 });
 
-/** POST /auth/login success (not wrapped in { data }) */
-export const LoginOkSchema = Type.Object({
-  ok: Type.Literal(true),
-  token: Type.String(),
-  user: Type.Object({
-    id: Type.String(),
-    email: Type.String(),
-    tenantId: Type.String(),
-    roles: Type.Array(Type.String()),
-  }),
-});
-
 export const BillingQuotaOkSchema = Type.Object({
   allowed: Type.Boolean(),
   active: Type.Optional(Type.Number()),

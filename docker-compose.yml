@@ -2,7 +2,7 @@
 #
 # Prerequisites:
 #   cp .env.docker.example .env.docker
-#   # Fill in JWT_SECRET and OPENAI_API_KEY at minimum
+#   # Fill in Clerk keys and OPENAI_API_KEY at minimum
 #
 # Start everything:
 #   docker compose up -d          # uses cached images
@@ -92,7 +92,7 @@ services:
       # Shared internal service bearer token (realtime-core -> platform-api).
       # Keep identical between platform-api and realtime-core.
       INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-rezovo-local-internal-token}
-      # Clerk auth vars (AUTH_MODE, CLERK_*) come from .env.docker via env_file.
+      # Clerk auth vars (CLERK_*) come from .env.docker via env_file.
       # Do NOT redeclare them here — ${} interpolation reads from the host shell,
       # not from env_file, so multiline keys (PEM) and secrets would be empty.
     env_file:

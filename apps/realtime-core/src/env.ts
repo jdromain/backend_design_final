@@ -90,9 +90,6 @@ export const env = {
   TWILIO_AUTH_TOKEN: optional("TWILIO_AUTH_TOKEN", ""),
 
   // Runtime
-  RTC_ORCHESTRATOR_V2_ENABLED: optionalBool("RTC_ORCHESTRATOR_V2_ENABLED", false),
-  /** Comma-separated tenant IDs for canary rollout; empty means all tenants when V2 is enabled. */
-  RTC_ORCHESTRATOR_V2_TENANTS: optional("RTC_ORCHESTRATOR_V2_TENANTS", ""),
   CONCURRENCY_LIMIT: optionalInt("CONCURRENCY_LIMIT", 20),
   METRICS_PORT: optionalInt("METRICS_PORT", 9100),
   LOG_LEVEL: optional("LOG_LEVEL", "info"),

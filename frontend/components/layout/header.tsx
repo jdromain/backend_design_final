@@ -6,18 +6,24 @@ import { UserButton } from "@clerk/nextjs";
 import { Bell } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/theme-toggle";
-import { api } from "@/lib/api";
+import { getSystemHealth } from "@/lib/data/dashboard";
 import { isClerkConfigured } from "@/lib/clerk-runtime";
 
 export function Header() {
   const { data: healthData, error } = useQuery({
     queryKey: ["health"],
-    queryFn: () => api.health.get(),
+    queryFn: getSystemHealth,
     refetchInterval: (query) => (query.state.error ? false : 30000),
     retry: 1,
   });
 
-  const systemStatus = error ? "error" : (healthData?.status || "unknown");
+  const systemStatus = error
+    ? "error"
+    : healthData?.overall === "operational"
+    ? "ok"
+    : healthData?.overall === "degraded"
+    ? "degraded"
+    : "error";
   const statusColor =
     systemStatus === "ok"
       ? "bg-green-500"

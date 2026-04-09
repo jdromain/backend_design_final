@@ -1,4 +1,4 @@
-import { createClerkClient } from "@clerk/clerk-sdk-node";
+import { createClerkClient, verifyToken as verifyClerkJwt } from "@clerk/backend";
 import { createLogger } from "@rezovo/logging";
 import { env } from "../env";
 
@@ -63,9 +63,10 @@ function assertAudienceIssuer(payload: Record<string, unknown>): void {
 
 export async function verifyClerkToken(token: string): Promise<VerifiedClerkSession> {
   try {
-    const clerk = getClerk();
-    const payload = (await clerk.verifyToken(token, {
+    const payload = (await verifyClerkJwt(token, {
+      secretKey: env.CLERK_SECRET_KEY || undefined,
       jwtKey: env.CLERK_JWT_PUBLIC_KEY || undefined,
+      audience: env.CLERK_JWT_AUDIENCE || undefined,
     })) as unknown as Record<string, unknown>;
 
     assertAudienceIssuer(payload);

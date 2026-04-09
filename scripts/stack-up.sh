@@ -16,7 +16,7 @@ cd "$ROOT"
 if [[ ! -f "$ROOT/.env.docker" ]]; then
   echo "ERROR: .env.docker not found." >&2
   echo "       Run: cp .env.docker.example .env.docker" >&2
-  echo "       Then fill in JWT_SECRET and OPENAI_API_KEY at minimum." >&2
+  echo "       Then fill in Clerk keys and OPENAI_API_KEY at minimum." >&2
   exit 1
 fi
 

@@ -1,13 +1,11 @@
-import {
-  setAuthToken as syncAuthTokenFromApiModule,
-  DEFAULT_TENANT_ID,
-} from "./api";
 import { isBrowserClerkApiMode } from "./clerk-runtime";
 
 const BASE_URL =
   process.env.NEXT_PUBLIC_API_URL ??
   process.env.NEXT_PUBLIC_API_BASE_URL ??
   "http://localhost:3001";
+export const DEFAULT_TENANT_ID =
+  process.env.NEXT_PUBLIC_DEFAULT_TENANT_ID ?? "test-tenant";
 
 /** Shared browser auth token storage key used by API clients. */
 const TOKEN_KEY = "auth_token";
@@ -60,7 +58,6 @@ export class ApiError extends Error {
 export function clearAuthToken(): void {
   if (typeof window === "undefined") return;
   localStorage.removeItem(TOKEN_KEY);
-  syncAuthTokenFromApiModule(null);
 }
 
 function getStoredToken(): string | null {

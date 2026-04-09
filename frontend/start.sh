@@ -19,7 +19,7 @@ fi
 if [[ ! -f ".env.local" ]]; then
   echo "Creating .env.local with API URL defaults..."
   cat > .env.local << 'EOF'
-# platform-api base (both names supported: lib/api.ts + lib/api-client.ts)
+# platform-api base
 NEXT_PUBLIC_API_URL=http://localhost:3001
 NEXT_PUBLIC_API_BASE_URL=http://localhost:3001
 

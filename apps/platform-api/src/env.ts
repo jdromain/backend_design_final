@@ -47,51 +47,16 @@ function optionalBool(name: string, fallback: boolean): boolean {
   return v === "true";
 }
 
-function resolveClerkAuthEnabled(): boolean {
-  const mode = (process.env.AUTH_MODE || "").trim().toLowerCase();
-  if (mode === "clerk") {
-    if (process.env.CLERK_AUTH_ENABLED === "false") {
-      console.error("[env] AUTH_MODE=clerk conflicts with CLERK_AUTH_ENABLED=false");
-      process.exit(1);
-    }
-    return true;
-  }
-  if (mode === "dev_jwt") {
-    if (process.env.CLERK_AUTH_ENABLED === "true") {
-      console.error("[env] AUTH_MODE=dev_jwt conflicts with CLERK_AUTH_ENABLED=true");
-      process.exit(1);
-    }
-    return false;
-  }
-  if (mode !== "") {
-    console.error(`[env] Invalid AUTH_MODE="${process.env.AUTH_MODE}" (use dev_jwt or clerk)`);
-    process.exit(1);
-  }
-  return optionalBool("CLERK_AUTH_ENABLED", false);
-}
-
-const clerkAuthEnabledResolved = resolveClerkAuthEnabled();
-
 export const env = {
   PORT: parseInt(optional("PORT", "3001"), 10),
   NODE_ENV: optional("NODE_ENV", "development") as "development" | "production" | "test",
-  /** When true, query `tenantId` may override JWT tenant even in production (use sparingly). */
-  ALLOW_DEV_TENANT_QUERY_OVERRIDE: optionalBool("ALLOW_DEV_TENANT_QUERY_OVERRIDE", false),
-
-  /**
-   * Optional single switch: `dev_jwt` | `clerk`. When set, must agree with `CLERK_AUTH_ENABLED`.
-   * If unset, `CLERK_AUTH_ENABLED` alone controls Clerk vs dev JWT.
-   */
-  AUTH_MODE: optional("AUTH_MODE", "") as "" | "dev_jwt" | "clerk",
-  /** Derived from `AUTH_MODE` or `CLERK_AUTH_ENABLED`. */
-  AUTH_MODE_EFFECTIVE: clerkAuthEnabledResolved ? ("clerk" as const) : ("dev_jwt" as const),
 
   DATABASE_URL: optional("DATABASE_URL", "postgresql://rezovo:rezovo_local@localhost:5432/rezovo"),
   DB_POOL_MAX: parseInt(optional("DB_POOL_MAX", "5"), 10),
   DB_SSL: optionalBool("DB_SSL", false),
 
   // Clerk
-  CLERK_AUTH_ENABLED: clerkAuthEnabledResolved,
+  CLERK_AUTH_ENABLED: optionalBool("CLERK_AUTH_ENABLED", true),
   CLERK_SECRET_KEY: optional("CLERK_SECRET_KEY", ""),
   CLERK_PUBLISHABLE_KEY: optional("CLERK_PUBLISHABLE_KEY", ""),
   CLERK_JWT_AUDIENCE: optional("CLERK_JWT_AUDIENCE", ""),
@@ -125,8 +90,6 @@ export const env = {
   ELEVEN_API_KEY: optional("ELEVEN_API_KEY", ""),
   ELEVEN_VOICE_ID: optional("ELEVEN_VOICE_ID", ""),
 
-  // Auth
-  JWT_SECRET: optional("JWT_SECRET", "dev-secret-change-me"),
   /** Shared bearer token for trusted server-to-server calls (realtime-core -> platform-api). */
   INTERNAL_SERVICE_TOKEN: optional("INTERNAL_SERVICE_TOKEN", ""),
 

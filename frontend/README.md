@@ -70,7 +70,8 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 frontend/
 ├── app/
 │   ├── (auth)/           # Authentication pages
-│   │   └── login/
+│   │   ├── sign-in/
+│   │   └── sign-up/
 │   └── (dashboard)/      # Dashboard pages
 │       ├── layout.tsx
 │       ├── page.tsx      # Main dashboard
@@ -86,7 +87,8 @@ frontend/
 │   ├── dashboard/        # Dashboard-specific components
 │   └── layout/           # Layout components (sidebar, header)
 ├── lib/
-│   ├── api.ts            # API client with typed functions
+│   ├── api-client.ts     # HTTP client + Clerk token bridge helpers
+│   ├── data/             # Domain data modules (dashboard, calls, analytics, etc.)
 │   ├── types.ts          # TypeScript type definitions
 │   └── utils.ts          # Utility functions
 └── .env.local            # Environment variables
@@ -98,14 +100,14 @@ The frontend connects to the backend API at `http://localhost:3001` (configurabl
 
 Key endpoints used:
 - `/auth/me` - Authenticated session identity
-- `/analytics/aggregate` - Dashboard metrics
-- `/analytics/calls` - Call records
-- `/config/agents` - Agent management
-- `/kb/docs` - Knowledge base
-- `/tool/credentials` - Integration credentials
+- `/calls` - Call records
+- `/analytics/summary` - Dashboard metrics
+- `/agents` - Agent management
+- `/knowledge/documents` - Knowledge base
+- `/credentials` - Integration credentials
 - `/health` - System health
 
-See `lib/api.ts` for the complete API client implementation.
+See `lib/api-client.ts` and `lib/data/*` for the API integration layer.
 
 ## Tech Stack
 
@@ -131,8 +133,8 @@ npm start
 This frontend provides a complete UI for testing all backend functionality:
 
 1. **Start the backend**: Ensure `platform-api` is running on port 3001
-2. **Login**: Use the local auth endpoint to authenticate
-3. **Dashboard**: Verify metrics are loading from `/analytics/aggregate`
+2. **Login**: Sign in via Clerk at `/sign-in`
+3. **Dashboard**: Verify metrics are loading from `/analytics/summary`
 4. **Live Calls**: Check system status and active call monitoring
 5. **Call History**: Test filtering and pagination
 6. **Analytics**: Verify charts render with real data
@@ -142,7 +144,7 @@ This frontend provides a complete UI for testing all backend functionality:
 
 ## Notes
 
-- The frontend uses localStorage for token storage in development mode
+- The frontend stores auth token state for API calls and clears it on 401 responses
 - Real-time updates are achieved via polling (every 2-30 seconds depending on the data)
-- Clerk integration is optional; local auth is used by default for testing
+- Clerk-first auth is required for dashboard usage
 - All API responses are typed using TypeScript interfaces in `lib/types.ts`

@@ -801,13 +801,13 @@ If you use OpenTelemetry:
 Tasks below pick up from the current scaffold and carry us to a backend that’s safe for frontend integration and pilot testing. Each “batch” lists the exact files to touch and what changes they need.
 
 ### Batch F1 – Clerk authentication cutover
-**Files:** `apps/platform-api/src/auth/jwt.ts`, `apps/platform-api/src/auth/store.ts`, `apps/platform-api/src/server.ts`
-- Replace the `/auth/login` handler with Clerk token verification (add a `verifyClerkToken` helper).
-- Stop reading `data/users.json`; map Clerk user IDs to tenant/roles (temporary lookup until Supabase migration lands).
-- Keep the local login path behind a feature flag in dev/staging for rollback.
+**Files:** `apps/platform-api/src/auth/jwt.ts`, `apps/platform-api/src/auth/storeClient.ts`, `apps/platform-api/src/server.ts`
+- Enforce Clerk session JWT verification for all user-facing API routes.
+- Map Clerk user IDs and org membership to tenant/roles from Postgres (`users`, `tenants`).
+- Keep internal service-to-service auth on `INTERNAL_SERVICE_TOKEN` for realtime-core.
 
 ### Batch F2 – Supabase as source of truth
-**Files:** `apps/platform-api/src/persistence/store.ts`, `apps/jobs/src/persistenceClient.ts`, `apps/platform-api/src/kb.ts`, `apps/platform-api/src/config/store.ts`, `apps/platform-api/src/analytics/store.ts`
+**Files:** `apps/platform-api/src/persistence/store.ts`, `apps/jobs/src/persistenceClient.ts`, `apps/platform-api/src/kb.ts`, `apps/platform-api/src/config/store.ts`
 - Create a Supabase client module with CRUD for tenants, phone_numbers, agent_configs, plans, kb_documents, kb_chunks, tool_results, usage_records, audit_logs.
 - Dual-write JSON + Supabase until backfill is complete; then retire JSON writes.
 - Provide SQL migrations and backfill scripts for existing data.
@@ -825,7 +825,7 @@ Tasks below pick up from the current scaffold and carry us to a backend that’s
 - Remove the in-memory bus when cutover is complete.
 
 ### Batch F5 – Telephony carrier integration
-**Files:** `apps/realtime-core/src/telephony/pbxBridge.ts`, `infra/pbx/`, new scripts (e.g., `scripts/twilioProvision.ts`)
+**Files:** `apps/realtime-core/src/telephony/pbxBridge.ts`, `infra/pbx/`, telephony provisioning automation scripts
 - Automate Twilio/Bandwidth number purchase, SIP trunk configuration, and webhook signature validation/retries.
 - Store phone-number metadata in Supabase and surface per-tenant telephony costs.
 - Define number lifecycle automation (attach → monitor → recycle).
@@ -962,7 +962,7 @@ Understood. Here is the **complete, end-to-end voice ingestion delivery plan** i
    - Apply via `supabase db push`.
 
 2. **Backend persistence layer**
-   - New file `apps/platform-api/src/persistence/voiceStore.ts` with:
+   - Extend existing persistence modules (`callStore`/DB layer) with:
      - `async upsertVoiceNumber(record)`
      - `async getVoiceNumberByPhone(phone: string)`
      - `async logCarrierEvent(event)`
@@ -987,7 +987,7 @@ Understood. Here is the **complete, end-to-end voice ingestion delivery plan** i
    - `pnpm add twilio` (in backend root).
    - Supabase REST already set up; reuse `supabaseClient.ts`.
 
-2. **Implement `scripts/twilioProvision.ts`**
+2. **Implement provisioning automation script**
    - Input: `tenantId`, optional `areaCode`, optional `friendlyName`.
    - Steps:
      ```ts
@@ -1007,13 +1007,7 @@ Understood. Here is the **complete, end-to-end voice ingestion delivery plan** i
        status: "provisioned"
      });
      ```
-   - CLI usage:
-     ```
-     pnpm ts-node scripts/twilioProvision.ts \
-       --tenant-id tenant-default \
-       --area-code 415 \
-       --voice-url https://api.dev.rezovo.com/twilio/voice
-     ```
+   - Provide CLI usage for tenant provisioning in script README/docs.
 
 3. **Release script** `scripts/twilioRelease.ts`:
    - Deletes number via Twilio API.
@@ -1030,7 +1024,7 @@ Understood. Here is the **complete, end-to-end voice ingestion delivery plan** i
      - `POST /twilio/voice`:
        - Use `twilio.webhook({ validate: true })`.
        - Lookup `voice_numbers` by `req.body.To`.
-       - Log event via `voiceStore.logCarrierEvent`.
+       - Log event via the persistence layer (`callStore.insertEvent` or equivalent).
        - Respond with TwiML:
          ```js
          const response = new twilio.twiml.VoiceResponse();

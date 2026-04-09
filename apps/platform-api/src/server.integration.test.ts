@@ -2,24 +2,35 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import pg from "pg";
-import jwt from "jsonwebtoken";
 
 /** Repo `database/` when tests run with cwd `apps/platform-api`. */
 const databaseDir = path.resolve(process.cwd(), "..", "..", "database");
+
+vi.mock("./auth/clerk", () => ({
+  isClerkEnabled: true,
+  verifyClerkToken: vi.fn(async (_token: string) => ({
+    sub: "clerk-integration-user",
+    email: "admin@example.com",
+    tenantIdClaim: "test-tenant",
+  })),
+  getClerkBackendClient: vi.fn(),
+}));
 
 describe.skipIf(process.env.SKIP_TESTCONTAINERS === "true")(
   "platform-api with real Postgres (Testcontainers)",
   () => {
     let container: StartedPostgreSqlContainer;
     let app: Awaited<ReturnType<typeof import("./server").buildServer>>;
-    const jwtSecret = "integration-test-jwt-secret";
 
     beforeAll(async () => {
       process.env.VITEST = "true";
-      process.env.JWT_SECRET = jwtSecret;
-      process.env.CLERK_AUTH_ENABLED = "false";
+      process.env.CLERK_AUTH_ENABLED = "true";
+      process.env.CLERK_SECRET_KEY = "sk_test_integration";
+      process.env.CLERK_JWT_PUBLIC_KEY = "pk_test_integration";
+      process.env.CLERK_WEBHOOK_SECRET = "whsec_integration";
+      process.env.INTERNAL_SERVICE_TOKEN = "integration-internal-token";
       process.env.REDIS_ENABLED = "false";
       process.env.EVENT_BUS_IMPL = "memory";
 
@@ -57,24 +68,11 @@ describe.skipIf(process.env.SKIP_TESTCONTAINERS === "true")(
       expect(body.ready).toBe(true);
     });
 
-    it("dev JWT login + GET /calls returns { data } for test-tenant", async () => {
-      const login = await app.inject({
-        method: "POST",
-        url: "/auth/login",
-        headers: { "content-type": "application/json" },
-        payload: { email: "admin@example.com" },
-      });
-      expect(login.statusCode).toBe(200);
-      const { token } = login.json() as { token: string };
-      expect(token).toBeTruthy();
-
-      const payload = jwt.verify(token, jwtSecret) as { tenant_id: string };
-      expect(payload.tenant_id).toBe("test-tenant");
-
+    it("Clerk auth + GET /calls returns { data } for test-tenant", async () => {
       const calls = await app.inject({
         method: "GET",
         url: "/calls",
-        headers: { authorization: `Bearer ${token}` },
+        headers: { authorization: "Bearer integration-clerk-token" },
       });
       expect(calls.statusCode).toBe(200);
       expect(Array.isArray(calls.json().data)).toBe(true);

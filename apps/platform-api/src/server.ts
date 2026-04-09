@@ -21,8 +21,6 @@ import { canStartCallHandler, registerUsageIngest } from "./billingQuota";
 import { toolCallHandler } from "./toolbus";
 import { kbRetrieveHandler, kbIngestHandler, kbStatusHandler } from "./kb";
 import { resolvedAuthHook, resolvedAuthOrInternalHook } from "./auth/jwt";
-import { AnalyticsStore } from "./analytics/store";
-import { registerAnalyticsConsumer } from "./analytics/consumer";
 import { PersistenceStore } from "./persistence/store";
 import { registerTwilioRoutes } from "./routes/twilio";
 import { registerCallRoutes } from "./routes/calls";
@@ -86,17 +84,6 @@ export function buildServer(eventBus: EventBusClient): FastifyInstance<any, any,
 
   const persistence = new PersistenceStore();
   const configStore = new ConfigStore(persistence);
-  const analyticsStore = new AnalyticsStore();
-
-  persistence
-    .loadAnalytics()
-    .then((records) => analyticsStore.hydrateCalls(records))
-    .catch(() => undefined);
-  persistence
-    .loadToolUsage()
-    .then((records) => analyticsStore.hydrateTools(records))
-    .catch(() => undefined);
-  registerAnalyticsConsumer(eventBus, analyticsStore);
 
   (app as any).eventsBus = eventBus;
 
@@ -169,31 +156,6 @@ export function buildServer(eventBus: EventBusClient): FastifyInstance<any, any,
       },
     },
   }, async () => runHealthChecks());
-
-  // Auth -- legacy dev login endpoint is intentionally retired in Clerk-first mode.
-  app.post(
-    "/auth/login",
-    {
-      schema: {
-        body: Type.Object({ email: Type.String() }),
-        response: {
-          410: Type.Object({
-            ok: Type.Literal(false),
-            error: Type.String(),
-            auth: Type.Literal("clerk"),
-          }),
-        },
-      },
-    },
-    async (_request, reply) => {
-      reply.status(410);
-      return {
-        ok: false,
-        error: "Dev JWT login is retired. Use Clerk sign-in at /sign-in.",
-        auth: "clerk",
-      };
-    }
-  );
 
   // Clerk webhook (raw body required for Svix signature verification)
   app.post("/webhooks/clerk", { config: { rawBody: true } }, clerkSyncHandler);

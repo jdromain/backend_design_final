@@ -16,11 +16,9 @@ import {
   CallTranscriptEntry,
   PhoneNumberConfig,
 } from "@rezovo/core-types";
-import type { Agent, AgentInputItem } from "@openai/agents";
+import type { AgentInputItem } from "@openai/agents";
 import { UsageTracker } from "./usageTracker";
 import {
-  processTurn,
-  triageAgent,
   fetchKbPassages,
   TurnOrchestratorV2,
   type OnSentenceCallback,
@@ -49,14 +47,12 @@ export class CallSession {
   private latestSlots: Record<string, unknown> = {};
   private lastTurnDiagnostics: TurnDiagnostics | null = null;
 
-  // SDK-managed state: these are updated after each turn from stream.history / stream.currentAgent
+  // V2 orchestrator-managed state
   private history: AgentInputItem[] = [];
-  private currentAgent: Agent<any, any> = triageAgent;
-  private readonly useOrchestratorV2: boolean;
-  private readonly turnOrchestratorV2: TurnOrchestratorV2 | null;
+  private readonly turnOrchestratorV2: TurnOrchestratorV2;
 
   // Track the last active agent name for persistence/logging
-  private lastAgentName = "Receptionist";
+  private lastAgentName = "Voice Concierge";
 
   // Session-level KB cache: fetched once during greet(), reused on every turn
   private kbPassages: string[] = [];
@@ -81,16 +77,13 @@ export class CallSession {
     };
     this.usage = new UsageTracker();
     this.usage.startTimer();
-    this.useOrchestratorV2 = this.shouldUseOrchestratorV2(phoneConfig.tenantId);
-    this.turnOrchestratorV2 = this.useOrchestratorV2
-      ? new TurnOrchestratorV2(this.id, agentConfig, phoneConfig)
-      : null;
+    this.turnOrchestratorV2 = new TurnOrchestratorV2(this.id, agentConfig, phoneConfig);
 
     logger.info("call session created", {
       callId: this.id,
       tenantId: phoneConfig.tenantId,
       businessId: phoneConfig.businessId,
-      orchestrator: this.useOrchestratorV2 ? "v2" : "legacy",
+      orchestrator: "v2",
     });
   }
 
@@ -158,33 +151,17 @@ export class CallSession {
         timestamp: new Date().toISOString(),
       });
 
-      const result =
-        this.turnOrchestratorV2
-          ? await this.turnOrchestratorV2.processTurn({
-              utterance,
-              history: this.history,
-              currentAgent: this.currentAgent,
-              onSentence,
-              currentDateTime: new Date().toISOString(),
-              signal: this.abortController.signal,
-              kbPassages: this.kbPassages,
-            })
-          : await processTurn({
-              utterance,
-              callId: this.id,
-              history: this.history,
-              currentAgent: this.currentAgent,
-              agentConfig: this.context.agentConfig,
-              phoneConfig: this.context.phoneNumberConfig,
-              onSentence,
-              currentDateTime: new Date().toISOString(),
-              signal: this.abortController.signal,
-              kbPassages: this.kbPassages,
-            });
+      const result = await this.turnOrchestratorV2.processTurn({
+        utterance,
+        history: this.history,
+        onSentence,
+        currentDateTime: new Date().toISOString(),
+        signal: this.abortController.signal,
+        kbPassages: this.kbPassages,
+      });
 
-      // SDK manages history and agent routing
+      // V2 manages conversation state and responses
       this.history = result.history;
-      this.currentAgent = result.currentAgent;
       this.lastAgentName = result.agentName;
       if (result.intent) this.latestIntent = result.intent;
       if (typeof result.confidence === "number") this.latestIntentConfidence = result.confidence;
@@ -330,11 +307,10 @@ export class CallSession {
    * Returns a minimal state object matching what the controller expects.
    */
   getStateMachine(): { current: { activeIntent?: string; intentConfidence?: number; slots: Record<string, unknown> } } {
-    const inferred = this.latestIntent ?? this.inferIntentFromAgent(this.lastAgentName);
     return {
       current: {
-        activeIntent: inferred,
-        intentConfidence: this.latestIntentConfidence || (inferred ? 0.75 : undefined),
+        activeIntent: this.latestIntent,
+        intentConfidence: this.latestIntentConfidence || undefined,
         slots: Object.keys(this.latestSlots).length > 0 ? this.latestSlots : this.context.slots ?? {},
       },
     };
@@ -356,27 +332,6 @@ export class CallSession {
   }
 
   // ---- Private ----
-
-  private inferIntentFromAgent(agentName: string): string | undefined {
-    const map: Record<string, string> = {
-      "Booking Specialist": "create_booking",
-      "Cancellation Specialist": "cancel_booking",
-      "Customer Care Specialist": "complaint",
-      "Information Specialist": "info_request",
-      Receptionist: "triage",
-      "Voice Concierge": this.latestIntent ?? "other",
-    };
-    return map[agentName];
-  }
-
-  private shouldUseOrchestratorV2(tenantId: string): boolean {
-    if (!env.RTC_ORCHESTRATOR_V2_ENABLED) return false;
-    const allowList = env.RTC_ORCHESTRATOR_V2_TENANTS
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean);
-    return allowList.length === 0 || allowList.includes(tenantId);
-  }
 
   private localFallbackForTurn(turn: number): string {
     const fallbackPool = [

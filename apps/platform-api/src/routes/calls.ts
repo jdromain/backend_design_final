@@ -3,9 +3,8 @@ import { Type } from "@sinclair/typebox";
 import { createLogger } from "@rezovo/logging";
 import { callStore, CallRecord, TranscriptEntry, CallEvent } from "../persistence/callStore";
 import { query } from "../persistence/dbClient";
-import { sendData, sendError } from "../lib/responses";
-import { attachClerkAuthIfBearerPresent, authHook, resolvedAuthHook } from "../auth/jwt";
-import { isClerkEnabled } from "../auth/clerk";
+import { sendData } from "../lib/responses";
+import { resolvedAuthHook } from "../auth/jwt";
 import { requireTenantForRequest } from "../auth/tenantScope";
 import { CallsListEnvelopeSchema } from "../contracts/httpSchemas";
 
@@ -452,22 +451,4 @@ export function registerCallRoutes(app: FastifyInstance) {
     sendData(reply, tools);
   });
 
-  // Internal listing; in Clerk mode require auth + tenant (no broad list without tenant).
-  app.get(
-    "/phone-numbers",
-    { preHandler: attachClerkAuthIfBearerPresent() },
-    async (request: FastifyRequest, reply: FastifyReply) => {
-    if (isClerkEnabled) {
-      const tenantId = requireTenantForRequest(request, reply, (request.query as any).tenantId);
-      if (!tenantId) return;
-      const numbers = await callStore.getPhoneNumbersByTenant(tenantId);
-      return { phoneNumbers: numbers, count: numbers.length };
-    }
-    const { tenantId } = request.query as { tenantId?: string };
-    const numbers = tenantId
-      ? await callStore.getPhoneNumbersByTenant(tenantId)
-      : await callStore.getAllPhoneNumbers();
-    return { phoneNumbers: numbers, count: numbers.length };
-  }
-  );
 }

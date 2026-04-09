@@ -4,17 +4,27 @@
  */
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from "vitest";
 import { Value } from "@sinclair/typebox/value";
-import jwt from "jsonwebtoken";
 import { createInMemoryEventBus } from "@rezovo/event-bus";
 
-const { CONTRACT_JWT_SECRET } = vi.hoisted(() => {
-  const secret = "contract-test-jwt-secret";
-  process.env.AUTH_MODE = "dev_jwt";
-  process.env.CLERK_AUTH_ENABLED = "false";
-  process.env.JWT_SECRET = secret;
+vi.hoisted(() => {
+  process.env.CLERK_AUTH_ENABLED = "true";
+  process.env.CLERK_SECRET_KEY = "sk_test_contract";
+  process.env.CLERK_JWT_PUBLIC_KEY = "pk_test_contract";
+  process.env.CLERK_WEBHOOK_SECRET = "whsec_contract";
   process.env.INTERNAL_SERVICE_TOKEN = "contract-internal-service-token";
-  return { CONTRACT_JWT_SECRET: secret };
 });
+
+vi.mock("./auth/clerk", () => ({
+  isClerkEnabled: true,
+  verifyClerkToken: vi.fn(async (token: string) => {
+    const tenantId = token.startsWith("tenant:") ? token.slice("tenant:".length) : "test-tenant";
+    return {
+      sub: `clerk-${tenantId}`,
+      email: `contract+${tenantId}@example.com`,
+    };
+  }),
+  getClerkBackendClient: vi.fn(),
+}));
 
 vi.mock("./persistence/dbClient", () => {
   const query = vi.fn();
@@ -106,13 +116,19 @@ function wireDbMocks() {
   q.mockImplementation(async (sql: string, params?: unknown[]) => {
     const s = sql.toLowerCase();
     const p0 = params?.[0];
+    if (s.includes("from users") && s.includes("where clerk_id")) {
+      return { rows: [] };
+    }
     if (s.includes("from users") && s.includes("email")) {
+      const rawEmail = typeof p0 === "string" ? p0 : "contract+test-tenant@example.com";
+      const tenantMatch = /contract\+(.+?)@/.exec(rawEmail);
+      const tenantId = tenantMatch?.[1] ?? "test-tenant";
       return {
         rows: [
           {
             id: "user-contract-1",
-            tenant_id: "test-tenant",
-            email: "contract-demo@example.com",
+            tenant_id: tenantId,
+            email: rawEmail,
             roles: ["admin"],
             name: "Contract Demo",
           },
@@ -175,8 +191,6 @@ describe("platform-api HTTP contract (inject)", () => {
 
   beforeAll(async () => {
     wireDbMocks();
-    process.env.JWT_SECRET = CONTRACT_JWT_SECRET;
-    process.env.CLERK_AUTH_ENABLED = "false"; // dev JWT path; ignore local .env Clerk flag
     const bus = createInMemoryEventBus();
     app = buildServer(bus);
     await app.ready();
@@ -245,17 +259,23 @@ describe("platform-api HTTP contract (inject)", () => {
     expect(body.data.toolInvocations).toBe(5);
   });
 
-  it("POST /auth/login returns 410 in Clerk-first mode", async () => {
+  it("POST /auth/login is removed in Clerk-first mode", async () => {
     const res = await app.inject({
       method: "POST",
       url: "/auth/login",
       headers: { "content-type": "application/json" },
       payload: { email: "contract-demo@example.com" },
     });
-    expect(res.statusCode).toBe(410);
-    const body = res.json();
-    expect(body.ok).toBe(false);
-    expect(body.auth).toBe("clerk");
+    expect(res.statusCode).toBe(404);
+  });
+
+  it("GET /phone-numbers is removed in Clerk-first mode", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: "/phone-numbers",
+      headers: { authorization: `Bearer ${bearerForTenant()}` },
+    });
+    expect(res.statusCode).toBe(404);
   });
 
   it("POST /billing-quota/can-start-call returns BillingQuotaOkSchema", async () => {
@@ -272,19 +292,10 @@ describe("platform-api HTTP contract (inject)", () => {
   });
 
   function bearerForTenant(tenantId = "test-tenant"): string {
-    return jwt.sign(
-      {
-        sub: "jwt-contract-user",
-        tenant_id: tenantId,
-        email: "contract-tenant@example.com",
-        roles: ["viewer"],
-      },
-      CONTRACT_JWT_SECRET,
-      { expiresIn: "1h" }
-    );
+    return `tenant:${tenantId}`;
   }
 
-  it("GET /auth/me returns tenant from Bearer JWT (dev JWT path)", async () => {
+  it("GET /auth/me returns tenant from Bearer Clerk session token", async () => {
     const res = await app.inject({
       method: "GET",
       url: "/auth/me",
@@ -293,7 +304,7 @@ describe("platform-api HTTP contract (inject)", () => {
     expect(res.statusCode).toBe(200);
     const body = res.json();
     expect(body.data.tenantId).toBe("test-tenant");
-    expect(body.data.email).toBe("contract-tenant@example.com");
+    expect(body.data.email).toBe("contract+test-tenant@example.com");
   });
 
   it("GET /calls/live with Bearer JWT returns live rows for that tenant", async () => {

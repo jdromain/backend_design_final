@@ -46,7 +46,7 @@ if [[ "$count" != "1" ]]; then
   echo "ERROR: expected seeded user admin@example.com (active); count='$count'. Apply database/setup_complete.sql then database/002_ui_tables.sql (see scripts/apply-database.sh), or bash scripts/fresh-demo-postgres.sh for a fresh volume." >&2
   exit 1
 fi
-echo "OK: seeded dev user admin@example.com is present (JWT /dev-login will work)."
+echo "OK: seeded user admin@example.com is present for Clerk provisioning/mapping flows."
 
 # ── Clerk tenant mapping check ────────────────────────────────────────────────
 echo ""

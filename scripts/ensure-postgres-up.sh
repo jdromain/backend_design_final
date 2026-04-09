@@ -52,14 +52,7 @@ done
 echo "==> Verifying database schema and seed data"
 bash "$ROOT/scripts/verify-database-for-testing.sh"
 
-# Detect auth mode from platform-api .env
-_auth_mode="dev_jwt"
-_env_file="$ROOT/apps/platform-api/.env"
-if [[ -f "$_env_file" ]]; then
-  _m=$(grep -E '^[[:space:]]*AUTH_MODE=' "$_env_file" | head -1 | sed 's/^[[:space:]]*AUTH_MODE=//' | tr -d '"' | tr -d "'" | tr -d '[:space:]')
-  _c=$(grep -E '^[[:space:]]*CLERK_AUTH_ENABLED=' "$_env_file" | head -1 | sed 's/^[[:space:]]*CLERK_AUTH_ENABLED=//' | tr -d '"' | tr -d "'" | tr -d '[:space:]')
-  if [[ "$_m" == "clerk" ]] || [[ "$_c" == "true" ]]; then _auth_mode="clerk"; fi
-fi
+_auth_mode="clerk"
 
 echo ""
 echo "────────────────────────────────────────────────────────────"
@@ -75,10 +68,6 @@ echo ""
 echo "  Native apps (hot reload) + Docker infra:"
 echo "    bash scripts/restart-demo-stack.sh --local"
 echo ""
-if [[ "$_auth_mode" == "clerk" ]]; then
-  echo "  Then open: http://localhost:3000/sign-in  (Clerk)"
-  echo "  Link org:  bash scripts/link-clerk-org.sh <clerk-org-id>"
-else
-  echo "  Then open: http://localhost:3000/dev-login  (admin@example.com)"
-fi
+echo "  Then open: http://localhost:3000/sign-in  (Clerk)"
+echo "  Link org:  bash scripts/link-clerk-org.sh <clerk-org-id>"
 echo "────────────────────────────────────────────────────────────"

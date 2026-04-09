@@ -3,7 +3,7 @@ set -euo pipefail
 # Clerk auth smoke test for platform-api.
 #
 # Prerequisites:
-#   - platform-api running with AUTH_MODE=clerk  (pnpm --filter platform-api dev)
+#   - platform-api running with Clerk auth enabled (pnpm --filter @rezovo/platform-api dev)
 #   - Postgres seeded with test-tenant + clerk_organization_id set
 #   - CLERK_BEARER set to a valid Clerk JWT (see instructions below)
 #

@@ -280,7 +280,6 @@ export type TurnOrchestratorV2Result = {
   text: string;
   agentName: string;
   history: AgentInputItem[];
-  currentAgent: Agent<any, any>;
   intent?: string;
   confidence?: number;
   slots?: Record<string, unknown>;
@@ -787,7 +786,6 @@ export class TurnOrchestratorV2 {
   async processTurn(params: {
     utterance: string;
     history: AgentInputItem[];
-    currentAgent: Agent<any, any>;
     onSentence: OnSentenceCallback;
     signal?: AbortSignal;
     kbPassages?: string[];
@@ -848,7 +846,6 @@ export class TurnOrchestratorV2 {
             text: out.text,
             agentName: out.agentName,
             history,
-            currentAgent: params.currentAgent,
             intent: out.intent,
             confidence: out.confidence,
             slots: out.slots,
@@ -977,7 +974,6 @@ export class TurnOrchestratorV2 {
         text: output.text,
         agentName: output.agentName,
         history,
-        currentAgent: params.currentAgent,
         intent: output.intent,
         confidence: output.confidence,
         slots: output.slots,
@@ -1023,7 +1019,6 @@ export class TurnOrchestratorV2 {
         text: recoveryText,
         agentName: VOICE_NAME,
         history,
-        currentAgent: params.currentAgent,
         intent: this.state.activeIntent ?? undefined,
         confidence: this.state.intentConfidence || undefined,
         slots: this.getSlots(this.state.activeIntent ?? "other"),
