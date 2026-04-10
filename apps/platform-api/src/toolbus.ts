@@ -10,7 +10,7 @@ const logger = createLogger({ service: "platform-api", module: "toolbus" });
 const MOCK_MODE = process.env.MOCK_CONNECTORS === "true";
 
 type ToolCallBody = {
-  tenantId: string;
+  orgId: string;
   toolName: string;
   idempotencyKey: string;
   args: Record<string, unknown>;
@@ -29,15 +29,15 @@ function resolveProvider(toolName: string, explicit?: string): string {
 
 export function toolCallHandler(eventBus: EventBusClient) {
   return async (request: FastifyRequest<{ Body: ToolCallBody }>, reply: FastifyReply): Promise<unknown> => {
-    const { tenantId, toolName, idempotencyKey, args, provider: explicitProvider } = request.body ?? {};
-    if (!tenantId || !toolName || !idempotencyKey) {
+    const { orgId, toolName, idempotencyKey, args, provider: explicitProvider } = request.body ?? {};
+    if (!orgId || !toolName || !idempotencyKey) {
       reply.status(400);
-      return { ok: false, error: "tenantId, toolName, idempotencyKey required" };
+      return { ok: false, error: "orgId, toolName, idempotencyKey required" };
     }
 
     const provider = resolveProvider(toolName, explicitProvider);
-    const storeKey = `${tenantId}::${toolName}::${idempotencyKey}`;
-    const cached = await persistence.loadToolResult(tenantId, toolName, storeKey);
+    const storeKey = `${orgId}::${toolName}::${idempotencyKey}`;
+    const cached = await persistence.loadToolResult(orgId, toolName, storeKey);
     if (cached) {
       return {
         ok: true,
@@ -47,9 +47,9 @@ export function toolCallHandler(eventBus: EventBusClient) {
       };
     }
 
-    const credentials = (await persistence.loadCredentials(tenantId, provider)) ?? {};
+    const credentials = (await persistence.loadCredentials(orgId, provider)) ?? {};
     if (!MOCK_MODE && Object.keys(credentials).length === 0) {
-      logger.warn("missing tool credentials, using mock path", { tenantId, provider, toolName });
+      logger.warn("missing tool credentials, using mock path", { orgId, provider, toolName });
     }
 
     const result = await executeToolCall({
@@ -64,10 +64,10 @@ export function toolCallHandler(eventBus: EventBusClient) {
       Object.keys(credentials).length === 0 ||
       toolResultIsMocked(result);
 
-    await persistence.saveToolResult(tenantId, toolName, storeKey, result);
+    await persistence.saveToolResult(orgId, toolName, storeKey, result);
     const envelope = createEventEnvelope({
       eventType: "ToolUsed",
-      tenantId,
+      orgId,
       payload: {
         toolName,
         idempotencyKey,
@@ -78,7 +78,7 @@ export function toolCallHandler(eventBus: EventBusClient) {
     });
     // Best-effort emit; do not block response.
     void eventBus.publish(envelope);
-    logger.info("tool executed", { tenantId, toolName, idempotencyKey, provider });
+    logger.info("tool executed", { orgId, toolName, idempotencyKey, provider });
 
     return { ok: true, provider, mocked, result };
   };

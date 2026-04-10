@@ -38,8 +38,8 @@ Create a `.env.local` file with:
 # platform-api
 NEXT_PUBLIC_API_URL=http://localhost:3001
 
-# Tenant id for API query params — use test-tenant for seeded demo (see supabase/002_ui_tables.sql)
-# NEXT_PUBLIC_DEFAULT_TENANT_ID=test-tenant
+# Organization id for API query params — use org_localdemo for seeded demo (see supabase/002_ui_tables.sql)
+# NEXT_PUBLIC_DEFAULT_ORG_ID=org_localdemo
 
 # Clerk-first auth
 NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=

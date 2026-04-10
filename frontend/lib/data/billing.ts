@@ -6,7 +6,7 @@ import {
   mockToolUsage,
   mockInvoices,
 } from "@/data/mock/billing"
-import { appendTenantQuery, get } from "@/lib/api-client"
+import { appendOrgQuery, get } from "@/lib/api-client"
 import type { Invoice } from "@/components/billing/billing-history-table"
 
 assertMockSafety()
@@ -192,7 +192,7 @@ export async function getBillingUsage(period: string) {
     return mockUsageByPeriod[key] ?? mockUsageByPeriod["30d"]
   }
   const raw = await get<ApiBillingUsage>(
-    appendTenantQuery(`/billing/usage?period=${encodeURIComponent(apiPeriod)}`)
+    appendOrgQuery(`/billing/usage?period=${encodeURIComponent(apiPeriod)}`)
   )
   return mapApiUsageToMeters(raw)
 }
@@ -204,14 +204,14 @@ export async function getBillingBreakdown(period: string) {
     return mockBreakdownByPeriod[key] ?? mockBreakdownByPeriod["30d"]
   }
   const raw = await get<ApiBreakdown>(
-    appendTenantQuery(`/billing/breakdown?period=${encodeURIComponent(apiPeriod)}`)
+    appendOrgQuery(`/billing/breakdown?period=${encodeURIComponent(apiPeriod)}`)
   )
   return mapApiBreakdownToRows(raw)
 }
 
 export async function getAgentUsage(): Promise<AgentUsageState | null> {
   if (useMocks) return mockAgentUsage
-  const rows = await get<ApiBillingAgentRow[]>(appendTenantQuery("/billing/agents"))
+  const rows = await get<ApiBillingAgentRow[]>(appendOrgQuery("/billing/agents"))
   if (!Array.isArray(rows) || rows.length === 0) return null
   const top = rows.reduce((a, b) => (a.totalCalls >= b.totalCalls ? a : b))
   return {
@@ -226,7 +226,7 @@ export async function getAgentUsage(): Promise<AgentUsageState | null> {
 
 export async function getToolUsage(): Promise<ToolUsageRow[]> {
   if (useMocks) return mockToolUsage
-  const rows = await get<ApiToolRow[]>(appendTenantQuery("/billing/tools"))
+  const rows = await get<ApiToolRow[]>(appendOrgQuery("/billing/tools"))
   if (!Array.isArray(rows)) return []
   return rows.map((r, i) => ({
     id: `${i}-${r.name}`,
@@ -239,7 +239,7 @@ export async function getToolUsage(): Promise<ToolUsageRow[]> {
 
 export async function getInvoices(): Promise<Invoice[]> {
   if (useMocks) return mockInvoices
-  const rows = await get<ApiUsageRollup[]>(appendTenantQuery("/billing/invoices"))
+  const rows = await get<ApiUsageRollup[]>(appendOrgQuery("/billing/invoices"))
   if (!Array.isArray(rows)) return []
   return rows.map((r) => mapApiRollupToInvoice(r))
 }

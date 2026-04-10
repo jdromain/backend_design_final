@@ -16,7 +16,7 @@ import {
   topFailureReasons,
   onboardingSteps,
 } from "@/data/mock/dashboard"
-import { appendTenantQuery, get } from "@/lib/api-client"
+import { appendOrgQuery, get } from "@/lib/api-client"
 
 assertMockSafety()
 
@@ -102,23 +102,23 @@ function mapApiIncidentToPanel(i: ApiIncident): Incident {
 
 export async function getDashboardOutcomes() {
   if (useMocks) return generateOutcomesData()
-  return get<ReturnType<typeof generateOutcomesData>>(appendTenantQuery("/analytics/outcomes"))
+  return get<ReturnType<typeof generateOutcomesData>>(appendOrgQuery("/analytics/outcomes"))
 }
 
 export async function getDashboardCalls(): Promise<CallRecord[]> {
   if (useMocks) return generateCallsData()
-  return get<CallRecord[]>(appendTenantQuery("/calls"))
+  return get<CallRecord[]>(appendOrgQuery("/calls"))
 }
 
 export async function getDashboardActivity() {
   if (useMocks) return generateActivityData()
-  const rows = await get<Array<Record<string, unknown>>>(appendTenantQuery("/activity"))
+  const rows = await get<Array<Record<string, unknown>>>(appendOrgQuery("/activity"))
   return Array.isArray(rows) ? rows.map((r) => normalizeActivityItem(r)) : []
 }
 
 export async function getSparklineData() {
   if (useMocks) return sparklineData
-  const raw = await get<ApiSparklines>(appendTenantQuery("/analytics/sparklines"))
+  const raw = await get<ApiSparklines>(appendOrgQuery("/analytics/sparklines"))
   return mapSparklinesFromApi(raw)
 }
 
@@ -129,7 +129,7 @@ export async function getSystemHealth() {
 
 export async function getIncidents(): Promise<Incident[]> {
   if (useMocks) return incidents as Incident[]
-  const rows = await get<ApiIncident[]>(appendTenantQuery("/incidents"))
+  const rows = await get<ApiIncident[]>(appendOrgQuery("/incidents"))
   return Array.isArray(rows) ? rows.map(mapApiIncidentToPanel) : []
 }
 
@@ -141,19 +141,19 @@ function mapInsightRows(rows: ApiInsightRow[]): InsightItem[] {
 
 export async function getTopIntents() {
   if (useMocks) return topIntents
-  const rows = await get<ApiInsightRow[]>(appendTenantQuery("/analytics/intents"))
+  const rows = await get<ApiInsightRow[]>(appendOrgQuery("/analytics/intents"))
   return Array.isArray(rows) ? mapInsightRows(rows) : []
 }
 
 export async function getTopHandoffReasons() {
   if (useMocks) return topHandoffReasons
-  const rows = await get<ApiInsightRow[]>(appendTenantQuery("/analytics/handoffs"))
+  const rows = await get<ApiInsightRow[]>(appendOrgQuery("/analytics/handoffs"))
   return Array.isArray(rows) ? mapInsightRows(rows) : []
 }
 
 export async function getTopFailureReasons() {
   if (useMocks) return topFailureReasons
-  const rows = await get<ApiInsightRow[]>(appendTenantQuery("/analytics/failures"))
+  const rows = await get<ApiInsightRow[]>(appendOrgQuery("/analytics/failures"))
   return Array.isArray(rows) ? mapInsightRows(rows) : []
 }
 
@@ -217,7 +217,7 @@ function mapApiOnboardingStep(s: ApiOnboardingStep): OnboardingStep {
 
 export async function getOnboardingSteps() {
   if (useMocks) return onboardingSteps
-  const rows = await get<ApiOnboardingStep[]>(appendTenantQuery("/onboarding"))
+  const rows = await get<ApiOnboardingStep[]>(appendOrgQuery("/onboarding"))
   if (!Array.isArray(rows)) return []
   const sorted = [...rows].sort((a, b) => a.order - b.order)
   return sorted.map(mapApiOnboardingStep)

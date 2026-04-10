@@ -91,7 +91,7 @@ export function buildServer(eventBus: EventBusClient): FastifyInstance<any, any,
     max: 100,
     timeWindow: "1 minute",
     hook: "onRequest",
-    keyGenerator: (req: FastifyRequest) => `${req.headers["x-tenant-id"] ?? "anon"}::${req.ip}`,
+    keyGenerator: (req: FastifyRequest) => `${req.headers["x-org-id"] ?? "anon"}::${req.ip}`,
   });
   // Under-pressure is noisy in local/dev (false positives on heap/RSS); keep for production only.
   if (isProduction) {
@@ -169,7 +169,7 @@ export function buildServer(eventBus: EventBusClient): FastifyInstance<any, any,
     }
     sendData(reply, {
       userId: auth.sub,
-      tenantId: auth.tenant_id,
+      orgId: auth.org_id,
       email: auth.email,
       roles: auth.roles,
     });
@@ -195,14 +195,14 @@ export function buildServer(eventBus: EventBusClient): FastifyInstance<any, any,
   app.get("/config/snapshot", {
     schema: {
       querystring: Type.Object({
-        tenantId: Type.String(),
+        orgId: Type.String(),
         lob: Type.Optional(Type.String()),
       }),
     },
     preHandler: resolvedAuthOrInternalHook(["admin", "editor", "viewer"]),
   }, async (request) => {
-    const { tenantId, lob } = request.query as { tenantId: string; lob?: string };
-    return await configStore.getSnapshot(tenantId, lob ?? "default");
+    const { orgId, lob } = request.query as { orgId: string; lob?: string };
+    return await configStore.getSnapshot(orgId, lob ?? "default");
   });
 
   app.post("/config/validate", {
@@ -223,7 +223,7 @@ export function buildServer(eventBus: EventBusClient): FastifyInstance<any, any,
   app.post("/config/publish", {
     schema: {
       body: Type.Object({
-        tenantId: Type.String(),
+        orgId: Type.String(),
         lob: Type.Optional(Type.String()),
         version: Type.Number(),
         entity: Type.Union([
@@ -240,7 +240,7 @@ export function buildServer(eventBus: EventBusClient): FastifyInstance<any, any,
     preHandler: resolvedAuthHook(["admin", "editor"]),
   }, async (request, reply) => {
     const body = request.body as {
-      tenantId: string;
+      orgId: string;
       lob?: string;
       version: number;
       entity: "PhoneNumber" | "AgentConfig" | "Plan" | "Business";
@@ -256,7 +256,7 @@ export function buildServer(eventBus: EventBusClient): FastifyInstance<any, any,
         return validation;
       }
       const stored = configStore.upsertConfig({
-        tenantId: body.tenantId,
+        orgId: body.orgId,
         lob: body.lob,
         agentConfig: (body.config as any).agentConfig,
         phoneNumbers: (body.config as any).phoneNumbers,
@@ -266,7 +266,7 @@ export function buildServer(eventBus: EventBusClient): FastifyInstance<any, any,
       body.version = stored.version;
     } else {
       configStore.publishConfig({
-        tenantId: body.tenantId,
+        orgId: body.orgId,
         lob: body.lob,
         version: body.version,
         status: body.status,
@@ -274,7 +274,7 @@ export function buildServer(eventBus: EventBusClient): FastifyInstance<any, any,
     }
 
     const envelope = buildConfigChangedEvent({
-      tenantId: body.tenantId,
+      orgId: body.orgId,
       lob: body.lob,
       version: body.version,
       entity: body.entity,
@@ -289,7 +289,7 @@ export function buildServer(eventBus: EventBusClient): FastifyInstance<any, any,
   // Billing quota and usage ingest -- internal service calls
   app.post("/billing-quota/can-start-call", {
     schema: {
-      body: Type.Object({ tenantId: Type.String() }),
+      body: Type.Object({ orgId: Type.String() }),
       response: {
         200: BillingQuotaOkSchema,
         400: Type.Object({ allowed: Type.Literal(false), reason: Type.String() }),

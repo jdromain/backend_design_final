@@ -649,7 +649,7 @@ export class TurnOrchestratorV2 {
             args.callId = this.callId;
           }
           const result = await callTool({
-            tenantId: this.agentConfig.tenantId,
+            orgId: this.agentConfig.orgId,
             toolName: request.name,
             args,
           });

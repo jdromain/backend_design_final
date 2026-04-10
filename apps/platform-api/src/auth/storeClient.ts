@@ -5,15 +5,15 @@ import { AuthUser } from "./types";
 const logger = createLogger({ service: "platform-api", module: "authStore" });
 
 export class AuthStoreClient {
-  async findActiveTenantId(tenantId: string): Promise<string | undefined> {
+  async findActiveOrgId(orgId: string): Promise<string | undefined> {
     const result = await query(
-      "SELECT id FROM tenants WHERE id = $1 AND status = 'active' LIMIT 1",
-      [tenantId]
+      "SELECT id FROM organizations WHERE id = $1 AND status = 'active' LIMIT 1",
+      [orgId],
     );
     return result.rows[0]?.id as string | undefined;
   }
 
-  async upsertTenantFromClerkOrg(org: {
+  async upsertOrgFromClerk(org: {
     orgId: string;
     name?: string;
     slug?: string;
@@ -34,16 +34,15 @@ export class AuthStoreClient {
     };
 
     await query(
-      `INSERT INTO tenants (
-         id, name, business_id, business_name, clerk_organization_id, metadata, status, created_at, updated_at
+      `INSERT INTO organizations (
+         id, name, business_id, business_name, metadata, status, created_at, updated_at
        )
-       VALUES ($1, $2, $3, $4, $1, $5::jsonb, 'active', now(), now())
+       VALUES ($1, $2, $3, $4, $5::jsonb, 'active', now(), now())
        ON CONFLICT (id) DO UPDATE SET
          name = EXCLUDED.name,
-         business_id = COALESCE(NULLIF(tenants.business_id, ''), EXCLUDED.business_id),
-         business_name = COALESCE(NULLIF(tenants.business_name, ''), EXCLUDED.business_name),
-         clerk_organization_id = EXCLUDED.clerk_organization_id,
-         metadata = COALESCE(tenants.metadata, '{}'::jsonb) || EXCLUDED.metadata,
+         business_id = COALESCE(NULLIF(organizations.business_id, ''), EXCLUDED.business_id),
+         business_name = COALESCE(NULLIF(organizations.business_name, ''), EXCLUDED.business_name),
+         metadata = COALESCE(organizations.metadata, '{}'::jsonb) || EXCLUDED.metadata,
          status = 'active',
          updated_at = now()`,
       [
@@ -52,61 +51,61 @@ export class AuthStoreClient {
         `business-${org.orgId}`,
         displayName,
         JSON.stringify(metadata),
-      ]
+      ],
     );
   }
 
-  async findByEmail(email: string): Promise<AuthUser | undefined> {
+  async findByClerkIdInOrg(clerkId: string, orgId: string): Promise<AuthUser | undefined> {
     const result = await query(
-      "SELECT id, tenant_id, email, roles, name FROM users WHERE LOWER(email) = LOWER($1) AND status = 'active'",
-      [email]
+      "SELECT id, org_id, email, roles FROM users WHERE clerk_id = $1 AND org_id = $2 AND status = 'active' LIMIT 1",
+      [clerkId, orgId],
     );
     if (result.rows.length === 0) return undefined;
     const row = result.rows[0];
     return {
       userId: row.id,
-      tenantId: row.tenant_id,
+      orgId: row.org_id,
       email: row.email,
       roles: row.roles ?? ["viewer"],
     };
   }
 
-  async findByClerkId(clerkId: string): Promise<AuthUser | undefined> {
+  async findByEmailInOrg(email: string, orgId: string): Promise<AuthUser | undefined> {
     const result = await query(
-      "SELECT id, tenant_id, email, roles, name FROM users WHERE clerk_id = $1 AND status = 'active'",
-      [clerkId]
+      "SELECT id, org_id, email, roles FROM users WHERE LOWER(email) = LOWER($1) AND org_id = $2 AND status = 'active' LIMIT 1",
+      [email, orgId],
     );
     if (result.rows.length === 0) return undefined;
     const row = result.rows[0];
     return {
       userId: row.id,
-      tenantId: row.tenant_id,
+      orgId: row.org_id,
       email: row.email,
       roles: row.roles ?? ["viewer"],
     };
   }
 
-  async listByTenant(tenantId: string): Promise<AuthUser[]> {
+  async listByOrg(orgId: string): Promise<AuthUser[]> {
     try {
       const result = await query(
-        "SELECT id, tenant_id, email, roles, name FROM users WHERE tenant_id = $1 AND status = 'active'",
-        [tenantId]
+        "SELECT id, org_id, email, roles FROM users WHERE org_id = $1 AND status = 'active'",
+        [orgId],
       );
       return result.rows.map((row: any) => ({
         userId: row.id,
-        tenantId: row.tenant_id,
+        orgId: row.org_id,
         email: row.email,
         roles: row.roles ?? ["viewer"],
       }));
     } catch (err) {
-      logger.warn("listByTenant failed", { error: (err as Error).message });
+      logger.warn("listByOrg failed", { error: (err as Error).message, orgId });
       return [];
     }
   }
 
   async upsertUser(user: {
     id: string;
-    tenantId: string;
+    orgId: string;
     email: string;
     roles?: string[];
     clerkId?: string;
@@ -114,25 +113,28 @@ export class AuthStoreClient {
   }): Promise<void> {
     try {
       await query(
-        `INSERT INTO users (id, tenant_id, email, roles, clerk_id, name, status, updated_at)
+        `INSERT INTO users (id, org_id, email, roles, clerk_id, name, status, updated_at)
          VALUES ($1, $2, $3, $4, $5, $6, 'active', now())
-         ON CONFLICT (email) DO UPDATE SET
-           tenant_id = COALESCE(EXCLUDED.tenant_id, users.tenant_id),
+         ON CONFLICT (org_id, email) DO UPDATE SET
            roles = COALESCE(EXCLUDED.roles, users.roles),
            clerk_id = COALESCE(EXCLUDED.clerk_id, users.clerk_id),
            name = COALESCE(EXCLUDED.name, users.name),
            updated_at = now()`,
         [
           user.id,
-          user.tenantId,
+          user.orgId,
           user.email,
           user.roles ?? ["viewer"],
           user.clerkId ?? null,
           user.name ?? null,
-        ]
+        ],
       );
     } catch (err) {
-      logger.warn("upsertUser failed", { error: (err as Error).message });
+      logger.warn("upsertUser failed", {
+        error: (err as Error).message,
+        orgId: user.orgId,
+        email: user.email,
+      });
     }
   }
 }

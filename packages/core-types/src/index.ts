@@ -13,7 +13,7 @@ export type EventType =
 export type EventEnvelope<T> = {
   event_id: string;
   event_type: EventType;
-  tenant_id: string;
+  org_id: string;
   call_id?: string;
   timestamp: string;
   payload: T;
@@ -21,7 +21,7 @@ export type EventEnvelope<T> = {
 
 export type PhoneNumberConfig = {
   did: string;
-  tenantId: string;
+  orgId: string;
   businessId: string;
   routeType: RouteType;
   agentConfigId?: string;
@@ -56,7 +56,7 @@ export type OpenTableIntegration = {
 export type AgentConfigSnapshot = {
   id: string;
   version: number;
-  tenantId: string;
+  orgId: string;
   businessId: string;
   basePrompt: string;
   persona: AgentPersona;
@@ -73,7 +73,7 @@ export type AgentConfigSnapshot = {
 };
 
 export type PlanSnapshot = {
-  tenantId: string;
+  orgId: string;
   planId: string;
   maxConcurrentCalls: number | null;
 };
@@ -95,7 +95,7 @@ export type CallTranscriptEntry = {
 
 export type CallSessionContext = {
   callId: string;
-  tenantId: string;
+  orgId: string;
   businessId: string;
   phoneNumberConfig: PhoneNumberConfig;
   agentConfig: AgentConfigSnapshot;

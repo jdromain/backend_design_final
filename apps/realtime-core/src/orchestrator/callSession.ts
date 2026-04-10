@@ -66,7 +66,7 @@ export class CallSession {
     this.id = opts?.callId || uuidv4();
     this.context = {
       callId: this.id,
-      tenantId: phoneConfig.tenantId,
+      orgId: phoneConfig.orgId,
       businessId: phoneConfig.businessId,
       phoneNumberConfig: phoneConfig,
       agentConfig,
@@ -81,7 +81,7 @@ export class CallSession {
 
     logger.info("call session created", {
       callId: this.id,
-      tenantId: phoneConfig.tenantId,
+      orgId: phoneConfig.orgId,
       businessId: phoneConfig.businessId,
       orchestrator: "v2",
     });
@@ -113,7 +113,7 @@ export class CallSession {
       this.kbFetchPromise = fetchKbPassages(
         this.id,
         "business services hours pricing appointments",
-        agentConfig.tenantId,
+        agentConfig.orgId,
         agentConfig.businessId,
         agentConfig.kbNamespace,
       ).catch(() => []);

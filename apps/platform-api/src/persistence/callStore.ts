@@ -12,7 +12,7 @@ const logger = createLogger({ service: "platform-api", module: "callStore" });
 
 export interface CallRecord {
   callId: string;
-  tenantId: string;
+  orgId: string;
   phoneNumber: string;
   callerNumber: string;
   twilioCallSid?: string;
@@ -41,7 +41,7 @@ export interface CallRecord {
 
 export interface TranscriptEntry {
   callId: string;
-  tenantId: string;
+  orgId: string;
   sequence: number;
   speaker: "user" | "agent";
   text: string;
@@ -52,7 +52,7 @@ export interface TranscriptEntry {
 
 export interface CallEvent {
   callId: string;
-  tenantId: string;
+  orgId: string;
   eventType: string;
   payload?: Record<string, unknown>;
   occurredAt?: string;
@@ -60,7 +60,7 @@ export interface CallEvent {
 
 export interface PhoneNumberRecord {
   id?: string;
-  tenantId: string;
+  orgId: string;
   phoneNumber: string;
   displayName?: string;
   twilioSid?: string;
@@ -79,7 +79,7 @@ export class CallStore {
     try {
       await query(
         `INSERT INTO calls (
-          call_id, tenant_id, phone_number, caller_number, twilio_call_sid,
+          call_id, org_id, phone_number, caller_number, twilio_call_sid,
           direction, classified_intent, intent_confidence, final_intent,
           agent_config_id, agent_config_ver, status, started_at, answered_at,
           ended_at, duration_sec, end_reason, outcome, failure_type, slots_collected,
@@ -106,7 +106,7 @@ export class CallStore {
           tts_chars = COALESCE(EXCLUDED.tts_chars, calls.tts_chars),
           stt_seconds = COALESCE(EXCLUDED.stt_seconds, calls.stt_seconds)`,
         [
-          call.callId, call.tenantId, call.phoneNumber, call.callerNumber,
+          call.callId, call.orgId, call.phoneNumber, call.callerNumber,
           call.twilioCallSid ?? null, call.direction ?? "inbound",
           call.classifiedIntent ?? null, call.intentConfidence ?? null,
           call.finalIntent ?? null, call.agentConfigId ?? null,
@@ -150,15 +150,15 @@ export class CallStore {
     }
   }
 
-  async getCallsByTenant(tenantId: string): Promise<CallRecord[]> {
+  async getCallsByOrganization(orgId: string): Promise<CallRecord[]> {
     try {
       const result = await query(
-        "SELECT * FROM calls WHERE tenant_id = $1 ORDER BY started_at DESC LIMIT 100",
-        [tenantId]
+        "SELECT * FROM calls WHERE org_id = $1 ORDER BY started_at DESC LIMIT 100",
+        [orgId]
       );
       return result.rows.map(this.mapCallRow);
     } catch (err) {
-      logger.warn("failed to get calls for tenant", { error: (err as Error).message, tenantId });
+      logger.warn("failed to get calls for organization", { error: (err as Error).message, orgId });
       return [];
     }
   }
@@ -171,10 +171,10 @@ export class CallStore {
       await withTransaction(async (client) => {
         for (const e of entries) {
           await client.query(
-            `INSERT INTO call_transcript (call_id, tenant_id, sequence, speaker, text, confidence, spoken_at, duration_ms)
+            `INSERT INTO call_transcript (call_id, org_id, sequence, speaker, text, confidence, spoken_at, duration_ms)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
              ON CONFLICT (call_id, sequence) DO NOTHING`,
-            [e.callId, e.tenantId, e.sequence, e.speaker, e.text, e.confidence ?? null, e.spokenAt, e.durationMs ?? null]
+            [e.callId, e.orgId, e.sequence, e.speaker, e.text, e.confidence ?? null, e.spokenAt, e.durationMs ?? null]
           );
         }
       });
@@ -195,7 +195,7 @@ export class CallStore {
       );
       return result.rows.map((row: any) => ({
         callId: row.call_id,
-        tenantId: row.tenant_id,
+        orgId: row.org_id,
         sequence: row.sequence,
         speaker: row.speaker,
         text: row.text,
@@ -214,9 +214,9 @@ export class CallStore {
   async insertEvent(event: CallEvent): Promise<void> {
     try {
       await query(
-        `INSERT INTO call_events (call_id, tenant_id, event_type, payload, occurred_at)
+        `INSERT INTO call_events (call_id, org_id, event_type, payload, occurred_at)
          VALUES ($1, $2, $3, $4, $5)`,
-        [event.callId, event.tenantId, event.eventType, JSON.stringify(event.payload ?? {}), event.occurredAt ?? new Date().toISOString()]
+        [event.callId, event.orgId, event.eventType, JSON.stringify(event.payload ?? {}), event.occurredAt ?? new Date().toISOString()]
       );
     } catch (err) {
       logger.warn("failed to insert call event", {
@@ -239,12 +239,12 @@ export class CallStore {
     }
   }
 
-  async getPhoneNumbersByTenant(tenantId: string): Promise<PhoneNumberRecord[]> {
+  async getPhoneNumbersByOrganization(orgId: string): Promise<PhoneNumberRecord[]> {
     try {
-      const result = await query("SELECT * FROM phone_numbers WHERE tenant_id = $1", [tenantId]);
+      const result = await query("SELECT * FROM phone_numbers WHERE org_id = $1", [orgId]);
       return result.rows.map(this.mapPhoneRow);
     } catch (err) {
-      logger.warn("failed to get phone numbers for tenant", { error: (err as Error).message, tenantId });
+      logger.warn("failed to get phone numbers for organization", { error: (err as Error).message, orgId });
       return [];
     }
   }
@@ -265,7 +265,7 @@ export class CallStore {
   private mapCallRow(row: any): CallRecord {
     return {
       callId: row.call_id,
-      tenantId: row.tenant_id,
+      orgId: row.org_id,
       phoneNumber: row.phone_number,
       callerNumber: row.caller_number,
       twilioCallSid: row.twilio_call_sid,
@@ -296,7 +296,7 @@ export class CallStore {
   private mapPhoneRow(row: any): PhoneNumberRecord {
     return {
       id: row.id,
-      tenantId: row.tenant_id,
+      orgId: row.org_id,
       phoneNumber: row.phone_number,
       displayName: row.display_name,
       twilioSid: row.twilio_sid,

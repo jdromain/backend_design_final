@@ -4,8 +4,8 @@ const BASE_URL =
   process.env.NEXT_PUBLIC_API_URL ??
   process.env.NEXT_PUBLIC_API_BASE_URL ??
   "http://localhost:3001";
-export const DEFAULT_TENANT_ID =
-  process.env.NEXT_PUBLIC_DEFAULT_TENANT_ID ?? "org_localdemo";
+export const DEFAULT_ORG_ID =
+  process.env.NEXT_PUBLIC_DEFAULT_ORG_ID ?? "org_localdemo";
 
 /** Shared browser auth token storage key used by API clients. */
 const TOKEN_KEY = "auth_token";
@@ -118,11 +118,11 @@ async function resolveAuthToken(): Promise<string | null> {
 }
 
 /**
- * `tenantId` query param for platform-api routes that accept
- * `request.auth?.tenant_id ?? query.tenantId` (e.g. when dev optional auth
- * did not attach claims). Prefers `tenant_id` from the stored JWT when present.
+ * `orgId` query param for platform-api routes that accept
+ * `request.auth?.org_id ?? query.orgId` (e.g. when dev optional auth
+ * did not attach claims). Prefers `org_id` from the stored JWT when present.
  */
-export function resolveTenantIdForQuery(): string {
+export function resolveOrgIdForQuery(): string {
   const token = getStoredToken();
   if (token) {
     try {
@@ -130,29 +130,29 @@ export function resolveTenantIdForQuery(): string {
       if (parts.length >= 2) {
         const b64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
         const json = atob(b64);
-        const payload = JSON.parse(json) as { tenant_id?: string };
-        const tid = payload.tenant_id;
+        const payload = JSON.parse(json) as { org_id?: string };
+        const tid = payload.org_id;
         if (typeof tid === "string" && tid.length > 0) return tid;
       }
     } catch {
       /* fall through */
     }
   }
-  return DEFAULT_TENANT_ID;
+  return DEFAULT_ORG_ID;
 }
 
 /**
- * Appends `tenantId` for dev-JWT mode only. In Clerk mode the API derives tenant from the Bearer
+ * Appends `orgId` for dev-JWT mode only. In Clerk mode the API derives organization from the Bearer
  * token; query params must not be used for authorization.
  */
-export function appendTenantQuery(path: string): string {
+export function appendOrgQuery(path: string): string {
   if (isBrowserClerkApiMode()) {
     return path;
   }
-  const tenantId = encodeURIComponent(resolveTenantIdForQuery());
+  const orgId = encodeURIComponent(resolveOrgIdForQuery());
   return path.includes("?")
-    ? `${path}&tenantId=${tenantId}`
-    : `${path}?tenantId=${tenantId}`;
+    ? `${path}&orgId=${orgId}`
+    : `${path}?orgId=${orgId}`;
 }
 
 // ============================================================================

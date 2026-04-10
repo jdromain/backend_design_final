@@ -2,22 +2,22 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { query } from "../persistence/dbClient";
 import { sendData, sendError } from "../lib/responses";
 import { authHook, resolvedAuthHook } from "../auth/jwt";
-import { requireTenantForRequest } from "../auth/tenantScope";
+import { requireOrgForRequest } from "../auth/orgScope";
 
 
 export function registerIncidentRoutes(app: FastifyInstance) {
   app.get("/incidents", {
     preHandler: resolvedAuthHook(["admin", "editor", "viewer"]),
   }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const tenantId = requireTenantForRequest(request, reply, (request.query as any).tenantId);
-    if (!tenantId) return;
+    const orgId = requireOrgForRequest(request, reply, (request.query as any).orgId);
+    if (!orgId) return;
 
     const incidents: any[] = [];
 
     const recentFailures = (await query(
       `SELECT COUNT(*)::int AS count FROM calls
-       WHERE tenant_id = $1 AND outcome = 'failed' AND started_at > now() - interval '1 hour'`,
-      [tenantId]
+       WHERE org_id = $1 AND outcome = 'failed' AND started_at > now() - interval '1 hour'`,
+      [orgId]
     )).rows[0];
 
     if (recentFailures.count > 0) {
@@ -36,8 +36,8 @@ export function registerIncidentRoutes(app: FastifyInstance) {
          COUNT(*)::int AS total,
          COUNT(*) FILTER (WHERE outcome = 'transferred')::int AS handoffs
        FROM calls
-       WHERE tenant_id = $1 AND started_at > now() - interval '1 hour'`,
-      [tenantId]
+       WHERE org_id = $1 AND started_at > now() - interval '1 hour'`,
+      [orgId]
     )).rows[0];
 
     if (recentTotal.total > 5 && recentTotal.handoffs / recentTotal.total > 0.5) {
@@ -53,10 +53,10 @@ export function registerIncidentRoutes(app: FastifyInstance) {
 
     const toolTimeouts = (await query(
       `SELECT COUNT(*)::int AS count FROM call_events
-       WHERE tenant_id = $1 AND event_type = 'tool_called'
+       WHERE org_id = $1 AND event_type = 'tool_called'
        AND (payload->>'result' = 'error' OR payload->>'result' = 'failed')
        AND occurred_at > now() - interval '1 hour'`,
-      [tenantId]
+      [orgId]
     )).rows[0];
 
     if (toolTimeouts.count > 3) {

@@ -15,7 +15,7 @@ function ClerkTokenBridgeInner() {
     if (isSignedIn) {
       clearAuthToken();
       configureApiAuth(async () => {
-        // Prefer the custom template (includes org_id / tenant_id claims).
+        // Prefer the custom template (includes org_id / org_id claims).
         // Fall back to the default session token so auth works even before
         // the JWT template is created in the Clerk Dashboard.
         try {

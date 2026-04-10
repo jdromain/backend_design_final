@@ -25,7 +25,7 @@ export function BillingHeader({
         <h1 className="text-3xl font-bold tracking-tight">Billing</h1>
         <p className="text-muted-foreground">
           {variant === "metered"
-            ? "Metered usage from your tenant (rolling windows: 7 / 30 / 90 days)."
+            ? "Metered usage from your organization (rolling windows: 7 / 30 / 90 days)."
             : "Manage your subscription and view usage"}
         </p>
       </div>

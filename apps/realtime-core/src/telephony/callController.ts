@@ -17,7 +17,7 @@ const logger = createLogger({ service: "realtime-core", module: "callController"
 export type InboundCallArgs = {
   callId?: string;
   did: string;
-  tenantId: string;
+  orgId: string;
   lob?: string;
   callerNumber?: string;
   initialUtterance?: string;
@@ -36,32 +36,32 @@ export class CallController {
   constructor(private deps: ControllerDeps) {}
 
   async handleInboundCall(args: InboundCallArgs, ctx?: { signal?: AbortSignal }): Promise<void> {
-    const { callId, did, tenantId, lob, initialUtterance } = args;
-    let phoneConfig = this.deps.cache.getRoute(did, tenantId, lob);
+    const { callId, did, orgId, lob, initialUtterance } = args;
+    let phoneConfig = this.deps.cache.getRoute(did, orgId, lob);
 
-    // Lazy hydration: if cache misses, fetch from platform-api for this tenant
+    // Lazy hydration: if cache misses, fetch from platform-api for this organization
     if (!phoneConfig) {
-      logger.info("cache miss, fetching config from platform-api", { did, tenantId, lob });
+      logger.info("cache miss, fetching config from platform-api", { did, orgId, lob });
       try {
-        const snapshot = await fetchConfigSnapshot(tenantId, lob ?? "default");
+        const snapshot = await fetchConfigSnapshot(orgId, lob ?? "default");
         this.deps.cache.replaceFromSnapshot(snapshot);
-        phoneConfig = this.deps.cache.getRoute(did, tenantId, lob);
+        phoneConfig = this.deps.cache.getRoute(did, orgId, lob);
         if (phoneConfig) {
-          logger.info("cache hydrated for tenant on demand", { did, tenantId });
+          logger.info("cache hydrated for organization on demand", { did, orgId });
         }
       } catch (err) {
-        logger.warn("lazy config fetch failed", { error: (err as Error).message, tenantId });
+        logger.warn("lazy config fetch failed", { error: (err as Error).message, orgId });
       }
     }
 
     if (!phoneConfig) {
-      logger.warn("no phone config after lazy fetch, routing to voicemail", { did, tenantId, lob });
-      await this.persistFallbackFailure(callId, tenantId, "missing_config", "error");
+      logger.warn("no phone config after lazy fetch, routing to voicemail", { did, orgId, lob });
+      await this.persistFallbackFailure(callId, orgId, "missing_config", "error");
       this.routeToFallback("missing_config");
       return;
     }
     if (phoneConfig.routeType !== "ai") {
-      logger.info("non-ai route, returning early", { did, tenantId, routeType: phoneConfig.routeType });
+      logger.info("non-ai route, returning early", { did, orgId, routeType: phoneConfig.routeType });
       this.routeToFallback("non_ai_route", phoneConfig);
       return;
     }
@@ -69,22 +69,22 @@ export class CallController {
     const agentConfig = this.deps.cache.getAgent(phoneConfig.agentConfigId ?? "");
     if (!agentConfig) {
       logger.warn("missing agent config", { agentConfigId: phoneConfig.agentConfigId });
-      await this.persistFallbackFailure(callId, tenantId, "missing_agent_config", "error");
+      await this.persistFallbackFailure(callId, orgId, "missing_agent_config", "error");
       this.routeToFallback("missing_agent_config", phoneConfig);
       return;
     }
 
     try {
-      const quota = await this.deps.billing.canStartCall(tenantId);
+      const quota = await this.deps.billing.canStartCall(orgId);
       if (!quota.allowed) {
-        logger.warn("quota denied, routing to voicemail", { tenantId, reason: quota.reason });
-        await this.persistFallbackFailure(callId, tenantId, quota.reason ?? "quota_denied", "quota_denied");
+        logger.warn("quota denied, routing to voicemail", { orgId, reason: quota.reason });
+        await this.persistFallbackFailure(callId, orgId, quota.reason ?? "quota_denied", "quota_denied");
         this.routeToFallback("quota_denied", phoneConfig);
         return;
       }
     } catch (err) {
       logger.error("billing quota failed", { error: (err as Error).message });
-      await this.persistFallbackFailure(callId, tenantId, "quota_error", "error");
+      await this.persistFallbackFailure(callId, orgId, "quota_error", "error");
       this.routeToFallback("quota_error", phoneConfig);
       return;
     }
@@ -98,11 +98,11 @@ export class CallController {
     try {
       this.throwIfAborted(ctx?.signal);
       session = new CallSession(phoneConfig, agentConfig, { callId });
-      mediaSession = await this.deps.media.startSession({ callId: session.id, did, tenantId });
+      mediaSession = await this.deps.media.startSession({ callId: session.id, did, orgId });
 
-      await this.publishCallStarted({ session, did, tenantId, phoneConfig, callerNumber: args.callerNumber });
+      await this.publishCallStarted({ session, did, orgId, phoneConfig, callerNumber: args.callerNumber });
       callStarted = true;
-      traceLog.callStart(session.id, { did, tenantId });
+      traceLog.callStart(session.id, { did, orgId });
 
       await this.handleDialogue(session, initialUtterance ?? "I need to book an appointment", mediaSession, ctx?.signal);
     } catch (err) {
@@ -110,14 +110,14 @@ export class CallController {
       if (error.name === "CallerHangup") {
         endReason = "caller_hangup";
         outcome = "abandoned";
-        logger.info("call aborted by caller", { did, tenantId });
+        logger.info("call aborted by caller", { did, orgId });
       } else {
         endReason = "error";
         outcome = "failed";
-        logger.error("call handling failed", { did, tenantId, error: error.message });
+        logger.error("call handling failed", { did, orgId, error: error.message });
       }
       if (!callStarted) {
-        await this.persistFallbackFailure(callId, tenantId, "call_start_failure", "error");
+        await this.persistFallbackFailure(callId, orgId, "call_start_failure", "error");
         this.routeToFallback("call_start_failure", phoneConfig);
       }
     } finally {
@@ -225,7 +225,7 @@ export class CallController {
         if (turnDiagnostics) {
           persistCallEvent({
             callId: session.id,
-            tenantId: session.context.tenantId,
+            orgId: session.context.orgId,
             eventType: "turn_diagnostic",
             payload: turnDiagnostics,
           }).catch((err) => logger.warn("turn diagnostics persistence failed", {
@@ -377,13 +377,13 @@ export class CallController {
   private async publishCallStarted(params: {
     session: CallSession;
     did: string;
-    tenantId: string;
+    orgId: string;
     phoneConfig: PhoneNumberConfig;
     callerNumber?: string;
   }) {
-    const { session, did, tenantId, phoneConfig, callerNumber } = params;
+    const { session, did, orgId, phoneConfig, callerNumber } = params;
     await this.deps.events.callStarted({
-      tenantId,
+      orgId,
       callId: session.id,
       did,
       businessId: phoneConfig.businessId,
@@ -396,7 +396,7 @@ export class CallController {
     // Persist to Postgres via platform-api
     persistCallStart({
       callId: session.id,
-      tenantId,
+      orgId,
       phoneNumber: did,
       callerNumber: callerNumber ?? "unknown",
       agentConfigId: phoneConfig.agentConfigId,
@@ -415,7 +415,7 @@ export class CallController {
     usage.callDurationSec = Math.ceil(stats.durationMs / 1000);
 
     await this.deps.events.callEnded({
-      tenantId: session.context.tenantId,
+      orgId: session.context.orgId,
       callId: session.id,
       did: session.context.phoneNumberConfig.did,
       businessId: session.context.businessId,
@@ -443,7 +443,7 @@ export class CallController {
 
     persistCallEnd({
       callId: session.id,
-      tenantId: session.context.tenantId,
+      orgId: session.context.orgId,
       endReason: overrides?.endReason ?? "agent_end",
       outcome: overrides?.outcome ?? "handled",
       durationSec: usage.callDurationSec,
@@ -470,14 +470,14 @@ export class CallController {
 
   private async persistFallbackFailure(
     callId: string | undefined,
-    tenantId: string,
+    orgId: string,
     failureType: string,
     endReason: "error" | "timeout" | "quota_denied"
   ): Promise<void> {
     if (!callId) return;
     await persistCallEnd({
       callId,
-      tenantId,
+      orgId,
       endReason,
       outcome: "failed",
       failureType,

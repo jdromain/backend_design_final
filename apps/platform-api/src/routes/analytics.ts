@@ -2,7 +2,7 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { query } from "../persistence/dbClient";
 import { sendData, sendError } from "../lib/responses";
 import { authHook, resolvedAuthHook } from "../auth/jwt";
-import { requireTenantForRequest } from "../auth/tenantScope";
+import { requireOrgForRequest } from "../auth/orgScope";
 import { ConfigStore } from "../config/store";
 import { AnalyticsSummaryEnvelopeSchema } from "../contracts/httpSchemas";
 
@@ -21,16 +21,16 @@ export function registerAnalyticsRoutes(app: FastifyInstance, configStore: Confi
   const preHandler = resolvedAuthHook(["admin", "editor", "viewer"]);
 
   app.get("/analytics/outcomes", { preHandler }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const tenantId = requireTenantForRequest(request, reply, (request.query as any).tenantId);
-    if (!tenantId) return;
+    const orgId = requireOrgForRequest(request, reply, (request.query as any).orgId);
+    if (!orgId) return;
 
     const result = await query(
       `SELECT date_trunc('hour', started_at) AS time, outcome, COUNT(*)::int AS count
        FROM calls
-       WHERE tenant_id = $1 AND started_at > now() - interval '24 hours'
+       WHERE org_id = $1 AND started_at > now() - interval '24 hours'
        GROUP BY time, outcome
        ORDER BY time`,
-      [tenantId]
+      [orgId]
     );
 
     const buckets = new Map<string, { time: string; pending: number; completed: number; handoff: number; dropped: number; systemFailed: number }>();
@@ -48,8 +48,8 @@ export function registerAnalyticsRoutes(app: FastifyInstance, configStore: Confi
   });
 
   app.get("/analytics/sparklines", { preHandler }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const tenantId = requireTenantForRequest(request, reply, (request.query as any).tenantId);
-    if (!tenantId) return;
+    const orgId = requireOrgForRequest(request, reply, (request.query as any).orgId);
+    if (!orgId) return;
 
     const result = await query(
       `SELECT date_trunc('hour', started_at) AS time,
@@ -60,18 +60,18 @@ export function registerAnalyticsRoutes(app: FastifyInstance, configStore: Confi
               COUNT(*) FILTER (WHERE outcome = 'transferred')::int AS handoff,
               COUNT(*) FILTER (WHERE outcome = 'abandoned')::int AS dropped
        FROM calls
-       WHERE tenant_id = $1 AND started_at > now() - interval '24 hours'
+       WHERE org_id = $1 AND started_at > now() - interval '24 hours'
        GROUP BY time ORDER BY time`,
-      [tenantId]
+      [orgId]
     );
 
     const latencyResult = await query(
       `SELECT date_trunc('hour', ce.occurred_at) AS time,
               AVG(EXTRACT(EPOCH FROM (ce.occurred_at - c.started_at)) * 1000)::int AS avg_latency
        FROM call_events ce JOIN calls c ON ce.call_id = c.call_id
-       WHERE c.tenant_id = $1 AND ce.event_type = 'agent_spoke' AND ce.occurred_at > now() - interval '24 hours'
+       WHERE c.org_id = $1 AND ce.event_type = 'agent_spoke' AND ce.occurred_at > now() - interval '24 hours'
        GROUP BY time ORDER BY time`,
-      [tenantId]
+      [orgId]
     );
 
     const latencyMap = new Map<string, number>();
@@ -93,53 +93,53 @@ export function registerAnalyticsRoutes(app: FastifyInstance, configStore: Confi
   });
 
   app.get("/analytics/intents", { preHandler }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const tenantId = requireTenantForRequest(request, reply, (request.query as any).tenantId);
-    if (!tenantId) return;
+    const orgId = requireOrgForRequest(request, reply, (request.query as any).orgId);
+    if (!orgId) return;
 
     const result = await query(
       `SELECT classified_intent AS label, COUNT(*)::int AS value
        FROM calls
-       WHERE tenant_id = $1 AND classified_intent IS NOT NULL
+       WHERE org_id = $1 AND classified_intent IS NOT NULL
        GROUP BY classified_intent ORDER BY value DESC LIMIT 10`,
-      [tenantId]
+      [orgId]
     );
 
     sendData(reply, result.rows);
   });
 
   app.get("/analytics/handoffs", { preHandler }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const tenantId = requireTenantForRequest(request, reply, (request.query as any).tenantId);
-    if (!tenantId) return;
+    const orgId = requireOrgForRequest(request, reply, (request.query as any).orgId);
+    if (!orgId) return;
 
     const result = await query(
       `SELECT end_reason AS label, COUNT(*)::int AS value
        FROM calls
-       WHERE tenant_id = $1 AND outcome = 'transferred'
+       WHERE org_id = $1 AND outcome = 'transferred'
        GROUP BY end_reason ORDER BY value DESC LIMIT 10`,
-      [tenantId]
+      [orgId]
     );
 
     sendData(reply, result.rows);
   });
 
   app.get("/analytics/failures", { preHandler }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const tenantId = requireTenantForRequest(request, reply, (request.query as any).tenantId);
-    if (!tenantId) return;
+    const orgId = requireOrgForRequest(request, reply, (request.query as any).orgId);
+    if (!orgId) return;
 
     const result = await query(
       `SELECT COALESCE(NULLIF(failure_type, ''), end_reason, 'unknown') AS label, COUNT(*)::int AS value
        FROM calls
-       WHERE tenant_id = $1 AND outcome = 'failed'
+       WHERE org_id = $1 AND outcome = 'failed'
        GROUP BY COALESCE(NULLIF(failure_type, ''), end_reason, 'unknown') ORDER BY value DESC LIMIT 10`,
-      [tenantId]
+      [orgId]
     );
 
     sendData(reply, result.rows);
   });
 
   app.get("/analytics/tools", { preHandler }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const tenantId = requireTenantForRequest(request, reply, (request.query as any).tenantId);
-    if (!tenantId) return;
+    const orgId = requireOrgForRequest(request, reply, (request.query as any).orgId);
+    if (!orgId) return;
 
     const result = await query(
       `SELECT
@@ -149,10 +149,10 @@ export function registerAnalyticsRoutes(app: FastifyInstance, configStore: Confi
          COUNT(*) FILTER (WHERE payload->>'result' IN ('error','failed'))::int AS failures,
          AVG((payload->>'latencyMs')::numeric)::int AS avg_latency
        FROM call_events
-       WHERE tenant_id = $1 AND event_type = 'tool_called' AND payload->>'toolName' IS NOT NULL
+       WHERE org_id = $1 AND event_type = 'tool_called' AND payload->>'toolName' IS NOT NULL
        GROUP BY payload->>'toolName'
        ORDER BY invocations DESC`,
-      [tenantId]
+      [orgId]
     );
 
     sendData(reply, result.rows.map((r: any) => ({
@@ -165,8 +165,8 @@ export function registerAnalyticsRoutes(app: FastifyInstance, configStore: Confi
   });
 
   app.get("/analytics/agents", { preHandler }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const tenantId = requireTenantForRequest(request, reply, (request.query as any).tenantId);
-    if (!tenantId) return;
+    const orgId = requireOrgForRequest(request, reply, (request.query as any).orgId);
+    if (!orgId) return;
 
     const agg = (await query(
       `SELECT
@@ -176,16 +176,16 @@ export function registerAnalyticsRoutes(app: FastifyInstance, configStore: Confi
          COUNT(*) FILTER (WHERE outcome = 'failed')::int AS failed,
          AVG(duration_sec)::int AS avg_duration
        FROM calls
-       WHERE tenant_id = $1`,
-      [tenantId]
+       WHERE org_id = $1`,
+      [orgId]
     )).rows[0] ?? { total_calls: 0, handled: 0, escalated: 0, failed: 0, avg_duration: 0 };
 
     const intentsResult = await query(
       `SELECT classified_intent AS name, COUNT(*)::int AS count
        FROM calls
-       WHERE tenant_id = $1 AND classified_intent IS NOT NULL
+       WHERE org_id = $1 AND classified_intent IS NOT NULL
        GROUP BY classified_intent ORDER BY count DESC LIMIT 5`,
-      [tenantId]
+      [orgId]
     );
 
     const totalCallsCount = Number(agg.total_calls) || 0;
@@ -198,7 +198,7 @@ export function registerAnalyticsRoutes(app: FastifyInstance, configStore: Confi
           : 0,
     }));
 
-    const snapshot = await configStore.getSnapshot(tenantId);
+    const snapshot = await configStore.getSnapshot(orgId);
     const cfg = snapshot.agentConfig as { name?: string };
     const agentName = cfg.name ?? snapshot.agentConfig.id;
 
@@ -224,21 +224,21 @@ export function registerAnalyticsRoutes(app: FastifyInstance, configStore: Confi
   });
 
   app.get("/analytics/insights", { preHandler }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const tenantId = requireTenantForRequest(request, reply, (request.query as any).tenantId);
-    if (!tenantId) return;
+    const orgId = requireOrgForRequest(request, reply, (request.query as any).orgId);
+    if (!orgId) return;
 
     const peakHour = await query(
       `SELECT EXTRACT(HOUR FROM started_at)::int AS hour, COUNT(*)::int AS count
-       FROM calls WHERE tenant_id = $1 AND started_at > now() - interval '7 days'
+       FROM calls WHERE org_id = $1 AND started_at > now() - interval '7 days'
        GROUP BY hour ORDER BY count DESC LIMIT 1`,
-      [tenantId]
+      [orgId]
     );
 
     const repeatCallers = await query(
       `SELECT caller_number, COUNT(*)::int AS count
-       FROM calls WHERE tenant_id = $1 AND started_at > now() - interval '7 days'
+       FROM calls WHERE org_id = $1 AND started_at > now() - interval '7 days'
        GROUP BY caller_number HAVING COUNT(*) > 1 ORDER BY count DESC LIMIT 5`,
-      [tenantId]
+      [orgId]
     );
 
     const insights = [];
@@ -265,8 +265,8 @@ export function registerAnalyticsRoutes(app: FastifyInstance, configStore: Confi
     preHandler,
     schema: { response: { 200: AnalyticsSummaryEnvelopeSchema } },
   }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const tenantId = requireTenantForRequest(request, reply, (request.query as any).tenantId);
-    if (!tenantId) return;
+    const orgId = requireOrgForRequest(request, reply, (request.query as any).orgId);
+    if (!orgId) return;
 
     const aggRow = (
       await query(
@@ -276,8 +276,8 @@ export function registerAnalyticsRoutes(app: FastifyInstance, configStore: Confi
            COUNT(*) FILTER (WHERE outcome = 'failed')::int AS failed_calls,
            COALESCE(SUM(duration_sec), 0)::bigint AS total_duration_sec
          FROM calls
-         WHERE tenant_id = $1`,
-        [tenantId]
+         WHERE org_id = $1`,
+        [orgId]
       )
     ).rows[0] ?? {
       total_calls: 0,
@@ -290,9 +290,9 @@ export function registerAnalyticsRoutes(app: FastifyInstance, configStore: Confi
       await query(
         `SELECT COUNT(*)::int AS active_now
          FROM calls
-         WHERE tenant_id = $1
+         WHERE org_id = $1
            AND status IN ('initiated', 'ringing', 'in_progress')`,
-        [tenantId]
+        [orgId]
       )
     ).rows[0] ?? { active_now: 0 };
 
@@ -300,8 +300,8 @@ export function registerAnalyticsRoutes(app: FastifyInstance, configStore: Confi
       await query(
         `SELECT COUNT(*)::int AS tool_invocations
          FROM call_events
-         WHERE tenant_id = $1 AND event_type = 'tool_called'`,
-        [tenantId]
+         WHERE org_id = $1 AND event_type = 'tool_called'`,
+        [orgId]
       )
     ).rows[0] ?? { tool_invocations: 0 };
 

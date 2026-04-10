@@ -17,12 +17,12 @@ vi.hoisted(() => {
 vi.mock("./auth/clerk", () => ({
   isClerkEnabled: true,
   verifyClerkToken: vi.fn(async (token: string) => {
-    const tenantId = token.startsWith("tenant:") ? token.slice("tenant:".length) : "org_testtenant";
+    const orgId = token.startsWith("organization:") ? token.slice("organization:".length) : "org_testorganization";
     return {
-      sub: `clerk-${tenantId}`,
-      email: `contract+${tenantId}@example.com`,
-      orgId: tenantId,
-      tenantIdClaim: tenantId,
+      sub: `clerk-${orgId}`,
+      email: `contract+${orgId}@example.com`,
+      orgId: orgId,
+      orgIdClaim: orgId,
     };
   }),
   getClerkBackendClient: vi.fn(),
@@ -65,11 +65,11 @@ import {
   HealthEnvelopeSchema,
 } from "./contracts/httpSchemas";
 
-const TEST_TENANT_ID = "org_testtenant";
+const TEST_ORG_ID = "org_testorganization";
 
-const testTenantCallRow = {
+const testOrganizationCallRow = {
   call_id: "call-list-contract-1",
-  tenant_id: TEST_TENANT_ID,
+  org_id: TEST_ORG_ID,
   phone_number: "+18005550199",
   caller_number: "+15551234567",
   twilio_call_sid: "CAcontract",
@@ -96,8 +96,8 @@ const testTenantCallRow = {
   stt_seconds: 0,
 };
 
-const testTenantFailedStatusOnlyRow = {
-  ...testTenantCallRow,
+const testOrganizationFailedStatusOnlyRow = {
+  ...testOrganizationCallRow,
   call_id: "call-list-contract-2",
   status: "failed",
   outcome: null,
@@ -105,8 +105,8 @@ const testTenantFailedStatusOnlyRow = {
   failure_type: "busy",
 };
 
-const testTenantLiveRow = {
-  ...testTenantCallRow,
+const testOrganizationLiveRow = {
+  ...testOrganizationCallRow,
   call_id: "call-live-contract-1",
   status: "in_progress",
   ended_at: null,
@@ -124,14 +124,14 @@ function wireDbMocks() {
       return { rows: [] };
     }
     if (s.includes("from users") && s.includes("email")) {
-      const rawEmail = typeof p0 === "string" ? p0 : `contract+${TEST_TENANT_ID}@example.com`;
-      const tenantMatch = /contract\+(.+?)@/.exec(rawEmail);
-      const tenantId = tenantMatch?.[1] ?? TEST_TENANT_ID;
+      const rawEmail = typeof p0 === "string" ? p0 : `contract+${TEST_ORG_ID}@example.com`;
+      const organizationMatch = /contract\+(.+?)@/.exec(rawEmail);
+      const orgId = organizationMatch?.[1] ?? TEST_ORG_ID;
       return {
         rows: [
           {
             id: "user-contract-1",
-            tenant_id: tenantId,
+            org_id: orgId,
             email: rawEmail,
             roles: ["admin"],
             name: "Contract Demo",
@@ -154,8 +154,8 @@ function wireDbMocks() {
       return { rows: [] };
     }
     if (s.includes("in ('initiated'") && s.includes("from calls")) {
-      if (p0 === TEST_TENANT_ID) {
-        return { rows: [testTenantLiveRow] };
+      if (p0 === TEST_ORG_ID) {
+        return { rows: [testOrganizationLiveRow] };
       }
       return { rows: [] };
     }
@@ -178,12 +178,12 @@ function wireDbMocks() {
       return { rows: [{ tool_invocations: 5 }] };
     }
     if (s.includes("from calls") && s.includes("limit 100")) {
-      if (p0 === TEST_TENANT_ID) {
-        return { rows: [testTenantCallRow, testTenantFailedStatusOnlyRow] };
+      if (p0 === TEST_ORG_ID) {
+        return { rows: [testOrganizationCallRow, testOrganizationFailedStatusOnlyRow] };
       }
       return { rows: [] };
     }
-    if (s.includes("from calls") && s.includes("tenant_id")) {
+    if (s.includes("from calls") && s.includes("org_id")) {
       return { rows: [] };
     }
     return { rows: [] };
@@ -215,11 +215,11 @@ describe("platform-api HTTP contract (inject)", () => {
     expect(Value.Check(HealthEnvelopeSchema, body)).toBe(true);
   });
 
-  it("GET /calls?tenantId=… returns { data: [] } matching CallsListEnvelopeSchema", async () => {
+  it("GET /calls?orgId=… returns { data: [] } matching CallsListEnvelopeSchema", async () => {
     const res = await app.inject({
       method: "GET",
-      url: `/calls?tenantId=${TEST_TENANT_ID}`,
-      headers: { authorization: `Bearer ${bearerForTenant()}` },
+      url: `/calls?orgId=${TEST_ORG_ID}`,
+      headers: { authorization: `Bearer ${bearerForOrg()}` },
     });
     expect(res.statusCode).toBe(200);
     const body = res.json();
@@ -230,19 +230,19 @@ describe("platform-api HTTP contract (inject)", () => {
   it("GET /config/snapshot accepts internal service bearer token", async () => {
     const res = await app.inject({
       method: "GET",
-      url: `/config/snapshot?tenantId=${TEST_TENANT_ID}&lob=default`,
+      url: `/config/snapshot?orgId=${TEST_ORG_ID}&lob=default`,
       headers: { authorization: "Bearer contract-internal-service-token" },
     });
     expect(res.statusCode).toBe(200);
     const body = res.json();
-    expect(body.tenantId).toBe(TEST_TENANT_ID);
+    expect(body.orgId).toBe(TEST_ORG_ID);
   });
 
-  it("GET /calls/live?tenantId=… returns { data: [] } when no live rows", async () => {
+  it("GET /calls/live?orgId=… returns { data: [] } when no live rows", async () => {
     const res = await app.inject({
       method: "GET",
-      url: "/calls/live?tenantId=tenant-without-live-calls",
-      headers: { authorization: `Bearer ${bearerForTenant("tenant-without-live-calls")}` },
+      url: "/calls/live?orgId=organization-without-live-calls",
+      headers: { authorization: `Bearer ${bearerForOrg("organization-without-live-calls")}` },
     });
     expect(res.statusCode).toBe(200);
     const body = res.json();
@@ -250,11 +250,11 @@ describe("platform-api HTTP contract (inject)", () => {
     expect(Array.isArray(body.data)).toBe(true);
   });
 
-  it("GET /analytics/summary?tenantId=… returns numeric summary envelope", async () => {
+  it("GET /analytics/summary?orgId=… returns numeric summary envelope", async () => {
     const res = await app.inject({
       method: "GET",
-      url: `/analytics/summary?tenantId=${TEST_TENANT_ID}`,
-      headers: { authorization: `Bearer ${bearerForTenant()}` },
+      url: `/analytics/summary?orgId=${TEST_ORG_ID}`,
+      headers: { authorization: `Bearer ${bearerForOrg()}` },
     });
     expect(res.statusCode).toBe(200);
     const body = res.json();
@@ -277,7 +277,7 @@ describe("platform-api HTTP contract (inject)", () => {
     const res = await app.inject({
       method: "GET",
       url: "/phone-numbers",
-      headers: { authorization: `Bearer ${bearerForTenant()}` },
+      headers: { authorization: `Bearer ${bearerForOrg()}` },
     });
     expect(res.statusCode).toBe(404);
   });
@@ -286,8 +286,8 @@ describe("platform-api HTTP contract (inject)", () => {
     const res = await app.inject({
       method: "POST",
       url: "/billing-quota/can-start-call",
-      headers: { "content-type": "application/json", authorization: `Bearer ${bearerForTenant()}` },
-      payload: { tenantId: `quota-${Date.now()}` },
+      headers: { "content-type": "application/json", authorization: `Bearer ${bearerForOrg()}` },
+      payload: { orgId: `quota-${Date.now()}` },
     });
     expect(res.statusCode).toBe(200);
     const body = res.json();
@@ -295,27 +295,27 @@ describe("platform-api HTTP contract (inject)", () => {
     expect(body.allowed).toBe(true);
   });
 
-  function bearerForTenant(tenantId = TEST_TENANT_ID): string {
-    return `tenant:${tenantId}`;
+  function bearerForOrg(orgId = TEST_ORG_ID): string {
+    return `organization:${orgId}`;
   }
 
-  it("GET /auth/me returns tenant from Bearer Clerk session token", async () => {
+  it("GET /auth/me returns organization from Bearer Clerk session token", async () => {
     const res = await app.inject({
       method: "GET",
       url: "/auth/me",
-      headers: { authorization: `Bearer ${bearerForTenant()}` },
+      headers: { authorization: `Bearer ${bearerForOrg()}` },
     });
     expect(res.statusCode).toBe(200);
     const body = res.json();
-    expect(body.data.tenantId).toBe(TEST_TENANT_ID);
-    expect(body.data.email).toBe(`contract+${TEST_TENANT_ID}@example.com`);
+    expect(body.data.orgId).toBe(TEST_ORG_ID);
+    expect(body.data.email).toBe(`contract+${TEST_ORG_ID}@example.com`);
   });
 
-  it("GET /calls/live with Bearer JWT returns live rows for that tenant", async () => {
+  it("GET /calls/live with Bearer JWT returns live rows for that organization", async () => {
     const res = await app.inject({
       method: "GET",
       url: "/calls/live",
-      headers: { authorization: `Bearer ${bearerForTenant()}` },
+      headers: { authorization: `Bearer ${bearerForOrg()}` },
     });
     expect(res.statusCode).toBe(200);
     const body = res.json();
@@ -324,11 +324,11 @@ describe("platform-api HTTP contract (inject)", () => {
     expect(body.data[0].callId).toBe("call-live-contract-1");
   });
 
-  it("GET /calls with Bearer JWT returns call list for that tenant", async () => {
+  it("GET /calls with Bearer JWT returns call list for that organization", async () => {
     const res = await app.inject({
       method: "GET",
       url: "/calls",
-      headers: { authorization: `Bearer ${bearerForTenant()}` },
+      headers: { authorization: `Bearer ${bearerForOrg()}` },
     });
     expect(res.statusCode).toBe(200);
     const body = res.json();

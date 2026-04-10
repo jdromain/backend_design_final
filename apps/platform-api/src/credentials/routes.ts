@@ -4,7 +4,7 @@ import { TypeBoxTypeProvider } from "@fastify/type-provider-typebox";
 import { createLogger } from "@rezovo/logging";
 import { PersistenceStore } from "../persistence/store";
 import { resolvedAuthHook } from "../auth/jwt";
-import { requireTenantForRequest } from "../auth/tenantScope";
+import { requireOrgForRequest } from "../auth/orgScope";
 
 const logger = createLogger({ service: "platform-api", module: "credentials" });
 const credPreHandler = resolvedAuthHook(["admin", "editor"]);
@@ -92,11 +92,11 @@ export function credentialsRoutes(app: FastifyInstance): void {
   });
 
   // Save/update credentials for a provider
-  typedApp.post<{ Params: { tenantId: string }, Body: SaveCredentialsBody }>("/credentials/:tenantId", {
+  typedApp.post<{ Params: { orgId: string }, Body: SaveCredentialsBody }>("/credentials/:orgId", {
     preHandler: credPreHandler,
     schema: {
       params: Type.Object({
-        tenantId: Type.String()
+        orgId: Type.String()
       }),
       body: SaveCredentialsSchema,
       response: {
@@ -111,9 +111,9 @@ export function credentialsRoutes(app: FastifyInstance): void {
         })
       }
     }
-  }, async (request: FastifyRequest<{ Params: { tenantId: string }, Body: SaveCredentialsBody }>, reply: FastifyReply) => {
-    const tenantId = requireTenantForRequest(request, reply, request.params.tenantId);
-    if (!tenantId) return;
+  }, async (request: FastifyRequest<{ Params: { orgId: string }, Body: SaveCredentialsBody }>, reply: FastifyReply) => {
+    const orgId = requireOrgForRequest(request, reply, request.params.orgId);
+    if (!orgId) return;
     const { provider, credentials } = request.body;
 
     // Validate provider exists
@@ -138,12 +138,12 @@ export function credentialsRoutes(app: FastifyInstance): void {
 
     try {
       await persistence.saveCredentials({
-        tenantId,
+        orgId,
         provider,
         data: credentials
       });
 
-      logger.info("credentials saved", { tenantId, provider });
+      logger.info("credentials saved", { orgId, provider });
 
       return {
         ok: true,
@@ -151,7 +151,7 @@ export function credentialsRoutes(app: FastifyInstance): void {
         message: `Credentials for ${provider} saved successfully`
       };
     } catch (err) {
-      logger.error("failed to save credentials", { error: (err as Error).message, tenantId, provider });
+      logger.error("failed to save credentials", { error: (err as Error).message, orgId, provider });
       reply.status(500);
       return {
         ok: false,
@@ -161,11 +161,11 @@ export function credentialsRoutes(app: FastifyInstance): void {
   });
 
   // Get credentials for a provider (returns masked version)
-  typedApp.get<{ Params: { tenantId: string; provider: string } }>("/credentials/:tenantId/:provider", {
+  typedApp.get<{ Params: { orgId: string; provider: string } }>("/credentials/:orgId/:provider", {
     preHandler: credPreHandler,
     schema: {
       params: Type.Object({
-        tenantId: Type.String(),
+        orgId: Type.String(),
         provider: Type.String()
       }),
       response: {
@@ -181,13 +181,13 @@ export function credentialsRoutes(app: FastifyInstance): void {
         })
       }
     }
-  }, async (request: FastifyRequest<{ Params: { tenantId: string; provider: string } }>, reply: FastifyReply) => {
-    const tenantId = requireTenantForRequest(request, reply, request.params.tenantId);
-    if (!tenantId) return;
+  }, async (request: FastifyRequest<{ Params: { orgId: string; provider: string } }>, reply: FastifyReply) => {
+    const orgId = requireOrgForRequest(request, reply, request.params.orgId);
+    if (!orgId) return;
     const { provider } = request.params;
 
     try {
-      const credentials = await persistence.loadCredentials(tenantId, provider);
+      const credentials = await persistence.loadCredentials(orgId, provider);
 
       if (!credentials) {
         reply.status(404);
@@ -214,7 +214,7 @@ export function credentialsRoutes(app: FastifyInstance): void {
         maskedCredentials: masked
       };
     } catch (err) {
-      logger.error("failed to load credentials", { error: (err as Error).message, tenantId, provider });
+      logger.error("failed to load credentials", { error: (err as Error).message, orgId, provider });
       reply.status(500);
       return {
         ok: false,
@@ -224,11 +224,11 @@ export function credentialsRoutes(app: FastifyInstance): void {
   });
 
   // Delete credentials for a provider
-  typedApp.delete<{ Params: { tenantId: string; provider: string } }>("/credentials/:tenantId/:provider", {
+  typedApp.delete<{ Params: { orgId: string; provider: string } }>("/credentials/:orgId/:provider", {
     preHandler: credPreHandler,
     schema: {
       params: Type.Object({
-        tenantId: Type.String(),
+        orgId: Type.String(),
         provider: Type.String()
       }),
       response: {
@@ -238,27 +238,27 @@ export function credentialsRoutes(app: FastifyInstance): void {
         })
       }
     }
-  }, async (request: FastifyRequest<{ Params: { tenantId: string; provider: string } }>, reply: FastifyReply) => {
-    const tenantId = requireTenantForRequest(request, reply, request.params.tenantId);
-    if (!tenantId) return;
+  }, async (request: FastifyRequest<{ Params: { orgId: string; provider: string } }>, reply: FastifyReply) => {
+    const orgId = requireOrgForRequest(request, reply, request.params.orgId);
+    if (!orgId) return;
     const { provider } = request.params;
 
     try {
       // Save empty credentials to effectively delete
       await persistence.saveCredentials({
-        tenantId,
+        orgId,
         provider,
         data: {}
       });
 
-      logger.info("credentials deleted", { tenantId, provider });
+      logger.info("credentials deleted", { orgId, provider });
 
       return {
         ok: true,
         message: `Credentials for ${provider} deleted successfully`
       };
     } catch (err) {
-      logger.error("failed to delete credentials", { error: (err as Error).message, tenantId, provider });
+      logger.error("failed to delete credentials", { error: (err as Error).message, orgId, provider });
       reply.status(500);
       return {
         ok: false,
@@ -268,11 +268,11 @@ export function credentialsRoutes(app: FastifyInstance): void {
   });
 
   // Test credentials by making a simple API call
-  typedApp.post<{ Params: { tenantId: string; provider: string } }>("/credentials/:tenantId/:provider/test", {
+  typedApp.post<{ Params: { orgId: string; provider: string } }>("/credentials/:orgId/:provider/test", {
     preHandler: credPreHandler,
     schema: {
       params: Type.Object({
-        tenantId: Type.String(),
+        orgId: Type.String(),
         provider: Type.String()
       }),
       response: {
@@ -285,13 +285,13 @@ export function credentialsRoutes(app: FastifyInstance): void {
         })
       }
     }
-  }, async (request: FastifyRequest<{ Params: { tenantId: string; provider: string } }>, reply: FastifyReply) => {
-    const tenantId = requireTenantForRequest(request, reply, request.params.tenantId);
-    if (!tenantId) return;
+  }, async (request: FastifyRequest<{ Params: { orgId: string; provider: string } }>, reply: FastifyReply) => {
+    const orgId = requireOrgForRequest(request, reply, request.params.orgId);
+    if (!orgId) return;
     const { provider } = request.params;
 
     try {
-      const credentials = await persistence.loadCredentials(tenantId, provider);
+      const credentials = await persistence.loadCredentials(orgId, provider);
 
       if (!credentials) {
         return {
@@ -325,7 +325,7 @@ export function credentialsRoutes(app: FastifyInstance): void {
         ...testResult
       };
     } catch (err) {
-      logger.error("credential test failed", { error: (err as Error).message, tenantId, provider });
+      logger.error("credential test failed", { error: (err as Error).message, orgId, provider });
       return {
         ok: true,
         provider,

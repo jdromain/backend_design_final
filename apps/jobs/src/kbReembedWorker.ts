@@ -45,18 +45,18 @@ function getVectorStore(): PgVectorStore {
 export async function registerKbReembedWorker(bus: EventBusClient): Promise<() => Promise<void>> {
   return bus.subscribe("DocIngestRequested", async (event: TypedEventEnvelope<"DocIngestRequested">) => {
     const payload = event.payload as DocIngestRequestedPayload;
-    const tenantId = event.tenant_id;
+    const orgId = event.org_id;
     const docId = payload.doc_id;
     const namespace = payload.namespace;
 
-    logger.info("kb ingest requested", { tenantId, docId, namespace });
+    logger.info("kb ingest requested", { orgId, docId, namespace });
 
     if (!process.env.OPENAI_API_KEY?.trim()) {
       logger.warn("skipping DocIngestRequested — OPENAI_API_KEY not set (idle local worker)");
       return;
     }
 
-    const document = await persistenceClient.loadDocument(tenantId, docId);
+    const document = await persistenceClient.loadDocument(orgId, docId);
     if (!document) {
       logger.warn("document not found for ingest", { docId });
       return;
@@ -79,7 +79,7 @@ export async function registerKbReembedWorker(bus: EventBusClient): Promise<() =
       // Batch upsert: embeds all chunks in a single OpenAI call, inserts in a transaction
       const insertedCount = await store.upsertChunks({
         docId,
-        tenantId,
+        orgId,
         namespace,
         chunks: chunks.map(c => ({
           index: c.index,
@@ -92,12 +92,12 @@ export async function registerKbReembedWorker(bus: EventBusClient): Promise<() =
       });
 
       // Mark document as embedded in kb_documents table
-      await persistenceClient.markDocumentEmbedded(tenantId, docId, insertedCount);
+      await persistenceClient.markDocumentEmbedded(orgId, docId, insertedCount);
 
       logger.info("kb ingest completed", {
         docId,
         namespace,
-        tenantId,
+        orgId,
         chunks: insertedCount,
         textLength: document.text.length,
       });
@@ -105,7 +105,7 @@ export async function registerKbReembedWorker(bus: EventBusClient): Promise<() =
       logger.error("kb ingest failed", {
         docId,
         namespace,
-        tenantId,
+        orgId,
         error: (err as Error).message,
       });
     }

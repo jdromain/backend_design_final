@@ -3,7 +3,7 @@ import { env } from "../env";
 import { internalApiHeaders } from "../platformApiAuth";
 
 export type ConfigSnapshotResponse = {
-  tenantId: string;
+  orgId: string;
   lob: string;
   version: number;
   status: "draft" | "published";
@@ -12,10 +12,10 @@ export type ConfigSnapshotResponse = {
   plan: PlanSnapshot;
 };
 
-export async function fetchConfigSnapshot(tenantId: string, lob = "default"): Promise<ConfigSnapshotResponse> {
+export async function fetchConfigSnapshot(orgId: string, lob = "default"): Promise<ConfigSnapshotResponse> {
   const base = env.PLATFORM_API_URL;
   const url = new URL("/config/snapshot", base);
-  url.searchParams.set("tenantId", tenantId);
+  url.searchParams.set("orgId", orgId);
   url.searchParams.set("lob", lob);
 
   const res = await fetch(url.toString(), {

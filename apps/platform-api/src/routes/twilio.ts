@@ -96,7 +96,7 @@ export function registerTwilioRoutes(app: FastifyInstance): void {
 
       logger.info("received Twilio voice webhook", { CallSid, From, To, CallStatus, Direction });
 
-      // Look up tenant by phone number
+      // Look up organization by phone number
       logger.info("looking up phone number", { To });
       const voiceNumber: PhoneNumberRecord | null = await callStore.getPhoneNumber(To);
 
@@ -114,7 +114,7 @@ export function registerTwilioRoutes(app: FastifyInstance): void {
       const callId = randomUUID();
       await callStore.upsertCall({
         callId,
-        tenantId: voiceNumber.tenantId,
+        orgId: voiceNumber.orgId,
         phoneNumber: To,
         callerNumber: From,
         twilioCallSid: CallSid,
@@ -126,7 +126,7 @@ export function registerTwilioRoutes(app: FastifyInstance): void {
       // Log as call event
       await callStore.insertEvent({
         callId,
-        tenantId: voiceNumber.tenantId,
+        orgId: voiceNumber.orgId,
         eventType: "carrier_voice",
         payload: body as unknown as Record<string, unknown>,
       });
@@ -140,7 +140,7 @@ export function registerTwilioRoutes(app: FastifyInstance): void {
           body: JSON.stringify({
             callId,
             did: To,
-            tenantId: voiceNumber.tenantId,
+            orgId: voiceNumber.orgId,
             lob: voiceNumber.lob || "default",
             callerNumber: From,
           }),
@@ -148,7 +148,7 @@ export function registerTwilioRoutes(app: FastifyInstance): void {
         if (!notifyResponse.ok) {
           logger.warn("failed to notify realtime-core", { status: notifyResponse.status, callId });
         } else {
-          logger.info("notified realtime-core of inbound call", { callId, tenantId: voiceNumber.tenantId });
+          logger.info("notified realtime-core of inbound call", { callId, orgId: voiceNumber.orgId });
         }
       } catch (err) {
         logger.error("error notifying realtime-core", { error: (err as Error).message, callId });
@@ -174,7 +174,7 @@ export function registerTwilioRoutes(app: FastifyInstance): void {
 </Response>`;
 
       reply.type("text/xml").send(twiml);
-      logger.info("call routed to Media Stream", { callId, callSid: CallSid, tenantId: voiceNumber.tenantId, streamUrl });
+      logger.info("call routed to Media Stream", { callId, callSid: CallSid, orgId: voiceNumber.orgId, streamUrl });
     } catch (err) {
       logger.error("voice webhook error", { error: (err as Error).message, stack: (err as Error).stack });
       const response = new twilio.twiml.VoiceResponse();
@@ -212,7 +212,7 @@ export function registerTwilioRoutes(app: FastifyInstance): void {
       // Log status event
       await callStore.insertEvent({
         callId: call.callId,
-        tenantId: call.tenantId,
+        orgId: call.orgId,
         eventType: "carrier_status",
         payload: body as unknown as Record<string, unknown>,
       });
@@ -223,7 +223,7 @@ export function registerTwilioRoutes(app: FastifyInstance): void {
         if ((CallStatus === "ringing" || CallStatus === "in-progress") && !isFinalizedByRealtime(call)) {
           await callStore.upsertCall({
             callId: call.callId,
-            tenantId: call.tenantId,
+            orgId: call.orgId,
             phoneNumber: call.phoneNumber,
             callerNumber: call.callerNumber,
             status: CallStatus === "in-progress" ? "in_progress" : "ringing",
@@ -240,7 +240,7 @@ export function registerTwilioRoutes(app: FastifyInstance): void {
         if (!call.failureType && terminal.failureType) {
           await callStore.upsertCall({
             callId: call.callId,
-            tenantId: call.tenantId,
+            orgId: call.orgId,
             phoneNumber: call.phoneNumber,
             callerNumber: call.callerNumber,
             status: call.status,
@@ -265,7 +265,7 @@ export function registerTwilioRoutes(app: FastifyInstance): void {
 
       await callStore.upsertCall({
         callId: call.callId,
-        tenantId: call.tenantId,
+        orgId: call.orgId,
         phoneNumber: call.phoneNumber,
         callerNumber: call.callerNumber,
         status: terminal.status,

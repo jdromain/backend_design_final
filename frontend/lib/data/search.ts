@@ -12,7 +12,7 @@ import {
   quickFilters,
   suggestedActions,
 } from "@/data/mock/search"
-import { appendTenantQuery, get } from "@/lib/api-client"
+import { appendOrgQuery, get } from "@/lib/api-client"
 
 export {
   mockPages,
@@ -70,7 +70,7 @@ export async function fetchLiveSearch(q: string): Promise<LiveSearchApiResponse 
   const trimmed = q.trim()
   if (!trimmed) return null
   return get<LiveSearchApiResponse>(
-    appendTenantQuery(`/search?q=${encodeURIComponent(trimmed)}`)
+    appendOrgQuery(`/search?q=${encodeURIComponent(trimmed)}`)
   )
 }
 

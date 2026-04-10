@@ -1,7 +1,7 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { sendData, sendError } from "../lib/responses";
 import { authHook, resolvedAuthHook } from "../auth/jwt";
-import { requireTenantForRequest } from "../auth/tenantScope";
+import { requireOrgForRequest } from "../auth/orgScope";
 import { ConfigStore } from "../config/store";
 import { query } from "../persistence/dbClient";
 
@@ -10,10 +10,10 @@ export function registerAgentRoutes(app: FastifyInstance, configStore: ConfigSto
   const preHandler = resolvedAuthHook(["admin", "editor", "viewer"]);
 
   app.get("/agents", { preHandler }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const tenantId = requireTenantForRequest(request, reply, (request.query as any).tenantId);
-    if (!tenantId) return;
+    const orgId = requireOrgForRequest(request, reply, (request.query as any).orgId);
+    if (!orgId) return;
 
-    const snapshot = await configStore.getSnapshot(tenantId);
+    const snapshot = await configStore.getSnapshot(orgId);
     const agentConfig = snapshot.agentConfig;
 
     const metricsResult = await query(
@@ -25,9 +25,9 @@ export function registerAgentRoutes(app: FastifyInstance, configStore: ConfigSto
          COUNT(*) FILTER (WHERE outcome = 'failed')::int AS failed,
          AVG(duration_sec)::int AS avg_duration
        FROM calls
-       WHERE tenant_id = $1 AND agent_config_id IS NOT NULL
+       WHERE org_id = $1 AND agent_config_id IS NOT NULL
        GROUP BY agent_config_id`,
-      [tenantId]
+      [orgId]
     );
     const metricsMap = new Map<string, any>();
     for (const row of metricsResult.rows) {
@@ -61,11 +61,11 @@ export function registerAgentRoutes(app: FastifyInstance, configStore: ConfigSto
   });
 
   app.get("/agents/:agentId", { preHandler }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const tenantId = requireTenantForRequest(request, reply, (request.query as any).tenantId);
-    if (!tenantId) return;
+    const orgId = requireOrgForRequest(request, reply, (request.query as any).orgId);
+    if (!orgId) return;
     const { agentId } = request.params as { agentId: string };
 
-    const snapshot = await configStore.getSnapshot(tenantId);
+    const snapshot = await configStore.getSnapshot(orgId);
     const agentConfig = snapshot.agentConfig;
 
     if (agentConfig.id !== agentId) {
@@ -78,8 +78,8 @@ export function registerAgentRoutes(app: FastifyInstance, configStore: ConfigSto
               COUNT(*) FILTER (WHERE outcome = 'transferred')::int AS escalated,
               COUNT(*) FILTER (WHERE outcome = 'failed')::int AS failed,
               AVG(duration_sec)::int AS avg_duration
-       FROM calls WHERE tenant_id = $1 AND agent_config_id = $2`,
-      [tenantId, agentId]
+       FROM calls WHERE org_id = $1 AND agent_config_id = $2`,
+      [orgId, agentId]
     )).rows[0] ?? { total_calls: 0, handled: 0, escalated: 0, failed: 0, avg_duration: 0 };
 
     sendData(reply, {

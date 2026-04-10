@@ -19,7 +19,7 @@ export function createRedisEventBus(redisUrl: string): EventBusClient {
   const publisher = new Redis(redisUrl, { maxRetriesPerRequest: null });
   const subscriber = publisher.duplicate({ maxRetriesPerRequest: null });
 
-  type Subscription = { handler: EventHandler; tenantId?: string };
+  type Subscription = { handler: EventHandler; orgId?: string };
   const handlers = new Map<string, Set<Subscription>>();
   const subscribedChannels = new Set<string>();
 
@@ -35,7 +35,7 @@ export function createRedisEventBus(redisUrl: string): EventBusClient {
     const subs = handlers.get(eventType);
     if (!subs) return;
     for (const sub of subs) {
-      if (sub.tenantId && sub.tenantId !== envelope.tenant_id) continue;
+      if (sub.orgId && sub.orgId !== envelope.org_id) continue;
       await sub.handler(envelope);
     }
   });
@@ -60,7 +60,7 @@ export function createRedisEventBus(redisUrl: string): EventBusClient {
     ): Promise<() => Promise<void>> {
       await ensureSubscribed(eventType);
       const set = handlers.get(eventType) ?? new Set<Subscription>();
-      const entry: Subscription = { handler: handler as EventHandler, tenantId: options?.tenantId };
+      const entry: Subscription = { handler: handler as EventHandler, orgId: options?.orgId };
       set.add(entry);
       handlers.set(eventType, set);
 

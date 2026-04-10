@@ -6,7 +6,7 @@ export interface User {
   id: string;
   email: string;
   roles: AuthRole[];
-  tenantId?: string;
+  orgId?: string;
 }
 
 export interface LoginResponse {
@@ -16,7 +16,7 @@ export interface LoginResponse {
 
 export interface AgentConfig {
   id: string;
-  tenantId: string;
+  orgId: string;
   name: string;
   version: number;
   config: Record<string, unknown>;
@@ -27,7 +27,7 @@ export interface AgentConfig {
 
 export interface CallRecord {
   callId: string;
-  tenantId: string;
+  orgId: string;
   phoneNumber: string;
   callerNumber?: string;
   startedAt: string;
@@ -56,7 +56,7 @@ export interface HealthStatus {
 
 export interface KBDocument {
   docId: string;
-  tenantId: string;
+  orgId: string;
   namespace: string;
   text: string;
   metadata?: Record<string, unknown>;

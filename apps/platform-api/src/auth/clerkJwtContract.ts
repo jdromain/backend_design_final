@@ -5,10 +5,8 @@
  * - `sub` — Clerk user id (`user_...`)
  * - `email` — add via template: {{user.primary_email_address}}
  *
- * Strongly recommended for tenant consistency:
+ * Required for org scoping:
  * - `org_id` — active organization id (`org_...`) when using Organizations
- * - `tenant_id` — optional custom claim; when present it should equal `org_id`.
- *   backend compares claim/org/user tenant and rejects mismatches.
  *
  * @see docs/AUTH_CLERK.md
  */
@@ -16,5 +14,4 @@ export type ClerkSessionClaimsShape = {
   sub: string;
   email?: string;
   org_id?: string;
-  tenant_id?: string;
 };

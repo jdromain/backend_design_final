@@ -5,7 +5,7 @@ import type { EventEnvelope, EventPayloadByType, EventType, TypedEventEnvelope }
 import type { EventBusClient, EventHandler, SubscribeOptions } from "./types";
 
 export function createInMemoryEventBus(): EventBusClient {
-  type Subscription = { handler: EventHandler; tenantId?: string };
+  type Subscription = { handler: EventHandler; orgId?: string };
   const handlers = new Map<string, Set<Subscription>>();
 
   return {
@@ -14,7 +14,7 @@ export function createInMemoryEventBus(): EventBusClient {
       if (!subscribers) return;
 
       for (const subscriber of subscribers) {
-        if (subscriber.tenantId && subscriber.tenantId !== event.tenant_id) {
+        if (subscriber.orgId && subscriber.orgId !== event.org_id) {
           continue;
         }
         await subscriber.handler(event);
@@ -26,7 +26,7 @@ export function createInMemoryEventBus(): EventBusClient {
       options?: SubscribeOptions
     ): Promise<() => Promise<void>> {
       const existing = handlers.get(eventType) ?? new Set<Subscription>();
-      existing.add({ handler: handler as EventHandler, tenantId: options?.tenantId });
+      existing.add({ handler: handler as EventHandler, orgId: options?.orgId });
       handlers.set(eventType, existing);
 
       return async () => {
@@ -47,17 +47,17 @@ export function createInMemoryEventBus(): EventBusClient {
 
 export function createEventEnvelope<E extends EventType>(params: {
   eventType: E;
-  tenantId: string;
+  orgId: string;
   payload: EventPayloadByType[E];
   callId?: string;
   timestamp?: string;
   eventId?: string;
 }): TypedEventEnvelope<E> {
-  const { eventType, tenantId, payload, callId, timestamp, eventId } = params;
+  const { eventType, orgId, payload, callId, timestamp, eventId } = params;
   return {
     event_id: eventId ?? randomUUID(),
     event_type: eventType,
-    tenant_id: tenantId,
+    org_id: orgId,
     call_id: callId,
     timestamp: timestamp ?? new Date().toISOString(),
     payload

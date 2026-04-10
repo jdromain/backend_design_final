@@ -7,7 +7,7 @@ import { Pool } from "pg";
 import { createLogger } from "@rezovo/logging";
 
 type StoredDocument = {
-  tenantId: string;
+  orgId: string;
   businessId: string;
   namespace: string;
   docId: string;
@@ -44,16 +44,16 @@ function getPool(): Pool {
 }
 
 export const persistenceClient = {
-  async loadDocument(tenantId: string, docId: string): Promise<StoredDocument | null> {
+  async loadDocument(orgId: string, docId: string): Promise<StoredDocument | null> {
     try {
       const result = await getPool().query(
-        "SELECT * FROM kb_documents WHERE tenant_id = $1 AND doc_id = $2 LIMIT 1",
-        [tenantId, docId]
+        "SELECT * FROM kb_documents WHERE org_id = $1 AND doc_id = $2 LIMIT 1",
+        [orgId, docId]
       );
       if (result.rows.length === 0) return null;
       const row = result.rows[0];
       return {
-        tenantId: row.tenant_id,
+        orgId: row.org_id,
         businessId: row.business_id,
         namespace: row.namespace,
         docId: row.doc_id,
@@ -63,21 +63,21 @@ export const persistenceClient = {
         embeddedChunks: row.embedded_chunks ?? undefined,
       };
     } catch (err) {
-      logger.error("loadDocument failed", { error: (err as Error).message, tenantId, docId });
+      logger.error("loadDocument failed", { error: (err as Error).message, orgId, docId });
       return null;
     }
   },
 
-  async markDocumentEmbedded(tenantId: string, docId: string, chunks: number): Promise<void> {
+  async markDocumentEmbedded(orgId: string, docId: string, chunks: number): Promise<void> {
     try {
       await getPool().query(
         `UPDATE kb_documents
          SET embedded_chunks = $1, status = 'embedded', updated_at = now()
-         WHERE tenant_id = $2 AND doc_id = $3`,
-        [chunks, tenantId, docId]
+         WHERE org_id = $2 AND doc_id = $3`,
+        [chunks, orgId, docId]
       );
     } catch (err) {
-      logger.warn("markDocumentEmbedded failed", { error: (err as Error).message, tenantId, docId });
+      logger.warn("markDocumentEmbedded failed", { error: (err as Error).message, orgId, docId });
     }
   },
 };

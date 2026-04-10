@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-# Confirms Postgres is up AND the app database accepts queries with expected demo seed.
-# Run from repo root after: docker compose up -d postgres  (or fresh-demo-postgres.sh)
+# Confirms Postgres and verifies canonical org-id schema for local testing.
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
@@ -18,72 +17,51 @@ if command -v docker >/dev/null 2>&1 && docker compose exec -T postgres pg_isrea
   use_docker=true
 fi
 
-if [[ "$use_docker" == true ]]; then
-  docker compose exec -T postgres psql -U rezovo -d rezovo -v ON_ERROR_STOP=1 -c "SELECT 1 AS ok;" >/dev/null
-  echo "OK: database accepts queries (SELECT 1)."
-  count=$(docker compose exec -T postgres psql -U rezovo -d rezovo -tAc "SELECT COUNT(*) FROM public.users WHERE email = 'admin@example.com' AND status = 'active';" | tr -d '[:space:]')
-elif [[ -n "$PGURL" ]] && command -v psql >/dev/null 2>&1; then
-  psql "$PGURL" -v ON_ERROR_STOP=1 -c "SELECT 1 AS ok;" >/dev/null
-  echo "OK: database accepts queries (SELECT 1)."
-  count=$(psql "$PGURL" -tAc "SELECT COUNT(*) FROM public.users WHERE email = 'admin@example.com' AND status = 'active';" | tr -d '[:space:]')
-else
-  echo "ERROR: Postgres is listening but cannot verify schema — start compose Postgres (docker compose up -d postgres) or install psql and set DATABASE_URL in apps/platform-api/.env" >&2
-  exit 1
-fi
-
-if [[ "$count" != "1" ]]; then
-  for _ in $(seq 1 15); do
-    sleep 2
-    if [[ "$use_docker" == true ]]; then
-      count=$(docker compose exec -T postgres psql -U rezovo -d rezovo -tAc "SELECT COUNT(*) FROM public.users WHERE email = 'admin@example.com' AND status = 'active';" | tr -d '[:space:]')
-    else
-      count=$(psql "$PGURL" -tAc "SELECT COUNT(*) FROM public.users WHERE email = 'admin@example.com' AND status = 'active';" | tr -d '[:space:]')
-    fi
-    [[ "$count" == "1" ]] && break
-  done
-fi
-if [[ "$count" != "1" ]]; then
-  echo "ERROR: expected seeded user admin@example.com (active); count='$count'. Apply database/setup_complete.sql then database/002_ui_tables.sql (see scripts/apply-database.sh), or bash scripts/fresh-demo-postgres.sh for a fresh volume." >&2
-  exit 1
-fi
-echo "OK: seeded user admin@example.com is present for Clerk provisioning/mapping flows."
-
-# ── Clerk tenant mapping check ────────────────────────────────────────────────
-echo ""
-echo "==> Checking Clerk tenant mapping (003_clerk_tenant_mapping.sql) ..."
-
-clerk_col_exists() {
-  local sql="SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='tenants' AND column_name='clerk_organization_id';"
+run_query() {
+  local sql="$1"
   if [[ "$use_docker" == true ]]; then
     docker compose exec -T postgres psql -U rezovo -d rezovo -tAc "$sql" | tr -d '[:space:]'
-  else
+  elif [[ -n "$PGURL" ]] && command -v psql >/dev/null 2>&1; then
     psql "$PGURL" -tAc "$sql" | tr -d '[:space:]'
+  else
+    echo "ERROR: cannot connect to Postgres" >&2
+    exit 1
   fi
 }
 
-clerk_org_id() {
-  local sql="SELECT COALESCE(clerk_organization_id,'') FROM public.tenants WHERE id='test-tenant';"
-  if [[ "$use_docker" == true ]]; then
-    docker compose exec -T postgres psql -U rezovo -d rezovo -tAc "$sql" | tr -d '[:space:]'
-  else
-    psql "$PGURL" -tAc "$sql" | tr -d '[:space:]'
-  fi
-}
+org_table=$(run_query "SELECT to_regclass('public.organizations') IS NOT NULL;")
+if [[ "$org_table" != "t" ]]; then
+  echo "ERROR: public.organizations table missing. Run: bash scripts/apply-database.sh" >&2
+  exit 1
+fi
+echo "OK: public.organizations exists."
 
-col_count=$(clerk_col_exists)
-if [[ "$col_count" != "1" ]]; then
-  echo "WARN: tenants.clerk_organization_id column missing — run: bash scripts/apply-database.sh" >&2
-  echo "      (or: docker compose exec -T postgres psql -U rezovo -d rezovo -f - < database/003_clerk_tenant_mapping.sql)" >&2
+legacy_table=$(run_query "SELECT to_regclass('public.tenants') IS NOT NULL;")
+if [[ "$legacy_table" == "t" ]]; then
+  echo "ERROR: legacy public.tenants table still exists. Run org-id cutover migration." >&2
+  exit 1
+fi
+echo "OK: legacy public.tenants is absent."
+
+legacy_col_count=$(run_query "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='organizations' AND column_name='clerk_organization_id';")
+if [[ "$legacy_col_count" != "0" ]]; then
+  echo "ERROR: deprecated organizations.clerk_organization_id still exists. Run org-id cutover migration." >&2
+  exit 1
+fi
+echo "OK: organizations.clerk_organization_id is absent."
+
+active_non_org=$(run_query "SELECT COUNT(*) FROM public.organizations WHERE status='active' AND id !~ '^org_[A-Za-z0-9]+$';")
+if [[ "$active_non_org" != "0" ]]; then
+  echo "ERROR: active organizations contain non-org ids." >&2
+  exit 1
+fi
+echo "OK: all active organizations use org_* ids."
+
+seed_user=$(run_query "SELECT COUNT(*) FROM public.users WHERE email='admin@example.com' AND status='active';")
+if [[ "$seed_user" == "0" ]]; then
+  echo "WARN: seed user admin@example.com missing. This is fine if using Clerk-only real users." >&2
 else
-  echo "OK: tenants.clerk_organization_id column exists."
-  org_id=$(clerk_org_id)
-  if [[ -z "$org_id" ]]; then
-    echo "WARN: test-tenant.clerk_organization_id is not set — Clerk bootstrap org-to-tenant mapping will fail." >&2
-    echo "      To fix, run: bash scripts/link-clerk-org.sh <your-clerk-org-id>" >&2
-    echo "      (Get your Clerk Org ID from Clerk Dashboard → Organizations)" >&2
-  else
-    echo "OK: test-tenant mapped to Clerk org $org_id"
-  fi
+  echo "OK: seed user admin@example.com present."
 fi
 
 exit 0

@@ -6,7 +6,7 @@ type LogLevel = "debug" | "info" | "warn" | "error";
 type LoggerContext = {
   service: string;
   module?: string;
-  tenantId?: string;
+  orgId?: string;
   callId?: string;
 };
 
@@ -17,7 +17,7 @@ function formatMessage(level: LogLevel, message: string, context: LoggerContext,
     level,
     service: context.service,
     module: context.module,
-    tenant_id: context.tenantId,
+    org_id: context.orgId,
     call_id: context.callId,
     message,
     ...payload

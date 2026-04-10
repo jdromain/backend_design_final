@@ -1,7 +1,7 @@
 [
   {
     "userId": "user-1",
-    "tenantId": "tenant-default",
+    "orgId": "org_localdemo",
     "email": "admin@example.com",
     "roles": [
       "admin"
@@ -9,7 +9,7 @@
   },
   {
     "userId": "user-2",
-    "tenantId": "tenant-default",
+    "orgId": "org_localdemo",
     "email": "editor@example.com",
     "roles": [
       "editor"

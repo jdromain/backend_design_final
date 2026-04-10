@@ -19,8 +19,6 @@ export interface VerifiedClerkSession {
   sub: string;
   email: string;
   orgId?: string;
-  /** Custom JWT claim; used only for consistency check against DB tenant */
-  tenantIdClaim?: string;
 }
 
 function pickEmail(payload: Record<string, unknown>): string {
@@ -35,12 +33,6 @@ function pickEmail(payload: Record<string, unknown>): string {
 function pickOrgId(payload: Record<string, unknown>): string | undefined {
   const o = payload.org_id ?? payload.organization_id ?? (payload.o as Record<string, unknown> | undefined)?.id;
   if (typeof o === "string" && o.length > 0) return o;
-  return undefined;
-}
-
-function pickTenantIdClaim(payload: Record<string, unknown>): string | undefined {
-  const t = payload.tenant_id;
-  if (typeof t === "string" && t.trim().length > 0) return t.trim();
   return undefined;
 }
 
@@ -80,7 +72,6 @@ export async function verifyClerkToken(token: string): Promise<VerifiedClerkSess
       sub,
       email: pickEmail({ ...payload, sub }),
       orgId: pickOrgId(payload),
-      tenantIdClaim: pickTenantIdClaim(payload),
     };
   } catch (err) {
     logger.warn("clerk token verification failed", {

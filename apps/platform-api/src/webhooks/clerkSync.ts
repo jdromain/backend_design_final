@@ -4,24 +4,48 @@ import { createLogger } from "@rezovo/logging";
 import { env } from "../env";
 import { AuthStoreClient } from "../auth/storeClient";
 import { getClerkBackendClient } from "../auth/clerk";
+import { mapClerkOrgRoleToAppRoles } from "../auth/roleMap";
 
 const logger = createLogger({ service: "platform-api", module: "clerkSync" });
 const authStore = new AuthStoreClient();
 
 function getHeader(req: FastifyRequest, name: string): string | undefined {
-  const v = req.headers[name.toLowerCase()];
-  if (Array.isArray(v)) return v[0];
-  return v;
+  const value = req.headers[name.toLowerCase()];
+  if (Array.isArray(value)) return value[0];
+  return value;
 }
 
-type ClerkWebhookEvt = {
+type ClerkWebhookEvent = {
   type: string;
   data: Record<string, unknown>;
 };
 
+function normalizeEmailFromClerkUser(user: any): string {
+  const primary = user.emailAddresses?.find((entry: { id: string }) => entry.id === user.primaryEmailAddressId) ?? user.emailAddresses?.[0];
+  return primary?.emailAddress ?? "";
+}
+
+async function upsertMembershipByIds(params: { orgId: string; clerkUserId: string; role?: unknown }): Promise<void> {
+  const clerk = getClerkBackendClient();
+  const user = await clerk.users.getUser(params.clerkUserId);
+  const email = normalizeEmailFromClerkUser(user);
+  if (!email) {
+    logger.warn("membership sync skipped: Clerk user has no email", { clerkUserId: params.clerkUserId, orgId: params.orgId });
+    return;
+  }
+
+  await authStore.upsertUser({
+    id: `clerk-${params.clerkUserId}-${params.orgId}`,
+    orgId: params.orgId,
+    email,
+    clerkId: params.clerkUserId,
+    name: [user.firstName, user.lastName].filter(Boolean).join(" ") || undefined,
+    roles: mapClerkOrgRoleToAppRoles(params.role),
+  });
+}
+
 /**
  * POST /webhooks/clerk — Clerk Dashboard webhook with Svix verification.
- * Configure URL in Clerk; use signing secret as CLERK_WEBHOOK_SECRET.
  */
 export async function clerkSyncHandler(request: FastifyRequest, reply: FastifyReply): Promise<void> {
   const secret = env.CLERK_WEBHOOK_SECRET?.trim();
@@ -47,24 +71,24 @@ export async function clerkSyncHandler(request: FastifyRequest, reply: FastifyRe
     return;
   }
 
-  let evt: ClerkWebhookEvt;
+  let event: ClerkWebhookEvent;
   try {
-    const wh = new Webhook(secret);
-    evt = wh.verify(payloadString, {
+    const webhook = new Webhook(secret);
+    event = webhook.verify(payloadString, {
       "svix-id": svixId,
       "svix-timestamp": svixTimestamp,
       "svix-signature": svixSignature,
-    }) as ClerkWebhookEvt;
-  } catch (e) {
-    logger.warn("clerk webhook verify failed", { error: (e as Error).message });
+    }) as ClerkWebhookEvent;
+  } catch (error) {
+    logger.warn("clerk webhook verify failed", { error: (error as Error).message });
     reply.status(400).send({ error: "invalid_signature" });
     return;
   }
 
   try {
-    await dispatchClerkEvent(evt);
-  } catch (e) {
-    logger.error("clerk webhook handler error", { error: (e as Error).message, type: evt.type });
+    await dispatchClerkEvent(event);
+  } catch (error) {
+    logger.error("clerk webhook handler error", { error: (error as Error).message, type: event.type });
     reply.status(500).send({ error: "handler_failed" });
     return;
   }
@@ -72,74 +96,33 @@ export async function clerkSyncHandler(request: FastifyRequest, reply: FastifyRe
   reply.send({ ok: true });
 }
 
-async function dispatchClerkEvent(evt: ClerkWebhookEvt): Promise<void> {
-  const { type, data } = evt;
+async function dispatchClerkEvent(event: ClerkWebhookEvent): Promise<void> {
+  const { type, data } = event;
   if (!data || typeof data !== "object") return;
 
   switch (type) {
-    case "user.created":
-    case "user.updated":
-      await handleUserUpsert(data);
-      break;
-    case "organization.updated":
     case "organization.created":
+    case "organization.updated":
       await handleOrganizationUpsert(data);
       break;
     case "organizationMembership.created":
     case "organizationMembership.updated":
       await handleOrganizationMembership(data);
       break;
+    case "user.created":
+    case "user.updated":
+      await handleUserUpsert(data);
+      break;
     default:
       logger.debug("clerk webhook ignored event type", { type });
   }
 }
 
-async function handleUserUpsert(data: Record<string, unknown>): Promise<void> {
-  const id = data.id as string | undefined;
-  if (!id) return;
-
-  const emails = data.email_addresses as Array<{ email_address?: string }> | undefined;
-  const email = emails?.[0]?.email_address;
-  if (!email) {
-    logger.warn("clerk user event missing email", { clerkId: id });
-    return;
-  }
-
-  const first = (data.first_name as string) ?? "";
-  const last = (data.last_name as string) ?? "";
-  const name = [first, last].filter(Boolean).join(" ") || undefined;
-
-  // User events do not carry authoritative org membership.
-  // Only update an already-provisioned user row; membership events create tenant assignments.
-  const existing = (await authStore.findByClerkId(id)) ?? (await authStore.findByEmail(email));
-  if (!existing) {
-    logger.debug("clerk user event skipped pending organization membership sync", { clerkId: id, email });
-    return;
-  }
-
-  await authStore.upsertUser({
-    id: `clerk-${id}`,
-    tenantId: existing.tenantId,
-    email,
-    clerkId: id,
-    name,
-    roles: existing.roles,
-  });
-
-  logger.info("clerk user profile synced on existing tenant assignment", {
-    clerkId: id,
-    email,
-    tenantId: existing.tenantId,
-  });
-}
-
 async function handleOrganizationUpsert(data: Record<string, unknown>): Promise<void> {
   const orgId = data.id as string | undefined;
-  if (!orgId) {
-    return;
-  }
+  if (!orgId) return;
 
-  await authStore.upsertTenantFromClerkOrg({
+  await authStore.upsertOrgFromClerk({
     orgId,
     name: (data.name as string | undefined) ?? orgId,
     slug: data.slug as string | undefined,
@@ -149,45 +132,57 @@ async function handleOrganizationUpsert(data: Record<string, unknown>): Promise<
     privateMetadata: (data.private_metadata as Record<string, unknown> | undefined) ?? {},
   });
 
-  logger.info("upserted tenant from Clerk organization", { orgId });
+  logger.info("upserted organization from Clerk", { orgId });
 }
 
 async function handleOrganizationMembership(data: Record<string, unknown>): Promise<void> {
-  const org = data.organization as { id?: string } | undefined;
-  const orgId = org?.id ?? (data.organization_id as string | undefined);
+  const orgObj = data.organization as { id?: string } | undefined;
+  const orgId = orgObj?.id ?? (data.organization_id as string | undefined);
   const publicUser = data.public_user_data as { user_id?: string } | undefined;
   const clerkUserId = publicUser?.user_id;
+
   if (!orgId || !clerkUserId) {
     logger.warn("organizationMembership missing org or user", { orgId, clerkUserId });
     return;
   }
 
-  const tenantId = await authStore.findActiveTenantId(orgId);
-  if (!tenantId) {
-    logger.warn("organizationMembership: org not linked to tenant", { orgId, clerkUserId });
+  const activeOrg = await authStore.findActiveOrgId(orgId);
+  if (!activeOrg) {
+    logger.warn("organizationMembership received for unknown org", { orgId, clerkUserId });
     return;
   }
 
-  const clerk = getClerkBackendClient();
-  let email = "";
-  try {
-    const u = await clerk.users.getUser(clerkUserId);
-    const primary = u.emailAddresses?.find((e: { id: string }) => e.id === u.primaryEmailAddressId) ?? u.emailAddresses?.[0];
-    email = primary?.emailAddress ?? "";
-  } catch (e) {
-    logger.warn("could not fetch Clerk user for membership", { clerkUserId, error: (e as Error).message });
-  }
-  if (!email) {
-    logger.warn("organizationMembership: no email for user", { clerkUserId });
-    return;
-  }
-
-  await authStore.upsertUser({
-    id: `clerk-${clerkUserId}`,
-    tenantId: orgId,
-    email,
-    clerkId: clerkUserId,
+  await upsertMembershipByIds({
+    orgId,
+    clerkUserId,
+    role: (data.role as string | undefined) ?? (data as any).organizationMembership?.role,
   });
 
-  logger.info("clerk user tenant set from membership", { clerkUserId, tenantId: orgId, orgId });
+  logger.info("clerk membership synced", { orgId, clerkUserId });
+}
+
+async function handleUserUpsert(data: Record<string, unknown>): Promise<void> {
+  const clerkUserId = data.id as string | undefined;
+  if (!clerkUserId) return;
+
+  const clerk = getClerkBackendClient();
+  const memberships = await clerk.users.getOrganizationMembershipList({ userId: clerkUserId, limit: 50 });
+  for (const membership of memberships.data ?? []) {
+    const orgId = membership.organization?.id as string | undefined;
+    if (!orgId) continue;
+
+    const activeOrg = await authStore.findActiveOrgId(orgId);
+    if (!activeOrg) continue;
+
+    await upsertMembershipByIds({
+      orgId,
+      clerkUserId,
+      role: (membership as any).role,
+    });
+  }
+
+  logger.info("clerk user memberships reconciled", {
+    clerkUserId,
+    membershipCount: memberships.data?.length ?? 0,
+  });
 }

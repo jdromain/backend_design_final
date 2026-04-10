@@ -2,30 +2,30 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { query } from "../persistence/dbClient";
 import { sendData } from "../lib/responses";
 import { authHook, resolvedAuthHook } from "../auth/jwt";
-import { requireTenantForRequest } from "../auth/tenantScope";
+import { requireOrgForRequest } from "../auth/orgScope";
 
 
 export function registerActivityRoutes(app: FastifyInstance) {
   app.get("/activity", {
     preHandler: resolvedAuthHook(["admin", "editor", "viewer"]),
   }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const tenantId = requireTenantForRequest(request, reply, (request.query as any).tenantId);
-    if (!tenantId) return;
+    const orgId = requireOrgForRequest(request, reply, (request.query as any).orgId);
+    if (!orgId) return;
 
     const events = await query(
       `SELECT id, event_type AS type, payload, occurred_at AS timestamp
        FROM call_events
-       WHERE tenant_id = $1
+       WHERE org_id = $1
        ORDER BY occurred_at DESC LIMIT 30`,
-      [tenantId]
+      [orgId]
     );
 
     const notifications = await query(
       `SELECT id, type, title AS message, timestamp
        FROM notifications
-       WHERE tenant_id = $1
+       WHERE org_id = $1
        ORDER BY timestamp DESC LIMIT 20`,
-      [tenantId]
+      [orgId]
     );
 
     const feed = [

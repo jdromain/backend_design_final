@@ -6,13 +6,13 @@ const logger = createLogger({ service: "realtime-core", module: "openai-agents" 
 export async function fetchKbPassages(
   callId: string,
   query: string,
-  tenantId: string,
+  orgId: string,
   businessId: string,
   namespace: string,
 ): Promise<string[]> {
   try {
     const result = await retrieveKb({
-      tenant_id: tenantId,
+      org_id: orgId,
       business_id: businessId,
       namespace,
       query,

@@ -2,15 +2,15 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { query } from "../persistence/dbClient";
 import { sendData, sendError } from "../lib/responses";
 import { authHook, resolvedAuthHook } from "../auth/jwt";
-import { requireTenantForRequest } from "../auth/tenantScope";
+import { requireOrgForRequest } from "../auth/orgScope";
 
 
 export function registerSearchRoutes(app: FastifyInstance) {
   app.get("/search", {
     preHandler: resolvedAuthHook(["admin", "editor", "viewer"]),
   }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const tenantId = requireTenantForRequest(request, reply, (request.query as any).tenantId);
-    if (!tenantId) return;
+    const orgId = requireOrgForRequest(request, reply, (request.query as any).orgId);
+    if (!orgId) return;
     const q = ((request.query as any).q ?? "").trim();
     if (!q) return sendData(reply, { calls: [], contacts: [], followUps: [], workflows: [], kbDocs: [], users: [], agents: [], integrations: [] });
 
@@ -19,39 +19,39 @@ export function registerSearchRoutes(app: FastifyInstance) {
     const [calls, contacts, followUps, workflows, documents, users] = await Promise.all([
       query(
         `SELECT call_id, caller_number, classified_intent, started_at FROM calls
-         WHERE tenant_id = $1 AND (caller_number ILIKE $2 OR classified_intent ILIKE $2 OR summary ILIKE $2)
+         WHERE org_id = $1 AND (caller_number ILIKE $2 OR classified_intent ILIKE $2 OR summary ILIKE $2)
          LIMIT 10`,
-        [tenantId, pattern]
+        [orgId, pattern]
       ),
       query(
         `SELECT id, name, phone, email FROM contacts
-         WHERE tenant_id = $1 AND (name ILIKE $2 OR phone ILIKE $2 OR email ILIKE $2)
+         WHERE org_id = $1 AND (name ILIKE $2 OR phone ILIKE $2 OR email ILIKE $2)
          LIMIT 10`,
-        [tenantId, pattern]
+        [orgId, pattern]
       ),
       query(
         `SELECT id, type, status, notes FROM follow_ups
-         WHERE tenant_id = $1 AND (type ILIKE $2 OR notes ILIKE $2)
+         WHERE org_id = $1 AND (type ILIKE $2 OR notes ILIKE $2)
          LIMIT 10`,
-        [tenantId, pattern]
+        [orgId, pattern]
       ),
       query(
         `SELECT id, name, trigger_key FROM workflows
-         WHERE tenant_id = $1 AND (name ILIKE $2 OR trigger_key ILIKE $2)
+         WHERE org_id = $1 AND (name ILIKE $2 OR trigger_key ILIKE $2)
          LIMIT 10`,
-        [tenantId, pattern]
+        [orgId, pattern]
       ),
       query(
         `SELECT id, doc_id, namespace FROM kb_documents
-         WHERE tenant_id = $1 AND (doc_id ILIKE $2 OR namespace ILIKE $2)
+         WHERE org_id = $1 AND (doc_id ILIKE $2 OR namespace ILIKE $2)
          LIMIT 10`,
-        [tenantId, pattern]
+        [orgId, pattern]
       ),
       query(
         `SELECT id, name, email FROM users
-         WHERE tenant_id = $1 AND (name ILIKE $2 OR email ILIKE $2)
+         WHERE org_id = $1 AND (name ILIKE $2 OR email ILIKE $2)
          LIMIT 10`,
-        [tenantId, pattern]
+        [orgId, pattern]
       ),
     ]);
 

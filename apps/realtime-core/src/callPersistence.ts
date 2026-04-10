@@ -22,7 +22,7 @@ function getBase(): string {
 
 export interface CallStartPayload {
   callId: string;
-  tenantId: string;
+  orgId: string;
   phoneNumber: string;
   callerNumber: string;
   twilioCallSid?: string;
@@ -34,7 +34,7 @@ export interface CallStartPayload {
 
 export interface CallEndPayload {
   callId: string;
-  tenantId: string;
+  orgId: string;
   endReason?: string;
   outcome?: string;
   failureType?: string;
@@ -62,7 +62,7 @@ export interface TranscriptLine {
 
 export interface CallEventPayload {
   callId: string;
-  tenantId: string;
+  orgId: string;
   eventType: string;
   payload?: Record<string, unknown>;
 }

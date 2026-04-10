@@ -36,7 +36,7 @@ function getVectorStore(): PgVectorStore {
 // ─── Types ───
 
 type KbRetrieveBody = {
-  tenant_id: string;
+  org_id: string;
   business_id: string;
   namespace: string;
   query: string;
@@ -44,7 +44,7 @@ type KbRetrieveBody = {
 };
 
 type KbDocsBody = {
-  tenant_id: string;
+  org_id: string;
   business_id: string;
   namespace: string;
   doc_id?: string;
@@ -54,7 +54,7 @@ type KbDocsBody = {
 };
 
 type KbStatusQuery = {
-  tenantId: string;
+  orgId: string;
   docId: string;
 };
 
@@ -112,28 +112,28 @@ export async function kbRetrieveHandler(
   request: FastifyRequest<{ Body: KbRetrieveBody }>,
   reply: FastifyReply
 ): Promise<unknown> {
-  const { tenant_id, business_id, namespace, query, topK } = request.body ?? {};
-  if (!tenant_id || !business_id || !namespace || !query) {
+  const { org_id, business_id, namespace, query, topK } = request.body ?? {};
+  if (!org_id || !business_id || !namespace || !query) {
     reply.status(400);
-    return { ok: false, error: "tenant_id, business_id, namespace, query required" };
+    return { ok: false, error: "org_id, business_id, namespace, query required" };
   }
 
-  logger.info("kb retrieve", { tenant_id, business_id, namespace, topK: topK ?? 5 });
+  logger.info("kb retrieve", { org_id, business_id, namespace, topK: topK ?? 5 });
 
   try {
     const store = getVectorStore();
     const passages = await store.query({
-      tenantId: tenant_id,
+      orgId: org_id,
       namespace,
       queryText: query,
       topK: topK ?? 5,
       threshold: 0.3, // Generous threshold — let the model decide relevance
     });
 
-    logger.info("kb retrieve results", { tenant_id, namespace, matchCount: passages.length });
+    logger.info("kb retrieve results", { org_id, namespace, matchCount: passages.length });
     return { passages };
   } catch (err) {
-    logger.error("kb retrieve failed", { error: (err as Error).message, tenant_id, namespace });
+    logger.error("kb retrieve failed", { error: (err as Error).message, org_id, namespace });
     // Return empty results rather than crashing — agent can still function without KB
     return { passages: [] };
   }
@@ -144,15 +144,15 @@ export async function kbIngestHandler(
   request: FastifyRequest<{ Body: KbDocsBody }>,
   reply: FastifyReply
 ): Promise<unknown> {
-  const { tenant_id, business_id, namespace, text, metadata, doc_id } = request.body ?? {};
-  if (!tenant_id || !business_id || !namespace || !text) {
+  const { org_id, business_id, namespace, text, metadata, doc_id } = request.body ?? {};
+  if (!org_id || !business_id || !namespace || !text) {
     reply.status(400);
-    return { ok: false, error: "tenant_id, business_id, namespace, text required" };
+    return { ok: false, error: "org_id, business_id, namespace, text required" };
   }
 
   const id = doc_id ?? uuidv4();
   const docRecord = {
-    tenantId: tenant_id,
+    orgId: org_id,
     businessId: business_id,
     namespace,
     docId: id,
@@ -166,7 +166,7 @@ export async function kbIngestHandler(
   const useSync = request.body?.sync === true || !env.KAFKA_ENABLED;
 
   if (useSync) {
-    logger.info("kb doc ingested, embedding inline (sync mode)", { tenant_id, namespace, doc_id: id, textLen: text.length });
+    logger.info("kb doc ingested, embedding inline (sync mode)", { org_id, namespace, doc_id: id, textLen: text.length });
 
     try {
       const store = getVectorStore();
@@ -178,7 +178,7 @@ export async function kbIngestHandler(
 
       const insertedCount = await store.upsertChunks({
         docId: id,
-        tenantId: tenant_id,
+        orgId: org_id,
         namespace,
         chunks: chunks.map(c => ({
           index: c.index,
@@ -196,10 +196,10 @@ export async function kbIngestHandler(
     }
   }
 
-  logger.info("kb doc ingested, queuing embed job (async mode)", { tenant_id, business_id, namespace, doc_id: id });
+  logger.info("kb doc ingested, queuing embed job (async mode)", { org_id, business_id, namespace, doc_id: id });
   const envelope = createEventEnvelope({
     eventType: "DocIngestRequested",
-    tenantId: tenant_id,
+    orgId: org_id,
     payload: { doc_id: id, namespace },
   });
   await eventBus.publish(envelope);
@@ -211,13 +211,13 @@ export async function kbStatusHandler(
   request: FastifyRequest<{ Querystring: KbStatusQuery }>,
   reply: FastifyReply
 ): Promise<unknown> {
-  const { tenantId, docId } = request.query ?? {};
-  if (!tenantId || !docId) {
+  const { orgId, docId } = request.query ?? {};
+  if (!orgId || !docId) {
     reply.status(400);
-    return { ok: false, error: "tenantId and docId required" };
+    return { ok: false, error: "orgId and docId required" };
   }
 
-  const docs = await persistence.loadDocuments({ tenantId });
+  const docs = await persistence.loadDocuments({ orgId });
   const doc = docs.find((d) => d.docId === docId);
   if (!doc) {
     reply.status(404);

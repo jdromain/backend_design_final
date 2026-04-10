@@ -3,7 +3,7 @@ import type { EventEnvelope, EventPayloadByType, EventType, TypedEventEnvelope }
 export type EventHandler<T = unknown> = (event: EventEnvelope<T>) => Promise<void>;
 
 export type SubscribeOptions = {
-  tenantId?: string;
+  orgId?: string;
 };
 
 export interface EventBusClient {

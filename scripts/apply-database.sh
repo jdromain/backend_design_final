@@ -28,7 +28,15 @@ if ! command -v psql >/dev/null 2>&1; then
   exit 1
 fi
 
-for f in setup_complete.sql 002_ui_tables.sql 003_clerk_tenant_mapping.sql 004_call_failure_type.sql; do
+legacy_tenants=$(psql "$PGURL" -tAc "SELECT to_regclass('public.tenants') IS NOT NULL;" | tr -d '[:space:]')
+canonical_orgs=$(psql "$PGURL" -tAc "SELECT to_regclass('public.organizations') IS NOT NULL;" | tr -d '[:space:]')
+
+if [[ "$legacy_tenants" == "t" && "$canonical_orgs" != "t" ]]; then
+  echo "==> Applying legacy->canonical org rekey migration first"
+  psql "$PGURL" -v ON_ERROR_STOP=1 -f "$ROOT/database/006_org_id_canonical_cutover.sql"
+fi
+
+for f in setup_complete.sql 002_ui_tables.sql 004_call_failure_type.sql 006_org_id_canonical_cutover.sql; do
   echo "==> Applying database/$f"
   psql "$PGURL" -v ON_ERROR_STOP=1 -f "$ROOT/database/$f"
 done

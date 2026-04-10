@@ -89,24 +89,24 @@ export class PgVectorStore {
    */
   async upsertChunk(params: {
     docId: string;
-    tenantId: string;
+    orgId: string;
     namespace: string;
     chunkIndex: number;
     text: string;
     embedding: number[];
     metadata?: Record<string, unknown>;
   }): Promise<void> {
-    const { docId, tenantId, namespace, chunkIndex, text, embedding, metadata } = params;
+    const { docId, orgId, namespace, chunkIndex, text, embedding, metadata } = params;
     const embeddingStr = `[${embedding.join(",")}]`;
 
     await this.pool.query(
-      `INSERT INTO kb_chunks (doc_id, tenant_id, namespace, chunk_index, text, embedding, metadata)
+      `INSERT INTO kb_chunks (doc_id, org_id, namespace, chunk_index, text, embedding, metadata)
        VALUES ($1, $2, $3, $4, $5, $6::vector, $7)
        ON CONFLICT (doc_id, chunk_index) DO UPDATE SET
          text = EXCLUDED.text,
          embedding = EXCLUDED.embedding,
          metadata = EXCLUDED.metadata`,
-      [docId, tenantId, namespace, chunkIndex, text, embeddingStr, metadata ?? {}]
+      [docId, orgId, namespace, chunkIndex, text, embeddingStr, metadata ?? {}]
     );
   }
 
@@ -116,11 +116,11 @@ export class PgVectorStore {
    */
   async upsertChunks(params: {
     docId: string;
-    tenantId: string;
+    orgId: string;
     namespace: string;
     chunks: Array<{ index: number; text: string; metadata?: Record<string, unknown> }>;
   }): Promise<number> {
-    const { docId, tenantId, namespace, chunks } = params;
+    const { docId, orgId, namespace, chunks } = params;
     if (chunks.length === 0) return 0;
 
     // Batch embed all chunk texts
@@ -138,9 +138,9 @@ export class PgVectorStore {
       for (let i = 0; i < chunks.length; i++) {
         const embeddingStr = `[${embeddings[i].join(",")}]`;
         await client.query(
-          `INSERT INTO kb_chunks (doc_id, tenant_id, namespace, chunk_index, text, embedding, metadata)
+          `INSERT INTO kb_chunks (doc_id, org_id, namespace, chunk_index, text, embedding, metadata)
            VALUES ($1, $2, $3, $4, $5, $6::vector, $7)`,
-          [docId, tenantId, namespace, chunks[i].index, chunks[i].text, embeddingStr, chunks[i].metadata ?? {}]
+          [docId, orgId, namespace, chunks[i].index, chunks[i].text, embeddingStr, chunks[i].metadata ?? {}]
         );
       }
 
@@ -159,13 +159,13 @@ export class PgVectorStore {
    * Uses the match_kb_chunks SQL function with HNSW index.
    */
   async query(params: {
-    tenantId: string;
+    orgId: string;
     namespace: string;
     queryText: string;
     topK?: number;
     threshold?: number;
   }): Promise<Passage[]> {
-    const { tenantId, namespace, queryText, topK = 5, threshold = 0.5 } = params;
+    const { orgId, namespace, queryText, topK = 5, threshold = 0.5 } = params;
 
     // Embed the query
     const [queryEmbedding] = await this.embedder.embed([queryText]);
@@ -175,7 +175,7 @@ export class PgVectorStore {
     const result = await this.pool.query(
       `SELECT id, doc_id, chunk_index, text, metadata, similarity
        FROM match_kb_chunks($1::vector, $2, $3, $4, $5)`,
-      [embeddingStr, tenantId, namespace, topK, threshold]
+      [embeddingStr, orgId, namespace, topK, threshold]
     );
 
     return result.rows.map((row) => ({

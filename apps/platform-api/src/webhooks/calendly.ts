@@ -41,7 +41,7 @@ export async function calendlyWebhookHandler(
   const normalized = normalizeCalendlyEvent(body);
   const envelope = createEventEnvelope({
     eventType: "AppointmentUpdated",
-    tenantId: request.headers["x-tenant-id"]?.toString() ?? "unknown-tenant",
+    orgId: request.headers["x-org-id"]?.toString() ?? "unknown-organization",
     payload: {
       externalId: normalized.externalId,
       status: normalized.status,
@@ -56,7 +56,7 @@ export async function calendlyWebhookHandler(
     type: "calendly",
     payload: body,
     receivedAt: new Date().toISOString(),
-    tenantId: envelope.tenant_id
+    orgId: envelope.org_id
   });
   logger.info("calendly webhook ingested", { event_id: envelope.event_id });
   return { ok: true };

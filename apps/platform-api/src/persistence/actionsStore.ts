@@ -3,34 +3,34 @@ import { query } from "./dbClient";
 
 const logger = createLogger({ service: "platform-api", module: "actionsStore" });
 
-export async function getContacts(tenantId: string) {
+export async function getContacts(orgId: string) {
   const result = await query(
-    "SELECT * FROM contacts WHERE tenant_id = $1 ORDER BY last_contacted_at DESC NULLS LAST",
-    [tenantId]
+    "SELECT * FROM contacts WHERE org_id = $1 ORDER BY last_contacted_at DESC NULLS LAST",
+    [orgId]
   );
   return result.rows.map(mapContactRow);
 }
 
-export async function getFollowUps(tenantId: string) {
+export async function getFollowUps(orgId: string) {
   const result = await query(
-    "SELECT * FROM follow_ups WHERE tenant_id = $1 ORDER BY priority, due_at",
-    [tenantId]
+    "SELECT * FROM follow_ups WHERE org_id = $1 ORDER BY priority, due_at",
+    [orgId]
   );
   return result.rows.map(mapFollowUpRow);
 }
 
-export async function getWorkflows(tenantId: string) {
+export async function getWorkflows(orgId: string) {
   const result = await query(
-    "SELECT * FROM workflows WHERE tenant_id = $1 ORDER BY created_at",
-    [tenantId]
+    "SELECT * FROM workflows WHERE org_id = $1 ORDER BY created_at",
+    [orgId]
   );
   return result.rows.map(mapWorkflowRow);
 }
 
-export async function getTemplates(tenantId: string) {
+export async function getTemplates(orgId: string) {
   const result = await query(
-    "SELECT * FROM templates WHERE tenant_id = $1 ORDER BY created_at",
-    [tenantId]
+    "SELECT * FROM templates WHERE org_id = $1 ORDER BY created_at",
+    [orgId]
   );
   return result.rows.map(mapTemplateRow);
 }

@@ -9,9 +9,9 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS "vector";
 
 -- ═══════════════════════════════════════════════════════════════
--- 1. TENANTS
+-- 1. ORGANIZATIONS
 -- ═══════════════════════════════════════════════════════════════
-CREATE TABLE IF NOT EXISTS public.tenants (
+CREATE TABLE IF NOT EXISTS public.organizations (
   id                      TEXT PRIMARY KEY,
   name                    TEXT NOT NULL,
   business_id             TEXT,
@@ -22,23 +22,18 @@ CREATE TABLE IF NOT EXISTS public.tenants (
   timezone                TEXT DEFAULT 'America/New_York',
   settings                JSONB DEFAULT '{}'::JSONB,
   metadata                JSONB DEFAULT '{}'::JSONB,
-  clerk_organization_id   TEXT,
   status                  TEXT CHECK (status IN ('active','suspended','cancelled')) DEFAULT 'active',
   created_at              TIMESTAMPTZ DEFAULT now(),
   updated_at              TIMESTAMPTZ DEFAULT now()
 );
 
-CREATE INDEX IF NOT EXISTS idx_tenants_status ON public.tenants(status);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_tenants_clerk_organization_id
-  ON public.tenants (clerk_organization_id)
-  WHERE clerk_organization_id IS NOT NULL;
-
+CREATE INDEX IF NOT EXISTS idx_organizations_status ON public.organizations(status);
 -- ═══════════════════════════════════════════════════════════════
 -- 2. AGENT CONFIGURATIONS
 -- ═══════════════════════════════════════════════════════════════
 CREATE TABLE IF NOT EXISTS public.agent_configs (
   id          UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  tenant_id   TEXT NOT NULL REFERENCES public.tenants(id),
+  org_id      TEXT NOT NULL REFERENCES public.organizations(id),
   config_id   TEXT NOT NULL,
   business_id TEXT NOT NULL,
   lob         TEXT NOT NULL DEFAULT 'default',
@@ -47,10 +42,10 @@ CREATE TABLE IF NOT EXISTS public.agent_configs (
   config      JSONB NOT NULL,
   created_at  TIMESTAMPTZ DEFAULT now(),
   updated_at  TIMESTAMPTZ DEFAULT now(),
-  UNIQUE(tenant_id, config_id, version)
+  UNIQUE(org_id, config_id, version)
 );
 
-CREATE INDEX IF NOT EXISTS idx_agent_configs_tenant ON public.agent_configs(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_agent_configs_org ON public.agent_configs(org_id);
 CREATE INDEX IF NOT EXISTS idx_agent_configs_status ON public.agent_configs(status);
 
 -- ═══════════════════════════════════════════════════════════════
@@ -58,7 +53,7 @@ CREATE INDEX IF NOT EXISTS idx_agent_configs_status ON public.agent_configs(stat
 -- ═══════════════════════════════════════════════════════════════
 CREATE TABLE IF NOT EXISTS public.phone_numbers (
   id              UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  tenant_id       TEXT NOT NULL REFERENCES public.tenants(id),
+  org_id      TEXT NOT NULL REFERENCES public.organizations(id),
   phone_number    TEXT NOT NULL UNIQUE,
   display_name    TEXT,
   twilio_sid      TEXT UNIQUE,
@@ -72,7 +67,7 @@ CREATE TABLE IF NOT EXISTS public.phone_numbers (
   updated_at      TIMESTAMPTZ DEFAULT now()
 );
 
-CREATE INDEX IF NOT EXISTS idx_phone_numbers_tenant ON public.phone_numbers(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_phone_numbers_org ON public.phone_numbers(org_id);
 CREATE INDEX IF NOT EXISTS idx_phone_numbers_status ON public.phone_numbers(status);
 
 -- ═══════════════════════════════════════════════════════════════
@@ -80,7 +75,7 @@ CREATE INDEX IF NOT EXISTS idx_phone_numbers_status ON public.phone_numbers(stat
 -- ═══════════════════════════════════════════════════════════════
 CREATE TABLE IF NOT EXISTS public.plans (
   id                       UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  tenant_id                TEXT NOT NULL REFERENCES public.tenants(id),
+  org_id      TEXT NOT NULL REFERENCES public.organizations(id),
   plan_id                  TEXT NOT NULL,
   concurrent_calls_limit   INT NOT NULL DEFAULT 10,
   monthly_minutes_included INT NOT NULL DEFAULT 1000,
@@ -89,17 +84,17 @@ CREATE TABLE IF NOT EXISTS public.plans (
   status                   TEXT CHECK (status IN ('active','cancelled')) DEFAULT 'active',
   created_at               TIMESTAMPTZ DEFAULT now(),
   updated_at               TIMESTAMPTZ DEFAULT now(),
-  UNIQUE(tenant_id, plan_id)
+  UNIQUE(org_id, plan_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_plans_tenant ON public.plans(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_plans_org ON public.plans(org_id);
 
 -- ═══════════════════════════════════════════════════════════════
 -- 5. KNOWLEDGE BASE — DOCUMENTS
 -- ═══════════════════════════════════════════════════════════════
 CREATE TABLE IF NOT EXISTS public.kb_documents (
   id              UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  tenant_id       TEXT NOT NULL REFERENCES public.tenants(id),
+  org_id      TEXT NOT NULL REFERENCES public.organizations(id),
   business_id     TEXT NOT NULL,
   namespace       TEXT NOT NULL,
   doc_id          TEXT NOT NULL UNIQUE,
@@ -113,7 +108,7 @@ CREATE TABLE IF NOT EXISTS public.kb_documents (
   updated_at      TIMESTAMPTZ DEFAULT now()
 );
 
-CREATE INDEX IF NOT EXISTS idx_kb_docs_tenant    ON public.kb_documents(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_kb_docs_org    ON public.kb_documents(org_id);
 CREATE INDEX IF NOT EXISTS idx_kb_docs_namespace ON public.kb_documents(namespace);
 CREATE INDEX IF NOT EXISTS idx_kb_docs_status    ON public.kb_documents(status);
 
@@ -125,7 +120,7 @@ CREATE INDEX IF NOT EXISTS idx_kb_docs_status    ON public.kb_documents(status);
 CREATE TABLE IF NOT EXISTS public.kb_chunks (
   id          UUID DEFAULT gen_random_uuid() PRIMARY KEY,
   doc_id      TEXT NOT NULL REFERENCES public.kb_documents(doc_id) ON DELETE CASCADE,
-  tenant_id   TEXT NOT NULL,
+  org_id      TEXT NOT NULL,
   namespace   TEXT NOT NULL,
   chunk_index INT NOT NULL,
   text        TEXT NOT NULL,
@@ -136,7 +131,7 @@ CREATE TABLE IF NOT EXISTS public.kb_chunks (
 );
 
 CREATE INDEX IF NOT EXISTS idx_kb_chunks_doc       ON public.kb_chunks(doc_id);
-CREATE INDEX IF NOT EXISTS idx_kb_chunks_tenant_ns ON public.kb_chunks(tenant_id, namespace);
+CREATE INDEX IF NOT EXISTS idx_kb_chunks_org_ns ON public.kb_chunks(org_id, namespace);
 
 -- HNSW index for cosine similarity — fast approximate nearest neighbor
 -- m=16, ef_construction=64 balances build speed vs recall; fine for <1M vectors
@@ -150,7 +145,7 @@ CREATE INDEX IF NOT EXISTS idx_kb_chunks_embedding ON public.kb_chunks
 -- ═══════════════════════════════════════════════════════════════
 CREATE OR REPLACE FUNCTION public.match_kb_chunks(
   query_embedding vector(1536),
-  match_tenant_id TEXT,
+  match_org_id TEXT,
   match_namespace TEXT,
   match_count INT DEFAULT 5,
   match_threshold FLOAT DEFAULT 0.5
@@ -175,7 +170,7 @@ BEGIN
     kc.metadata,
     1 - (kc.embedding <=> query_embedding) AS similarity
   FROM public.kb_chunks kc
-  WHERE kc.tenant_id = match_tenant_id
+  WHERE kc.org_id = match_org_id
     AND kc.namespace = match_namespace
     AND kc.embedding IS NOT NULL
     AND 1 - (kc.embedding <=> query_embedding) > match_threshold
@@ -190,7 +185,7 @@ $$;
 CREATE TABLE IF NOT EXISTS public.calls (
   id                UUID DEFAULT gen_random_uuid() PRIMARY KEY,
   call_id           TEXT NOT NULL UNIQUE,
-  tenant_id         TEXT NOT NULL REFERENCES public.tenants(id),
+  org_id      TEXT NOT NULL REFERENCES public.organizations(id),
 
   -- Routing
   phone_number      TEXT NOT NULL,
@@ -243,11 +238,11 @@ CREATE TABLE IF NOT EXISTS public.calls (
   created_at        TIMESTAMPTZ DEFAULT now()
 );
 
-CREATE INDEX IF NOT EXISTS idx_calls_tenant         ON public.calls(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_calls_org         ON public.calls(org_id);
 CREATE INDEX IF NOT EXISTS idx_calls_call_id        ON public.calls(call_id);
 CREATE INDEX IF NOT EXISTS idx_calls_twilio         ON public.calls(twilio_call_sid);
 CREATE INDEX IF NOT EXISTS idx_calls_started        ON public.calls(started_at DESC);
-CREATE INDEX IF NOT EXISTS idx_calls_tenant_started ON public.calls(tenant_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_calls_org_started ON public.calls(org_id, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_calls_status         ON public.calls(status);
 CREATE INDEX IF NOT EXISTS idx_calls_failure_type   ON public.calls(failure_type);
 
@@ -257,7 +252,7 @@ CREATE INDEX IF NOT EXISTS idx_calls_failure_type   ON public.calls(failure_type
 CREATE TABLE IF NOT EXISTS public.call_transcript (
   id          UUID DEFAULT gen_random_uuid() PRIMARY KEY,
   call_id     TEXT NOT NULL REFERENCES public.calls(call_id) ON DELETE CASCADE,
-  tenant_id   TEXT NOT NULL,
+  org_id      TEXT NOT NULL,
   sequence    INT NOT NULL,
   speaker     TEXT NOT NULL CHECK (speaker IN ('user', 'agent')),
   text        TEXT NOT NULL,
@@ -269,7 +264,7 @@ CREATE TABLE IF NOT EXISTS public.call_transcript (
 );
 
 CREATE INDEX IF NOT EXISTS idx_transcript_call   ON public.call_transcript(call_id);
-CREATE INDEX IF NOT EXISTS idx_transcript_tenant ON public.call_transcript(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_transcript_org ON public.call_transcript(org_id);
 
 -- ═══════════════════════════════════════════════════════════════
 -- 10. CALL EVENTS — structured per-call event log
@@ -277,30 +272,30 @@ CREATE INDEX IF NOT EXISTS idx_transcript_tenant ON public.call_transcript(tenan
 CREATE TABLE IF NOT EXISTS public.call_events (
   id          UUID DEFAULT gen_random_uuid() PRIMARY KEY,
   call_id     TEXT NOT NULL REFERENCES public.calls(call_id) ON DELETE CASCADE,
-  tenant_id   TEXT NOT NULL,
+  org_id      TEXT NOT NULL,
   event_type  TEXT NOT NULL,
   payload     JSONB NOT NULL DEFAULT '{}'::JSONB,
   occurred_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE INDEX IF NOT EXISTS idx_call_events_call   ON public.call_events(call_id);
-CREATE INDEX IF NOT EXISTS idx_call_events_tenant ON public.call_events(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_call_events_org ON public.call_events(org_id);
 
 -- ═══════════════════════════════════════════════════════════════
 -- 11. TOOL RESULTS (idempotency)
 -- ═══════════════════════════════════════════════════════════════
 CREATE TABLE IF NOT EXISTS public.tool_results (
   id              UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  tenant_id       TEXT NOT NULL REFERENCES public.tenants(id),
+  org_id      TEXT NOT NULL REFERENCES public.organizations(id),
   tool_name       TEXT NOT NULL,
   idempotency_key TEXT NOT NULL,
   result          JSONB NOT NULL,
   stored_at       TIMESTAMPTZ DEFAULT now(),
   expires_at      TIMESTAMPTZ,
-  UNIQUE(tenant_id, tool_name, idempotency_key)
+  UNIQUE(org_id, tool_name, idempotency_key)
 );
 
-CREATE INDEX IF NOT EXISTS idx_tool_results_tenant  ON public.tool_results(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_tool_results_org  ON public.tool_results(org_id);
 CREATE INDEX IF NOT EXISTS idx_tool_results_expires ON public.tool_results(expires_at)
   WHERE expires_at IS NOT NULL;
 
@@ -309,22 +304,22 @@ CREATE INDEX IF NOT EXISTS idx_tool_results_expires ON public.tool_results(expir
 -- ═══════════════════════════════════════════════════════════════
 CREATE TABLE IF NOT EXISTS public.credentials (
   id          UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  tenant_id   TEXT NOT NULL REFERENCES public.tenants(id),
+  org_id      TEXT NOT NULL REFERENCES public.organizations(id),
   provider    TEXT NOT NULL,
   credentials JSONB NOT NULL,
   created_at  TIMESTAMPTZ DEFAULT now(),
   updated_at  TIMESTAMPTZ DEFAULT now(),
-  UNIQUE(tenant_id, provider)
+  UNIQUE(org_id, provider)
 );
 
-CREATE INDEX IF NOT EXISTS idx_credentials_tenant ON public.credentials(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_credentials_org ON public.credentials(org_id);
 
 -- ═══════════════════════════════════════════════════════════════
 -- 13. USAGE RECORDS (billing)
 -- ═══════════════════════════════════════════════════════════════
 CREATE TABLE IF NOT EXISTS public.usage_records (
   id               UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  tenant_id        TEXT NOT NULL REFERENCES public.tenants(id),
+  org_id      TEXT NOT NULL REFERENCES public.organizations(id),
   call_id          TEXT NOT NULL UNIQUE,
   phone_number     TEXT NOT NULL,
   duration_seconds INT NOT NULL,
@@ -333,24 +328,23 @@ CREATE TABLE IF NOT EXISTS public.usage_records (
   recorded_at      TIMESTAMPTZ DEFAULT now()
 );
 
-CREATE INDEX IF NOT EXISTS idx_usage_tenant   ON public.usage_records(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_usage_org   ON public.usage_records(org_id);
 CREATE INDEX IF NOT EXISTS idx_usage_recorded ON public.usage_records(recorded_at DESC);
 
 -- ═══════════════════════════════════════════════════════════════
 -- 14. SEED DATA (for local dev / testing)
 -- ═══════════════════════════════════════════════════════════════
 
--- Test tenant (Clerk org-id canonical)
-INSERT INTO public.tenants (id, name, business_id, business_name, email, timezone, clerk_organization_id, status)
-VALUES ('org_localdemo', 'Test Business', 'test-business', 'Test Business', 'test@example.com', 'America/New_York', 'org_localdemo', 'active')
+-- Test organization (Clerk org-id canonical)
+INSERT INTO public.organizations (id, name, business_id, business_name, email, timezone, status)
+VALUES ('org_localdemo', 'Test Business', 'test-business', 'Test Business', 'test@example.com', 'America/New_York', 'active')
 ON CONFLICT (id) DO UPDATE SET
   business_name = 'Test Business',
-  timezone      = 'America/New_York',
-  clerk_organization_id = EXCLUDED.clerk_organization_id;
+  timezone      = 'America/New_York';
 
 -- Test phone number (CHANGE to your actual Twilio values)
 INSERT INTO public.phone_numbers (
-  tenant_id, phone_number, twilio_sid, route_type, status
+  org_id, phone_number, twilio_sid, route_type, status
 ) VALUES (
   'org_localdemo',
   '+18737101393',

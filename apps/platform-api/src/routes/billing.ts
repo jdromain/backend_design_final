@@ -2,7 +2,7 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { query } from "../persistence/dbClient";
 import { sendData, sendError } from "../lib/responses";
 import { authHook, resolvedAuthHook } from "../auth/jwt";
-import { requireTenantForRequest } from "../auth/tenantScope";
+import { requireOrgForRequest } from "../auth/orgScope";
 
 
 function periodInterval(period?: string): string {
@@ -18,8 +18,8 @@ export function registerBillingRoutes(app: FastifyInstance) {
   const preHandler = resolvedAuthHook(["admin", "editor", "viewer"]);
 
   app.get("/billing/usage", { preHandler }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const tenantId = requireTenantForRequest(request, reply, (request.query as any).tenantId);
-    if (!tenantId) return;
+    const orgId = requireOrgForRequest(request, reply, (request.query as any).orgId);
+    if (!orgId) return;
     const period = (request.query as any).period;
 
     const interval = periodInterval(period);
@@ -30,25 +30,25 @@ export function registerBillingRoutes(app: FastifyInstance) {
          COALESCE(SUM(duration_sec), 0)::int AS total_seconds,
          COALESCE(SUM(llm_tokens_in + llm_tokens_out), 0)::bigint AS total_tokens
        FROM calls
-       WHERE tenant_id = $1 AND started_at > now() - $2::interval`,
-      [tenantId, interval]
+       WHERE org_id = $1 AND started_at > now() - $2::interval`,
+      [orgId, interval]
     )).rows[0];
 
     const agentCount = (await query(
       `SELECT COUNT(DISTINCT agent_config_id)::int AS count
-       FROM calls WHERE tenant_id = $1 AND agent_config_id IS NOT NULL`,
-      [tenantId]
+       FROM calls WHERE org_id = $1 AND agent_config_id IS NOT NULL`,
+      [orgId]
     )).rows[0]?.count ?? 0;
 
     const kbSize = (await query(
       `SELECT COUNT(*)::int AS doc_count, COALESCE(SUM(embedded_chunks), 0)::int AS total_chunks
-       FROM kb_documents WHERE tenant_id = $1`,
-      [tenantId]
+       FROM kb_documents WHERE org_id = $1`,
+      [orgId]
     )).rows[0];
 
     const plan = (await query(
-      "SELECT * FROM plans WHERE tenant_id = $1 AND status = 'active' LIMIT 1",
-      [tenantId]
+      "SELECT * FROM plans WHERE org_id = $1 AND status = 'active' LIMIT 1",
+      [orgId]
     )).rows[0];
 
     sendData(reply, {
@@ -67,8 +67,8 @@ export function registerBillingRoutes(app: FastifyInstance) {
   });
 
   app.get("/billing/breakdown", { preHandler }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const tenantId = requireTenantForRequest(request, reply, (request.query as any).tenantId);
-    if (!tenantId) return;
+    const orgId = requireOrgForRequest(request, reply, (request.query as any).orgId);
+    if (!orgId) return;
     const period = (request.query as any).period;
 
     const interval = periodInterval(period);
@@ -81,15 +81,15 @@ export function registerBillingRoutes(app: FastifyInstance) {
          COALESCE(SUM(tts_chars), 0)::bigint AS tts_chars,
          COALESCE(SUM(stt_seconds), 0)::numeric AS stt_seconds
        FROM calls
-       WHERE tenant_id = $1 AND started_at > now() - $2::interval`,
-      [tenantId, interval]
+       WHERE org_id = $1 AND started_at > now() - $2::interval`,
+      [orgId, interval]
     )).rows[0];
 
     const toolInvocations = (await query(
       `SELECT COUNT(*)::int AS count
-       FROM call_events WHERE tenant_id = $1 AND event_type = 'tool_called'
+       FROM call_events WHERE org_id = $1 AND event_type = 'tool_called'
        AND occurred_at > now() - $2::interval`,
-      [tenantId, interval]
+      [orgId, interval]
     )).rows[0]?.count ?? 0;
 
     sendData(reply, {
@@ -123,8 +123,8 @@ export function registerBillingRoutes(app: FastifyInstance) {
   });
 
   app.get("/billing/agents", { preHandler }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const tenantId = requireTenantForRequest(request, reply, (request.query as any).tenantId);
-    if (!tenantId) return;
+    const orgId = requireOrgForRequest(request, reply, (request.query as any).orgId);
+    if (!orgId) return;
 
     const result = await query(
       `SELECT
@@ -133,9 +133,9 @@ export function registerBillingRoutes(app: FastifyInstance) {
          COALESCE(SUM(duration_sec), 0)::int AS total_seconds,
          COALESCE(SUM(llm_tokens_in + llm_tokens_out), 0)::bigint AS total_tokens
        FROM calls
-       WHERE tenant_id = $1 AND agent_config_id IS NOT NULL
+       WHERE org_id = $1 AND agent_config_id IS NOT NULL
        GROUP BY agent_config_id`,
-      [tenantId]
+      [orgId]
     );
 
     sendData(reply, result.rows.map((r: any) => ({
@@ -147,18 +147,18 @@ export function registerBillingRoutes(app: FastifyInstance) {
   });
 
   app.get("/billing/tools", { preHandler }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const tenantId = requireTenantForRequest(request, reply, (request.query as any).tenantId);
-    if (!tenantId) return;
+    const orgId = requireOrgForRequest(request, reply, (request.query as any).orgId);
+    if (!orgId) return;
 
     const result = await query(
       `SELECT
          payload->>'toolName' AS name,
          COUNT(*)::int AS invocations
        FROM call_events
-       WHERE tenant_id = $1 AND event_type = 'tool_called' AND payload->>'toolName' IS NOT NULL
+       WHERE org_id = $1 AND event_type = 'tool_called' AND payload->>'toolName' IS NOT NULL
        GROUP BY payload->>'toolName'
        ORDER BY invocations DESC`,
-      [tenantId]
+      [orgId]
     );
 
     sendData(reply, result.rows.map((r: any) => ({
@@ -169,8 +169,8 @@ export function registerBillingRoutes(app: FastifyInstance) {
   });
 
   app.get("/billing/invoices", { preHandler }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const tenantId = requireTenantForRequest(request, reply, (request.query as any).tenantId);
-    if (!tenantId) return;
+    const orgId = requireOrgForRequest(request, reply, (request.query as any).orgId);
+    if (!orgId) return;
 
     const result = await query(
       `SELECT
@@ -179,13 +179,13 @@ export function registerBillingRoutes(app: FastifyInstance) {
          COALESCE(SUM(duration_seconds), 0)::int AS total_seconds,
          COALESCE(SUM(cost), 0)::numeric AS total_cost
        FROM usage_records
-       WHERE tenant_id = $1
+       WHERE org_id = $1
        GROUP BY month ORDER BY month DESC LIMIT 12`,
-      [tenantId]
+      [orgId]
     );
 
     sendData(reply, result.rows.map((r: any, idx: number) => ({
-      id: `usage-${tenantId}-${idx}`,
+      id: `usage-${orgId}-${idx}`,
       period: new Date(r.month).toISOString().slice(0, 7),
       calls: r.call_count,
       minutes: Math.ceil(r.total_seconds / 60),

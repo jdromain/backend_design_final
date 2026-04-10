@@ -3,7 +3,7 @@ import { env } from "./env";
 import { internalApiHeaders } from "./platformApiAuth";
 
 export async function callTool(opts: {
-  tenantId: string;
+  orgId: string;
   toolName: string;
   args: Record<string, unknown>;
   platformApiUrl?: string;
@@ -17,7 +17,7 @@ export async function callTool(opts: {
       "Content-Type": "application/json",
     }),
     body: JSON.stringify({
-      tenantId: opts.tenantId,
+      orgId: opts.orgId,
       toolName: opts.toolName,
       idempotencyKey: opts.idempotencyKey ?? randomUUID(),
       args: opts.args

@@ -4,14 +4,14 @@ export type AuthRole = "admin" | "editor" | "viewer";
 
 export type AuthUser = {
   userId: string;
-  tenantId: string;
+  orgId: string;
   email: string;
   roles: AuthRole[];
 };
 
 export interface RequestAuth {
   sub: string;
-  tenant_id: string;
+  org_id: string;
   email: string;
   roles: AuthRole[];
 }

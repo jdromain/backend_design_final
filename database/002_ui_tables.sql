@@ -8,26 +8,29 @@
 -- ================================================================
 CREATE TABLE IF NOT EXISTS public.users (
   id          TEXT PRIMARY KEY,
-  tenant_id   TEXT NOT NULL REFERENCES public.tenants(id),
-  email       TEXT NOT NULL UNIQUE,
+  org_id   TEXT NOT NULL REFERENCES public.organizations(id),
+  email       TEXT NOT NULL,
   roles       TEXT[] DEFAULT '{viewer}',
-  clerk_id    TEXT UNIQUE,
+  clerk_id    TEXT,
   name        TEXT,
   status      TEXT DEFAULT 'active' CHECK (status IN ('active','invited','disabled')),
   created_at  TIMESTAMPTZ DEFAULT now(),
   updated_at  TIMESTAMPTZ DEFAULT now()
 );
 
-CREATE INDEX IF NOT EXISTS idx_users_tenant   ON public.users(tenant_id);
-CREATE INDEX IF NOT EXISTS idx_users_clerk_id ON public.users(clerk_id);
+CREATE INDEX IF NOT EXISTS idx_users_org   ON public.users(org_id);
 CREATE INDEX IF NOT EXISTS idx_users_email    ON public.users(email);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_org_email_unique ON public.users(org_id, email);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_org_clerk_unique
+  ON public.users(org_id, clerk_id)
+  WHERE clerk_id IS NOT NULL;
 
 -- ================================================================
 -- 2. CONTACTS
 -- ================================================================
 CREATE TABLE IF NOT EXISTS public.contacts (
   id                UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  tenant_id         TEXT NOT NULL REFERENCES public.tenants(id),
+  org_id         TEXT NOT NULL REFERENCES public.organizations(id),
   name              TEXT,
   phone             TEXT NOT NULL,
   email             TEXT,
@@ -38,7 +41,7 @@ CREATE TABLE IF NOT EXISTS public.contacts (
   updated_at        TIMESTAMPTZ DEFAULT now()
 );
 
-CREATE INDEX IF NOT EXISTS idx_contacts_tenant ON public.contacts(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_contacts_org ON public.contacts(org_id);
 CREATE INDEX IF NOT EXISTS idx_contacts_phone  ON public.contacts(phone);
 
 -- ================================================================
@@ -46,7 +49,7 @@ CREATE INDEX IF NOT EXISTS idx_contacts_phone  ON public.contacts(phone);
 -- ================================================================
 CREATE TABLE IF NOT EXISTS public.follow_ups (
   id                    UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  tenant_id             TEXT NOT NULL REFERENCES public.tenants(id),
+  org_id             TEXT NOT NULL REFERENCES public.organizations(id),
   contact_id            UUID REFERENCES public.contacts(id),
   call_id               TEXT REFERENCES public.calls(call_id),
   type                  TEXT NOT NULL CHECK (type IN (
@@ -73,7 +76,7 @@ CREATE TABLE IF NOT EXISTS public.follow_ups (
   tags                  TEXT[] DEFAULT '{}'
 );
 
-CREATE INDEX IF NOT EXISTS idx_follow_ups_tenant  ON public.follow_ups(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_follow_ups_org  ON public.follow_ups(org_id);
 CREATE INDEX IF NOT EXISTS idx_follow_ups_status  ON public.follow_ups(status);
 CREATE INDEX IF NOT EXISTS idx_follow_ups_contact ON public.follow_ups(contact_id);
 
@@ -82,7 +85,7 @@ CREATE INDEX IF NOT EXISTS idx_follow_ups_contact ON public.follow_ups(contact_i
 -- ================================================================
 CREATE TABLE IF NOT EXISTS public.workflows (
   id                     UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  tenant_id              TEXT NOT NULL REFERENCES public.tenants(id),
+  org_id              TEXT NOT NULL REFERENCES public.organizations(id),
   vertical               TEXT,
   name                   TEXT,
   enabled                BOOLEAN DEFAULT true,
@@ -97,14 +100,14 @@ CREATE TABLE IF NOT EXISTS public.workflows (
   created_at             TIMESTAMPTZ DEFAULT now()
 );
 
-CREATE INDEX IF NOT EXISTS idx_workflows_tenant ON public.workflows(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_workflows_org ON public.workflows(org_id);
 
 -- ================================================================
 -- 5. TEMPLATES
 -- ================================================================
 CREATE TABLE IF NOT EXISTS public.templates (
   id                 UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  tenant_id          TEXT NOT NULL REFERENCES public.tenants(id),
+  org_id          TEXT NOT NULL REFERENCES public.organizations(id),
   vertical           TEXT,
   type               TEXT,
   title              TEXT,
@@ -118,14 +121,14 @@ CREATE TABLE IF NOT EXISTS public.templates (
   created_at         TIMESTAMPTZ DEFAULT now()
 );
 
-CREATE INDEX IF NOT EXISTS idx_templates_tenant ON public.templates(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_templates_org ON public.templates(org_id);
 
 -- ================================================================
 -- 6. NOTIFICATIONS
 -- ================================================================
 CREATE TABLE IF NOT EXISTS public.notifications (
   id          UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  tenant_id   TEXT NOT NULL REFERENCES public.tenants(id),
+  org_id   TEXT NOT NULL REFERENCES public.organizations(id),
   type        TEXT DEFAULT 'info' CHECK (type IN ('info','success','warning','error')),
   title       TEXT,
   message     TEXT,
@@ -134,7 +137,7 @@ CREATE TABLE IF NOT EXISTS public.notifications (
   action_url  TEXT
 );
 
-CREATE INDEX IF NOT EXISTS idx_notifications_tenant ON public.notifications(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_notifications_org ON public.notifications(org_id);
 CREATE INDEX IF NOT EXISTS idx_notifications_read   ON public.notifications(read) WHERE read = false;
 
 -- ================================================================
@@ -142,7 +145,7 @@ CREATE INDEX IF NOT EXISTS idx_notifications_read   ON public.notifications(read
 -- ================================================================
 CREATE TABLE IF NOT EXISTS public.api_keys (
   id           UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  tenant_id    TEXT NOT NULL REFERENCES public.tenants(id),
+  org_id    TEXT NOT NULL REFERENCES public.organizations(id),
   name         TEXT,
   prefix       TEXT,
   key_hash     TEXT,
@@ -151,14 +154,14 @@ CREATE TABLE IF NOT EXISTS public.api_keys (
   last_used_at TIMESTAMPTZ
 );
 
-CREATE INDEX IF NOT EXISTS idx_api_keys_tenant ON public.api_keys(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_api_keys_org ON public.api_keys(org_id);
 
 -- ================================================================
 -- SEED DATA
 -- ================================================================
 
-INSERT INTO public.users (id, tenant_id, email, roles, name, status)
+INSERT INTO public.users (id, org_id, email, roles, name, status)
 VALUES ('user-admin', 'org_localdemo', 'admin@example.com', '{admin}', 'Admin User', 'active')
 ON CONFLICT (email) DO UPDATE SET
   roles = '{admin}',
-  tenant_id = 'org_localdemo';
+  org_id = 'org_localdemo';

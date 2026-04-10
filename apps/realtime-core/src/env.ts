@@ -82,8 +82,8 @@ export const env = {
   PLATFORM_API_URL: optional("PLATFORM_API_URL", "http://localhost:3001"),
   /** Shared bearer token for platform-api protected internal routes. */
   INTERNAL_SERVICE_TOKEN: optional("INTERNAL_SERVICE_TOKEN", ""),
-  /** First snapshot tenant — must match SQL seeds (e.g. org_localdemo). */
-  REALTIME_BOOTSTRAP_TENANT_ID: optional("REALTIME_BOOTSTRAP_TENANT_ID", "org_localdemo"),
+  /** First snapshot organization — must match SQL seeds (e.g. org_localdemo). */
+  REALTIME_BOOTSTRAP_ORG_ID: optional("REALTIME_BOOTSTRAP_ORG_ID", "org_localdemo"),
 
   // Twilio
   TWILIO_ACCOUNT_SID: optional("TWILIO_ACCOUNT_SID", ""),

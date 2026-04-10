@@ -28,7 +28,7 @@ const logger = createLogger({ service: "realtime-core", module: "agents" });
 // ---- Per-call context, passed to run() and accessible in tools via RunContext ----
 
 export interface CallContext {
-  tenantId: string;
+  orgId: string;
   businessId: string;
   callId: string;
   /** Call start timestamp (ISO) captured when the call session was created */
@@ -237,7 +237,7 @@ const logComplaint = tool<typeof logComplaintSchema, CallContext>({
     logger.info("tool: log_complaint", { callId: cc.callId });
     try {
       await callTool({
-        tenantId: cc.tenantId,
+        orgId: cc.orgId,
         toolName: "log_complaint",
         args: { ...args, callId: cc.callId },
       });
@@ -273,7 +273,7 @@ const otSearchAvailability = tool<typeof otSearchSchema, CallContext>({
     logger.info("tool: search_availability", { callId: cc.callId, args });
     try {
       const result = await callTool({
-        tenantId: cc.tenantId,
+        orgId: cc.orgId,
         toolName: "search_availability",
         args: { restaurant_id: cc.restaurantId, ...args },
       });
@@ -310,7 +310,7 @@ const otCreateReservation = tool<typeof otCreateSchema, CallContext>({
     logger.info("tool: create_reservation", { callId: cc.callId });
     try {
       const result = await callTool({
-        tenantId: cc.tenantId,
+        orgId: cc.orgId,
         toolName: "create_reservation",
         args: { restaurant_id: cc.restaurantId, ...args },
       });

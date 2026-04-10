@@ -9,7 +9,7 @@ import {
 } from "@rezovo/core-types";
 
 type ConfigSnapshot = {
-  tenantId: string;
+  orgId: string;
   lob: string;
   version: number;
   status: "draft" | "published";
@@ -52,7 +52,7 @@ const templatesByLob: Record<string, Array<Record<string, unknown>>> = {
 const defaultAgentConfig: AgentConfigSnapshot = {
   id: "agent-default",
   version: 1,
-  tenantId: "tenant-default",
+  orgId: "org_localdemo",
   businessId: "business-default",
   basePrompt: "You are a helpful receptionist. Be concise and polite.",
   persona: "receptionist",
@@ -83,14 +83,14 @@ const defaultAgentConfig: AgentConfigSnapshot = {
 
 const defaultPhoneNumber: PhoneNumberConfig = {
   did: "+10000000000",
-  tenantId: "tenant-default",
+  orgId: "org_localdemo",
   businessId: "business-default",
   routeType: "ai",
   agentConfigId: defaultAgentConfig.id
 };
 
 const defaultPlan: PlanSnapshot = {
-  tenantId: "tenant-default",
+  orgId: "org_localdemo",
   planId: "plan-default",
   maxConcurrentCalls: null
 };
@@ -103,15 +103,15 @@ export function getTemplates(lob?: string): Array<Record<string, unknown>> {
   return templatesByLob[lob ?? ""] ?? templatesByLob.default;
 }
 
-export function getSnapshot(tenantId: string, lob = "default"): ConfigSnapshot {
+export function getSnapshot(orgId: string, lob = "default"): ConfigSnapshot {
   return {
-    tenantId,
+    orgId,
     lob,
     version: 1,
     status: "published",
-    agentConfig: { ...defaultAgentConfig, tenantId },
-    phoneNumbers: [{ ...defaultPhoneNumber, tenantId }],
-    plan: { ...defaultPlan, tenantId }
+    agentConfig: { ...defaultAgentConfig, orgId },
+    phoneNumbers: [{ ...defaultPhoneNumber, orgId }],
+    plan: { ...defaultPlan, orgId }
   };
 }
 
@@ -177,7 +177,7 @@ export function validateConfig(input: ValidateRequest): ValidateResult {
 }
 
 export function buildConfigChangedEvent(payload: {
-  tenantId: string;
+  orgId: string;
   lob?: string;
   version: number;
   entity: "PhoneNumber" | "AgentConfig" | "Plan" | "Business";
@@ -187,7 +187,7 @@ export function buildConfigChangedEvent(payload: {
   return {
     event_id: randomUUID(),
     event_type: "ConfigChanged",
-    tenant_id: payload.tenantId,
+    org_id: payload.orgId,
     call_id: undefined,
     timestamp: new Date().toISOString(),
     payload: {
@@ -200,7 +200,7 @@ export function buildConfigChangedEvent(payload: {
   };
 }
 
-export function createDefaultTenantConfig(tenantId: string, lob = "default"): ConfigSnapshot {
-  return getSnapshot(tenantId, lob);
+export function createDefaultOrganizationConfig(orgId: string, lob = "default"): ConfigSnapshot {
+  return getSnapshot(orgId, lob);
 }
 

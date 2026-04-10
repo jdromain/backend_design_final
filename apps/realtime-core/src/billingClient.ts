@@ -14,13 +14,13 @@ export class BillingQuotaClient {
     this.baseUrl = opts?.baseUrl ?? env.PLATFORM_API_URL;
   }
 
-  async canStartCall(tenantId: string): Promise<BillingQuotaResponse> {
+  async canStartCall(orgId: string): Promise<BillingQuotaResponse> {
     const res = await fetch(`${this.baseUrl}/billing-quota/can-start-call`, {
       method: "POST",
       headers: internalApiHeaders({
         "Content-Type": "application/json",
       }),
-      body: JSON.stringify({ tenantId })
+      body: JSON.stringify({ orgId })
     });
     if (!res.ok) {
       throw new Error(`billing quota failed: ${res.status} ${res.statusText}`);

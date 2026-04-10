@@ -8,7 +8,7 @@ const logger = createLogger({ service: "realtime-core", module: "rtpBridgeClient
 export type MediaSessionSnapshot = {
   callId: string;
   did: string;
-  tenantId: string;
+  orgId: string;
   startedAt: string;
   endedAt: string;
   durationMs: number;
@@ -45,7 +45,7 @@ export class RtpBridgeClient {
     this.authToken = opts?.authToken;
   }
 
-  async startSession(params: { callId: string; did: string; tenantId: string }): Promise<MediaSession> {
+  async startSession(params: { callId: string; did: string; orgId: string }): Promise<MediaSession> {
     if (this.mock) {
       return MediaSession.mock(params);
     }
@@ -90,12 +90,12 @@ export class MediaSession extends EventEmitter {
   private readonly startedAt = Date.now();
   private endedAt: number | null = null;
 
-  private constructor(private callId: string, private did: string, private tenantId: string) {
+  private constructor(private callId: string, private did: string, private orgId: string) {
     super();
   }
 
-  static mock(params: { callId: string; did: string; tenantId: string }): MediaSession {
-    return new MediaSession(params.callId, params.did, params.tenantId);
+  static mock(params: { callId: string; did: string; orgId: string }): MediaSession {
+    return new MediaSession(params.callId, params.did, params.orgId);
   }
 
   markCallerFrame(bytes: number): void {
@@ -118,7 +118,7 @@ export class MediaSession extends EventEmitter {
     return {
       callId: this.callId,
       did: this.did,
-      tenantId: this.tenantId,
+      orgId: this.orgId,
       startedAt: new Date(this.startedAt).toISOString(),
       endedAt: new Date(end).toISOString(),
       durationMs: end - this.startedAt,

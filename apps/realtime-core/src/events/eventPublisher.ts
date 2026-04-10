@@ -4,10 +4,10 @@ import { CallEndedPayload, CallStartedPayload, UsageReportedPayload } from "@rez
 export class EventPublisher {
   constructor(private bus: EventBusClient) {}
 
-  async callStarted(payload: CallStartedPayload & { tenantId: string; callId: string; lob?: string }) {
+  async callStarted(payload: CallStartedPayload & { orgId: string; callId: string; lob?: string }) {
     const envelope = createEventEnvelope({
       eventType: "CallStarted",
-      tenantId: payload.tenantId,
+      orgId: payload.orgId,
       callId: payload.callId,
       payload: {
         did: payload.did,
@@ -22,10 +22,10 @@ export class EventPublisher {
     return envelope.event_id;
   }
 
-  async callEnded(payload: CallEndedPayload & { tenantId: string; callId: string; lob?: string }) {
+  async callEnded(payload: CallEndedPayload & { orgId: string; callId: string; lob?: string }) {
     const envelope = createEventEnvelope({
       eventType: "CallEnded",
-      tenantId: payload.tenantId,
+      orgId: payload.orgId,
       callId: payload.callId,
       payload: {
         did: payload.did,
@@ -45,10 +45,10 @@ export class EventPublisher {
     return envelope.event_id;
   }
 
-  async usageReported(payload: UsageReportedPayload & { tenantId: string; callId: string }) {
+  async usageReported(payload: UsageReportedPayload & { orgId: string; callId: string }) {
     const envelope = createEventEnvelope({
       eventType: "UsageReported",
-      tenantId: payload.tenantId,
+      orgId: payload.orgId,
       callId: payload.callId,
       payload: {
         usage: payload.usage,

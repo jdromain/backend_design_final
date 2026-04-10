@@ -14,7 +14,6 @@ vi.mock("./auth/clerk", () => ({
     sub: "clerk-integration-user",
     email: "admin@example.com",
     orgId: "org_localdemo",
-    tenantIdClaim: "org_localdemo",
   })),
   getClerkBackendClient: vi.fn(),
 }));
@@ -45,7 +44,7 @@ describe.skipIf(process.env.SKIP_TESTCONTAINERS === "true")(
 
       const client = new pg.Client({ connectionString: process.env.DATABASE_URL });
       await client.connect();
-      for (const f of ["setup_complete.sql", "002_ui_tables.sql", "003_clerk_tenant_mapping.sql"]) {
+      for (const f of ["setup_complete.sql", "002_ui_tables.sql", "004_call_failure_type.sql", "006_org_id_canonical_cutover.sql"]) {
         const sql = readFileSync(path.join(databaseDir, f), "utf8");
         await client.query(sql);
       }
@@ -69,7 +68,7 @@ describe.skipIf(process.env.SKIP_TESTCONTAINERS === "true")(
       expect(body.ready).toBe(true);
     });
 
-    it("Clerk auth + GET /calls returns { data } for org-local tenant", async () => {
+    it("Clerk auth + GET /calls returns { data } for org-local organization", async () => {
       const calls = await app.inject({
         method: "GET",
         url: "/calls",

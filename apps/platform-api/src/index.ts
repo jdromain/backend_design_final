@@ -7,6 +7,7 @@ import { env } from "./env";
 import { buildServer } from "./server";
 import { callStore } from "./persistence/callStore";
 import { ping } from "./persistence/dbClient";
+import { runClerkDirectorySyncOnStartup } from "./auth/clerkDirectorySync";
 
 const logger = createLogger({ service: "platform-api", module: "bootstrap" });
 
@@ -46,13 +47,13 @@ async function printStartupDiagnostics(): Promise<void> {
         logger.info(`found ${phoneNumbers.length} phone number(s):`, {
           numbers: phoneNumbers.map(pn => ({
             phone: pn.phoneNumber,
-            tenant: pn.tenantId,
+            organization: pn.orgId,
             route: pn.routeType,
             status: pn.status,
           })),
         });
-        const tenants = [...new Set(phoneNumbers.map(pn => pn.tenantId))];
-        logger.info("tenants with phone numbers", { tenants });
+        const organizations = [...new Set(phoneNumbers.map(pn => pn.orgId))];
+        logger.info("organizations with phone numbers", { organizations });
       }
     } catch (err) {
       logger.error("FAILED to query phone_numbers", {
@@ -75,6 +76,7 @@ async function printStartupDiagnostics(): Promise<void> {
 
 async function bootstrap(): Promise<void> {
   await printStartupDiagnostics();
+  await runClerkDirectorySyncOnStartup();
 
   const bus =
     env.EVENT_BUS_IMPL === "redis"

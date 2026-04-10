@@ -13,8 +13,8 @@ type CacheState = {
   plans: Map<string, PlanSnapshot>;
 };
 
-function cacheKey(tenantId: string, did: string, lob?: string): string {
-  return `${tenantId}::${lob ?? "default"}::${did}`;
+function cacheKey(orgId: string, did: string, lob?: string): string {
+  return `${orgId}::${lob ?? "default"}::${did}`;
 }
 
 export class ConfigCache {
@@ -32,32 +32,32 @@ export class ConfigCache {
   }): void {
     const lob = snapshot.lob;
     for (const pn of snapshot.phoneNumbers) {
-      this.state.phoneNumbers.set(cacheKey(pn.tenantId, pn.did, lob), pn);
+      this.state.phoneNumbers.set(cacheKey(pn.orgId, pn.did, lob), pn);
     }
     for (const agent of snapshot.agents) {
       this.state.agents.set(agent.id, agent);
     }
     for (const plan of snapshot.plans) {
-      this.state.plans.set(plan.tenantId, plan);
+      this.state.plans.set(plan.orgId, plan);
     }
   }
 
-  applyConfigChanged(evt: ConfigChangedPayload & { tenant_id: string; lob?: string }): void {
+  applyConfigChanged(evt: ConfigChangedPayload & { org_id: string; lob?: string }): void {
     // No-op placeholder; in a full implementation we'd fetch fresh config for the entity.
     // Keep hook to allow future refresh logic.
     return;
   }
 
-  getRoute(did: string, tenantId: string, lob?: string): PhoneNumberConfig | undefined {
-    return this.state.phoneNumbers.get(cacheKey(tenantId, did, lob));
+  getRoute(did: string, orgId: string, lob?: string): PhoneNumberConfig | undefined {
+    return this.state.phoneNumbers.get(cacheKey(orgId, did, lob));
   }
 
   getAgent(agentConfigId: string): AgentConfigSnapshot | undefined {
     return this.state.agents.get(agentConfigId);
   }
 
-  getPlan(tenantId: string): PlanSnapshot | undefined {
-    return this.state.plans.get(tenantId);
+  getPlan(orgId: string): PlanSnapshot | undefined {
+    return this.state.plans.get(orgId);
   }
 
   replaceFromSnapshot(snapshot: ConfigSnapshotResponse): void {
@@ -73,7 +73,7 @@ export class ConfigCache {
   }
 }
 
-export function makeDefaultSnapshot(tenantId: string, lob = "default"): {
+export function makeDefaultSnapshot(orgId: string, lob = "default"): {
   phoneNumbers: PhoneNumberConfig[];
   agents: AgentConfigSnapshot[];
   plans: PlanSnapshot[];
@@ -82,7 +82,7 @@ export function makeDefaultSnapshot(tenantId: string, lob = "default"): {
   const defaultAgent: AgentConfigSnapshot = {
     id: "agent-default",
     version: 1,
-    tenantId,
+    orgId,
     businessId: "business-default",
     basePrompt: "You are a helpful receptionist. Be concise and polite.",
     persona: "receptionist",
@@ -106,14 +106,14 @@ export function makeDefaultSnapshot(tenantId: string, lob = "default"): {
   };
 
   const defaultPlan: PlanSnapshot = {
-    tenantId,
+    orgId,
     planId: "plan-default",
     maxConcurrentCalls: null
   };
 
   const defaultNumber: PhoneNumberConfig = {
     did: "+10000000000",
-    tenantId,
+    orgId,
     businessId: "business-default",
     routeType: "ai" as RouteType,
     agentConfigId: defaultAgent.id

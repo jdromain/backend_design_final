@@ -34,7 +34,7 @@ export function isClerkConfigured(): boolean {
   return clerkExplicitlyEnabled() && Boolean(getClerkPublishableKey());
 }
 
-/** Browser: API calls must not append `tenantId` for auth (platform-api uses Bearer only). */
+/** Browser: API calls must not append `orgId` for auth (platform-api uses Bearer only). */
 export function isBrowserClerkApiMode(): boolean {
   if (typeof window === "undefined") return false;
   return isClerkConfigured();

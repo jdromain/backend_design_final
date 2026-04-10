@@ -2,7 +2,7 @@ import { env } from "./env";
 import { internalApiHeaders } from "./platformApiAuth";
 
 export type RetrieveRequest = {
-  tenant_id: string;
+  org_id: string;
   business_id: string;
   namespace: string;
   query: string;

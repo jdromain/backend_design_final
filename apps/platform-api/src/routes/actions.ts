@@ -2,7 +2,7 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { query } from "../persistence/dbClient";
 import { sendData, sendError } from "../lib/responses";
 import { authHook, resolvedAuthHook } from "../auth/jwt";
-import { requireTenantForRequest } from "../auth/tenantScope";
+import { requireOrgForRequest } from "../auth/orgScope";
 import { getContacts, getFollowUps, getWorkflows, getTemplates } from "../persistence/actionsStore";
 
 
@@ -10,18 +10,18 @@ export function registerActionsRoutes(app: FastifyInstance) {
   const preHandler = resolvedAuthHook(["admin", "editor", "viewer"]);
 
   app.get("/contacts", { preHandler }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const tenantId = requireTenantForRequest(request, reply, (request.query as any).tenantId);
-    if (!tenantId) return;
-    sendData(reply, await getContacts(tenantId));
+    const orgId = requireOrgForRequest(request, reply, (request.query as any).orgId);
+    if (!orgId) return;
+    sendData(reply, await getContacts(orgId));
   });
 
   app.get("/actions/calls", { preHandler }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const tenantId = requireTenantForRequest(request, reply, (request.query as any).tenantId);
-    if (!tenantId) return;
+    const orgId = requireOrgForRequest(request, reply, (request.query as any).orgId);
+    if (!orgId) return;
 
     const result = await query(
-      `SELECT * FROM calls WHERE tenant_id = $1 ORDER BY started_at DESC LIMIT 50`,
-      [tenantId]
+      `SELECT * FROM calls WHERE org_id = $1 ORDER BY started_at DESC LIMIT 50`,
+      [orgId]
     );
 
     const mapped = result.rows.map((row: any) => ({
@@ -45,20 +45,20 @@ export function registerActionsRoutes(app: FastifyInstance) {
   });
 
   app.get("/follow-ups", { preHandler }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const tenantId = requireTenantForRequest(request, reply, (request.query as any).tenantId);
-    if (!tenantId) return;
-    sendData(reply, await getFollowUps(tenantId));
+    const orgId = requireOrgForRequest(request, reply, (request.query as any).orgId);
+    if (!orgId) return;
+    sendData(reply, await getFollowUps(orgId));
   });
 
   app.get("/workflows", { preHandler }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const tenantId = requireTenantForRequest(request, reply, (request.query as any).tenantId);
-    if (!tenantId) return;
-    sendData(reply, await getWorkflows(tenantId));
+    const orgId = requireOrgForRequest(request, reply, (request.query as any).orgId);
+    if (!orgId) return;
+    sendData(reply, await getWorkflows(orgId));
   });
 
   app.get("/templates", { preHandler }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const tenantId = requireTenantForRequest(request, reply, (request.query as any).tenantId);
-    if (!tenantId) return;
-    sendData(reply, await getTemplates(tenantId));
+    const orgId = requireOrgForRequest(request, reply, (request.query as any).orgId);
+    if (!orgId) return;
+    sendData(reply, await getTemplates(orgId));
   });
 }

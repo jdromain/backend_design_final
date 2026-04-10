@@ -89,13 +89,13 @@ async function bootstrap(): Promise<void> {
   // Bootstrap cache from platform-api; fall back to default snapshot if unavailable.
   logger.info("hydrating config cache from platform-api...", { url: env.PLATFORM_API_URL });
   try {
-    const snapshot = await fetchConfigSnapshot(env.REALTIME_BOOTSTRAP_TENANT_ID, "default");
+    const snapshot = await fetchConfigSnapshot(env.REALTIME_BOOTSTRAP_ORG_ID, "default");
     cache.replaceFromSnapshot(snapshot);
 
     // Log what we got
     const phoneCount = snapshot.phoneNumbers?.length ?? 0;
     logger.info("cache hydrated from platform-api", {
-      tenantId: snapshot.tenantId,
+      orgId: snapshot.orgId,
       lob: snapshot.lob,
       version: snapshot.version,
       agentConfigId: snapshot.agentConfig?.id,
@@ -109,13 +109,13 @@ async function bootstrap(): Promise<void> {
     }
   } catch (err) {
     logger.warn("failed to hydrate from platform-api, using default snapshot", { error: (err as Error).message });
-    cache.hydrate(makeDefaultSnapshot(env.REALTIME_BOOTSTRAP_TENANT_ID));
+    cache.hydrate(makeDefaultSnapshot(env.REALTIME_BOOTSTRAP_ORG_ID));
   }
 
   await bus.subscribe("ConfigChanged", async (event: TypedEventEnvelope<"ConfigChanged">) => {
     const payload = event.payload as ConfigChangedPayload;
     try {
-      const snapshot = await fetchConfigSnapshot(event.tenant_id, payload.lob ?? "default");
+      const snapshot = await fetchConfigSnapshot(event.org_id, payload.lob ?? "default");
       cache.replaceFromSnapshot(snapshot);
       logger.info("refreshed cache from ConfigChanged", {
         event_id: event.event_id,

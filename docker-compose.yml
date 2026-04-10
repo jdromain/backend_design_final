@@ -38,8 +38,8 @@ services:
       - pgdata:/var/lib/postgresql/data
       - ./database/setup_complete.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
       - ./database/002_ui_tables.sql:/docker-entrypoint-initdb.d/02_ui_tables.sql:ro
-      - ./database/003_clerk_tenant_mapping.sql:/docker-entrypoint-initdb.d/03_clerk_tenant_mapping.sql:ro
-      - ./database/004_call_failure_type.sql:/docker-entrypoint-initdb.d/04_call_failure_type.sql:ro
+      - ./database/004_call_failure_type.sql:/docker-entrypoint-initdb.d/03_call_failure_type.sql:ro
+      - ./database/006_org_id_canonical_cutover.sql:/docker-entrypoint-initdb.d/04_org_id_canonical_cutover.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U rezovo"]
       interval: 5s
@@ -213,7 +213,7 @@ services:
         # We source .env.docker as the project .env via `env_file` on the
         # `docker compose build` side by using --env-file or by symlinking.
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3001}
-        NEXT_PUBLIC_DEFAULT_TENANT_ID: ${NEXT_PUBLIC_DEFAULT_TENANT_ID:-org_localdemo}
+        NEXT_PUBLIC_DEFAULT_ORG_ID: ${NEXT_PUBLIC_DEFAULT_ORG_ID:-org_localdemo}
         NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY:-}
         NEXT_PUBLIC_CLERK_ENABLED: ${NEXT_PUBLIC_CLERK_ENABLED:-true}
         NEXT_PUBLIC_CLERK_JWT_TEMPLATE: ${NEXT_PUBLIC_CLERK_JWT_TEMPLATE:-platform-api}

@@ -31,7 +31,7 @@ export function startWebhookServer(
             const callData: InboundCallArgs = JSON.parse(body);
             logger.info("received inbound call notification from platform-api", {
               did: callData.did,
-              tenantId: callData.tenantId,
+              orgId: callData.orgId,
               callerNumber: callData.callerNumber,
             });
 

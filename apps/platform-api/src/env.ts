@@ -66,7 +66,7 @@ export const env = {
   CLERK_WEBHOOK_SECRET: optional("CLERK_WEBHOOK_SECRET", ""),
   /**
    * When true (default), first API request with a valid Clerk JWT but no DB user triggers
-   * a Clerk API lookup (org membership → tenant) and upserts `users`. Webhook remains canonical for normal sync.
+   * a Clerk API lookup (org membership → organization) and upserts `users`. Webhook remains canonical for normal sync.
    */
   CLERK_BOOTSTRAP_ON_AUTH: optionalBool("CLERK_BOOTSTRAP_ON_AUTH", true),
 
@@ -125,7 +125,7 @@ if (env.KAFKA_ENABLED && !env.KAFKA_BROKERS) {
   process.exit(1);
 }
 
-/** Clerk mode: Bearer tokens are Clerk session JWTs; dev JWT and ?tenantId override are disabled for data reads. */
+/** Clerk mode: Bearer tokens are Clerk session JWTs; dev JWT and ?orgId override are disabled for data reads. */
 export function assertClerkEnvIfEnabled(): void {
   if (!env.CLERK_AUTH_ENABLED) return;
   if (process.env.VITEST === "true") return;

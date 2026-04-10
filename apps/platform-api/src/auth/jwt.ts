@@ -23,33 +23,30 @@ function isInternalServiceToken(token: string | null): boolean {
   return Boolean(env.INTERNAL_SERVICE_TOKEN) && token === env.INTERNAL_SERVICE_TOKEN;
 }
 
-function assertSessionTenantConsistency(
+function assertSessionOrgConsistency(
   session: VerifiedClerkSession,
   user: AuthUser,
-): "missing_org" | "tenant_claim_mismatch" | "org_tenant_mismatch" | null {
+): "missing_org" | "org_mismatch" | null {
   if (!session.orgId) {
     return "missing_org";
   }
 
-  if (session.tenantIdClaim && session.tenantIdClaim !== session.orgId) {
-    return "tenant_claim_mismatch";
-  }
-
-  if (session.orgId !== user.tenantId) {
-    return "org_tenant_mismatch";
-  }
-
-  if (session.tenantIdClaim && session.tenantIdClaim !== user.tenantId) {
-    return "tenant_claim_mismatch";
+  if (session.orgId !== user.orgId) {
+    return "org_mismatch";
   }
 
   return null;
 }
 
 async function resolveClerkUser(session: VerifiedClerkSession): Promise<AuthUser | undefined> {
-  let user =
-    (await authStore.findByClerkId(session.sub)) ??
-    (await authStore.findByEmail(session.email));
+  if (!session.orgId) {
+    return undefined;
+  }
+
+  let user = await authStore.findByClerkIdInOrg(session.sub, session.orgId);
+  if (!user) {
+    user = await authStore.findByEmailInOrg(session.email, session.orgId);
+  }
   if (!user) {
     user = (await tryProvisionUserFromClerkSession(session)) ?? undefined;
   }
@@ -71,44 +68,35 @@ export function authHook(allowedRoles?: AuthRole[]) {
         sendError(
           reply,
           403,
-          "not_provisioned",
-          "No Rezovo user for this Clerk account. Use a Clerk org linked to a tenant (public_metadata.tenant_id), accept an invite, or wait for webhook sync.",
+          "org_not_provisioned",
+          "No Rezovo user membership exists for the active Clerk organization.",
         );
         return;
       }
 
-      const mismatch = assertSessionTenantConsistency(session, user);
+      const mismatch = assertSessionOrgConsistency(session, user);
       if (mismatch === "missing_org") {
         sendError(
           reply,
           403,
           "missing_org",
-          "Active Clerk organization is required. Switch to an organization linked to your Rezovo tenant.",
+          "Active Clerk organization is required. Switch to an organization in Clerk.",
         );
         return;
       }
-      if (mismatch === "tenant_claim_mismatch") {
+      if (mismatch === "org_mismatch") {
         sendError(
           reply,
           403,
-          "tenant_claim_mismatch",
-          "JWT tenant_id claim does not match your Rezovo user.",
-        );
-        return;
-      }
-      if (mismatch === "org_tenant_mismatch") {
-        sendError(
-          reply,
-          403,
-          "org_tenant_mismatch",
-          "Active Clerk organization is not mapped to your Rezovo tenant.",
+          "org_membership_required",
+          "Active Clerk organization is not linked to this Rezovo user membership.",
         );
         return;
       }
 
       request.auth = {
         sub: user.userId,
-        tenant_id: user.tenantId,
+        org_id: user.orgId,
         email: user.email,
         roles: user.roles,
       };

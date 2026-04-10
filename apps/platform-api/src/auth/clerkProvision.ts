@@ -4,13 +4,14 @@ import type { AuthUser } from "./types";
 import type { VerifiedClerkSession } from "./clerk";
 import { getClerkBackendClient } from "./clerk";
 import { AuthStoreClient } from "./storeClient";
+import { mapClerkOrgRoleToAppRoles } from "./roleMap";
 
 const logger = createLogger({ service: "platform-api", module: "clerkProvision" });
 const store = new AuthStoreClient();
 
 /**
  * First-request fallback when webhook has not created the user yet.
- * Resolves tenant from active org id on the session, or first org membership with a mapped tenant.
+ * Resolves the active Clerk organization for the user and upserts a local org membership.
  */
 export async function tryProvisionUserFromClerkSession(
   session: VerifiedClerkSession
@@ -29,20 +30,22 @@ export async function tryProvisionUserFromClerkSession(
     }
   }
 
-  let tenantId: string | undefined;
+  let orgId: string | undefined;
+  let membershipRole: unknown;
   if (session.orgId) {
-    tenantId = await store.findActiveTenantId(session.orgId);
+    orgId = await store.findActiveOrgId(session.orgId);
   }
 
-  if (!tenantId) {
+  if (!orgId) {
     try {
       const list = await clerk.users.getOrganizationMembershipList({ userId: session.sub, limit: 20 });
       for (const m of list.data ?? []) {
         const oid = m.organization?.id;
         if (!oid) continue;
-        const tid = await store.findActiveTenantId(oid);
-        if (tid) {
-          tenantId = tid;
+        const mappedOrgId = await store.findActiveOrgId(oid);
+        if (mappedOrgId) {
+          orgId = mappedOrgId;
+          membershipRole = (m as any).role ?? (m as any).organizationMembership?.role;
           break;
         }
       }
@@ -51,18 +54,18 @@ export async function tryProvisionUserFromClerkSession(
     }
   }
 
-  if (!tenantId) {
-    logger.info("bootstrap: no tenant mapped for Clerk user", { sub: session.sub, orgId: session.orgId });
+  if (!orgId) {
+    logger.info("bootstrap: no organization mapped for Clerk user", { sub: session.sub, orgId: session.orgId });
     return undefined;
   }
 
   await store.upsertUser({
     id: `clerk-${session.sub}`,
-    tenantId,
+    orgId,
     email,
     clerkId: session.sub,
-    roles: ["viewer"],
+    roles: mapClerkOrgRoleToAppRoles(membershipRole),
   });
 
-  return store.findByClerkId(session.sub);
+  return store.findByClerkIdInOrg(session.sub, orgId);
 }

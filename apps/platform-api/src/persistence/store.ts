@@ -25,7 +25,7 @@ type ToolResult = {
 };
 
 type UsageRecord = {
-  tenantId: string;
+  orgId: string;
   callId: string;
   usage: unknown;
   callStartedAt: string;
@@ -33,7 +33,7 @@ type UsageRecord = {
 };
 
 type AnalyticsRecord = {
-  tenantId: string;
+  orgId: string;
   callId?: string;
   durationMs: number;
   outcome?: string;
@@ -41,13 +41,13 @@ type AnalyticsRecord = {
 };
 
 type ToolUsageRecord = {
-  tenantId: string;
+  orgId: string;
   toolName: string;
   count: number;
 };
 
 export type StoredDocument = {
-  tenantId: string;
+  orgId: string;
   businessId: string;
   namespace: string;
   docId: string;
@@ -69,46 +69,46 @@ export class PersistenceStore {
     }
   }
 
-  loadConfigSync(_tenantId: string, _lob: string): StoredConfig | null {
+  loadConfigSync(_orgId: string, _lob: string): StoredConfig | null {
     // Config is stored in-memory via ConfigStore; DB is source of truth for
     // agent_configs table but we don't block startup with a sync read.
     return null;
   }
 
-  async saveConfig(_tenantId: string, _lob: string, _cfg: StoredConfig): Promise<void> {
+  async saveConfig(_orgId: string, _lob: string, _cfg: StoredConfig): Promise<void> {
     // Config publishing is handled through the agent_configs table directly.
     // This is a no-op for now — will be wired when config management is built out.
   }
 
   // ─── Tool Results (idempotency) ───
 
-  async loadToolResult(tenantId: string, toolName: string, idem: string): Promise<ToolResult | null> {
+  async loadToolResult(orgId: string, toolName: string, idem: string): Promise<ToolResult | null> {
     try {
       const result = await query(
         `SELECT result, stored_at FROM tool_results
-         WHERE tenant_id = $1 AND tool_name = $2 AND idempotency_key = $3
+         WHERE org_id = $1 AND tool_name = $2 AND idempotency_key = $3
          AND (expires_at IS NULL OR expires_at > now())`,
-        [tenantId, toolName, idem]
+        [orgId, toolName, idem]
       );
       if (result.rows.length === 0) return null;
       return { result: result.rows[0].result, storedAt: result.rows[0].stored_at };
     } catch (err) {
-      logger.warn("failed to load tool result", { error: (err as Error).message, tenantId, toolName, idem });
+      logger.warn("failed to load tool result", { error: (err as Error).message, orgId, toolName, idem });
       return null;
     }
   }
 
-  async saveToolResult(tenantId: string, toolName: string, idem: string, result: unknown): Promise<void> {
+  async saveToolResult(orgId: string, toolName: string, idem: string, result: unknown): Promise<void> {
     try {
       await query(
-        `INSERT INTO tool_results (tenant_id, tool_name, idempotency_key, result, stored_at, expires_at)
+        `INSERT INTO tool_results (org_id, tool_name, idempotency_key, result, stored_at, expires_at)
          VALUES ($1, $2, $3, $4, now(), now() + interval '7 days')
-         ON CONFLICT (tenant_id, tool_name, idempotency_key) DO UPDATE SET
+         ON CONFLICT (org_id, tool_name, idempotency_key) DO UPDATE SET
            result = EXCLUDED.result, stored_at = EXCLUDED.stored_at, expires_at = EXCLUDED.expires_at`,
-        [tenantId, toolName, idem, JSON.stringify(result)]
+        [orgId, toolName, idem, JSON.stringify(result)]
       );
     } catch (err) {
-      logger.warn("failed to save tool result", { error: (err as Error).message, tenantId, toolName, idem });
+      logger.warn("failed to save tool result", { error: (err as Error).message, orgId, toolName, idem });
     }
   }
 
@@ -123,11 +123,11 @@ export class PersistenceStore {
   async loadAnalytics(): Promise<AnalyticsRecord[]> {
     try {
       const result = await query(
-        `SELECT tenant_id, call_id, duration_sec * 1000 AS duration_ms, outcome, started_at AS recorded_at
+        `SELECT org_id, call_id, duration_sec * 1000 AS duration_ms, outcome, started_at AS recorded_at
          FROM calls ORDER BY started_at DESC LIMIT 500`
       );
       return result.rows.map((r: any) => ({
-        tenantId: r.tenant_id,
+        orgId: r.org_id,
         callId: r.call_id,
         durationMs: r.duration_ms ?? 0,
         outcome: r.outcome,
@@ -149,12 +149,12 @@ export class PersistenceStore {
   async loadToolUsage(): Promise<ToolUsageRecord[]> {
     try {
       const result = await query(
-        `SELECT tenant_id, payload->>'toolName' AS tool_name, COUNT(*) AS count
+        `SELECT org_id, payload->>'toolName' AS tool_name, COUNT(*) AS count
          FROM call_events WHERE event_type = 'tool_called'
-         GROUP BY tenant_id, payload->>'toolName'`
+         GROUP BY org_id, payload->>'toolName'`
       );
       return result.rows.map((r: any) => ({
-        tenantId: r.tenant_id,
+        orgId: r.org_id,
         toolName: r.tool_name,
         count: parseInt(r.count, 10),
       }));
@@ -169,29 +169,29 @@ export class PersistenceStore {
   async appendDocument(record: StoredDocument): Promise<void> {
     try {
       await query(
-        `INSERT INTO kb_documents (tenant_id, business_id, namespace, doc_id, text, metadata, ingested_at, embedded_chunks, status)
+        `INSERT INTO kb_documents (org_id, business_id, namespace, doc_id, text, metadata, ingested_at, embedded_chunks, status)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'ingest_requested')
          ON CONFLICT (doc_id) DO UPDATE SET
            text = EXCLUDED.text, metadata = EXCLUDED.metadata, 
            ingested_at = EXCLUDED.ingested_at, status = 'ingest_requested'`,
-        [record.tenantId, record.businessId, record.namespace, record.docId, record.text, JSON.stringify(record.metadata ?? {}), record.ingestedAt, record.embeddedChunks ?? 0]
+        [record.orgId, record.businessId, record.namespace, record.docId, record.text, JSON.stringify(record.metadata ?? {}), record.ingestedAt, record.embeddedChunks ?? 0]
       );
     } catch (err) {
       logger.warn("failed to append document", { error: (err as Error).message, docId: record.docId });
     }
   }
 
-  async loadDocuments(filter: { tenantId: string; namespace?: string }): Promise<StoredDocument[]> {
+  async loadDocuments(filter: { orgId: string; namespace?: string }): Promise<StoredDocument[]> {
     try {
-      let sql = "SELECT * FROM kb_documents WHERE tenant_id = $1";
-      const params: any[] = [filter.tenantId];
+      let sql = "SELECT * FROM kb_documents WHERE org_id = $1";
+      const params: any[] = [filter.orgId];
       if (filter.namespace) {
         sql += " AND namespace = $2";
         params.push(filter.namespace);
       }
       const result = await query(sql, params);
       return result.rows.map((row: any) => ({
-        tenantId: row.tenant_id,
+        orgId: row.org_id,
         businessId: row.business_id,
         namespace: row.namespace,
         docId: row.doc_id,
@@ -236,30 +236,30 @@ export class PersistenceStore {
 
   // ─── Credentials ───
 
-  async saveCredentials(record: { tenantId: string; provider: string; data: Record<string, string> }): Promise<void> {
+  async saveCredentials(record: { orgId: string; provider: string; data: Record<string, string> }): Promise<void> {
     try {
       await query(
-        `INSERT INTO credentials (tenant_id, provider, credentials, updated_at)
+        `INSERT INTO credentials (org_id, provider, credentials, updated_at)
          VALUES ($1, $2, $3, now())
-         ON CONFLICT (tenant_id, provider) DO UPDATE SET
+         ON CONFLICT (org_id, provider) DO UPDATE SET
            credentials = EXCLUDED.credentials, updated_at = EXCLUDED.updated_at`,
-        [record.tenantId, record.provider, JSON.stringify(record.data)]
+        [record.orgId, record.provider, JSON.stringify(record.data)]
       );
     } catch (err) {
-      logger.warn("failed to save credentials", { error: (err as Error).message, tenantId: record.tenantId, provider: record.provider });
+      logger.warn("failed to save credentials", { error: (err as Error).message, orgId: record.orgId, provider: record.provider });
     }
   }
 
-  async loadCredentials(tenantId: string, provider: string): Promise<Record<string, string> | null> {
+  async loadCredentials(orgId: string, provider: string): Promise<Record<string, string> | null> {
     try {
       const result = await query(
-        "SELECT credentials FROM credentials WHERE tenant_id = $1 AND provider = $2",
-        [tenantId, provider]
+        "SELECT credentials FROM credentials WHERE org_id = $1 AND provider = $2",
+        [orgId, provider]
       );
       if (result.rows.length === 0) return null;
       return result.rows[0].credentials;
     } catch (err) {
-      logger.warn("failed to load credentials", { error: (err as Error).message, tenantId, provider });
+      logger.warn("failed to load credentials", { error: (err as Error).message, orgId, provider });
       return null;
     }
   }
@@ -274,9 +274,9 @@ export class PersistenceStore {
 
   // ─── Webhooks ───
 
-  async appendWebhook(record: { type: string; payload: unknown; receivedAt: string; tenantId?: string }): Promise<void> {
+  async appendWebhook(record: { type: string; payload: unknown; receivedAt: string; orgId?: string }): Promise<void> {
     // Webhooks are logged but not persisted to DB in the new schema.
     // Use structured logging instead.
-    logger.debug("webhook received", { type: record.type, tenantId: record.tenantId });
+    logger.debug("webhook received", { type: record.type, orgId: record.orgId });
   }
 }

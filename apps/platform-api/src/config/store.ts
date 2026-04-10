@@ -1,14 +1,14 @@
 import { AgentConfigSnapshot, PhoneNumberConfig, PlanSnapshot } from "@rezovo/core-types";
 import { createLogger } from "@rezovo/logging";
 
-import { createDefaultTenantConfig } from "./data";
+import { createDefaultOrganizationConfig } from "./data";
 import { PersistenceStore } from "../persistence/store";
 import { callStore } from "../persistence/callStore";
 import { query } from "../persistence/dbClient";
 
 const logger = createLogger({ service: "platform-api", module: "configStore" });
 
-type TenantLobKey = string;
+type OrganizationLobKey = string;
 
 type StoredConfig = {
   version: number;
@@ -19,53 +19,53 @@ type StoredConfig = {
   lob: string;
 };
 
-function key(tenantId: string, lob?: string): TenantLobKey {
-  return `${tenantId}::${lob ?? "default"}`;
+function key(orgId: string, lob?: string): OrganizationLobKey {
+  return `${orgId}::${lob ?? "default"}`;
 }
 
-async function resolveTenantBusinessId(tenantId: string): Promise<string> {
+async function resolveOrganizationBusinessId(orgId: string): Promise<string> {
   try {
     const result = await query<{ business_id: string | null }>(
-      "SELECT business_id FROM tenants WHERE id = $1 LIMIT 1",
-      [tenantId]
+      "SELECT business_id FROM organizations WHERE id = $1 LIMIT 1",
+      [orgId]
     );
     const value = result.rows[0]?.business_id;
     if (typeof value === "string" && value.trim().length > 0) {
       return value.trim();
     }
   } catch (err) {
-    logger.warn("failed to resolve tenant business_id", {
-      tenantId,
+    logger.warn("failed to resolve organization business_id", {
+      orgId,
       error: (err as Error).message,
     });
   }
-  return `business-${tenantId}`;
+  return `business-${orgId}`;
 }
 
 export class ConfigStore {
-  private store = new Map<TenantLobKey, StoredConfig>();
+  private store = new Map<OrganizationLobKey, StoredConfig>();
   private persistence: PersistenceStore;
 
   constructor(persistence = new PersistenceStore()) {
     this.persistence = persistence;
   }
 
-  ensure(tenantId: string, lob = "default"): StoredConfig {
-    const k = key(tenantId, lob);
+  ensure(orgId: string, lob = "default"): StoredConfig {
+    const k = key(orgId, lob);
     const existing = this.store.get(k);
     if (existing) return existing;
     // Attempt load from persistence
-    return this.loadOrInit(tenantId, lob);
+    return this.loadOrInit(orgId, lob);
   }
 
-  private loadOrInit(tenantId: string, lob: string): StoredConfig {
-    const k = key(tenantId, lob);
-    const persisted = this.persistence.loadConfigSync(tenantId, lob);
+  private loadOrInit(orgId: string, lob: string): StoredConfig {
+    const k = key(orgId, lob);
+    const persisted = this.persistence.loadConfigSync(orgId, lob);
     if (persisted) {
       this.store.set(k, persisted);
       return persisted;
     }
-    const snapshot = createDefaultTenantConfig(tenantId, lob);
+    const snapshot = createDefaultOrganizationConfig(orgId, lob);
     const stored: StoredConfig = {
       version: snapshot.version,
       status: snapshot.status,
@@ -78,55 +78,55 @@ export class ConfigStore {
     return stored;
   }
 
-  async getSnapshot(tenantId: string, lob = "default") {
-    const cfg = this.ensure(tenantId, lob);
-    const tenantBusinessId = await resolveTenantBusinessId(tenantId);
+  async getSnapshot(orgId: string, lob = "default") {
+    const cfg = this.ensure(orgId, lob);
+    const organizationBusinessId = await resolveOrganizationBusinessId(orgId);
 
     // Load actual phone numbers from the phone_numbers table (via callStore)
     let phoneNumbers = cfg.phoneNumbers;
     try {
-      const dbNumbers = await callStore.getPhoneNumbersByTenant(tenantId);
+      const dbNumbers = await callStore.getPhoneNumbersByOrganization(orgId);
       if (dbNumbers.length > 0) {
         phoneNumbers = dbNumbers
           .filter(pn => pn.status === "active")
           .map(pn => ({
             did: pn.phoneNumber,
-            tenantId: pn.tenantId,
-            businessId: tenantBusinessId,
+            orgId: pn.orgId,
+            businessId: organizationBusinessId,
             routeType: (pn.routeType === "human" ? "queue" : pn.routeType ?? "ai") as "ai" | "queue" | "voicemail",
             agentConfigId: pn.agentConfigId ?? cfg.agentConfig.id,
           }));
         logger.info("loaded phone numbers from DB", {
-          tenantId,
+          orgId,
           count: phoneNumbers.length,
           numbers: phoneNumbers.map(p => p.did)
         });
       } else {
-        logger.warn("no phone numbers found in DB, using defaults", { tenantId });
+        logger.warn("no phone numbers found in DB, using defaults", { orgId });
       }
     } catch (err) {
       logger.error("failed to load phone numbers from DB", {
         error: (err as Error).message,
-        tenantId
+        orgId
       });
       // Fall back to configured phone numbers
     }
 
     const normalizedPhoneNumbers = phoneNumbers.map((pn) => ({
       ...pn,
-      businessId: !pn.businessId || pn.businessId === "business-default" ? tenantBusinessId : pn.businessId,
+      businessId: !pn.businessId || pn.businessId === "business-default" ? organizationBusinessId : pn.businessId,
     }));
     const normalizedAgentConfig = {
       ...cfg.agentConfig,
-      tenantId,
+      orgId,
       businessId:
         !cfg.agentConfig.businessId || cfg.agentConfig.businessId === "business-default"
-          ? tenantBusinessId
+          ? organizationBusinessId
           : cfg.agentConfig.businessId,
     };
 
     return {
-      tenantId,
+      orgId,
       lob,
       version: cfg.version,
       status: cfg.status,
@@ -137,27 +137,27 @@ export class ConfigStore {
   }
 
   publishConfig(params: {
-    tenantId: string;
+    orgId: string;
     lob?: string;
     version: number;
     status: "draft" | "published";
   }): StoredConfig {
-    const cfg = this.ensure(params.tenantId, params.lob);
+    const cfg = this.ensure(params.orgId, params.lob);
     cfg.version = params.version;
     cfg.status = params.status;
-    this.persistence.saveConfig(params.tenantId, params.lob ?? "default", cfg).catch(() => undefined);
+    this.persistence.saveConfig(params.orgId, params.lob ?? "default", cfg).catch(() => undefined);
     return cfg;
   }
 
   upsertConfig(params: {
-    tenantId: string;
+    orgId: string;
     lob?: string;
     agentConfig: AgentConfigSnapshot;
     phoneNumbers: PhoneNumberConfig[];
     plan: PlanSnapshot;
     status: "draft" | "published";
   }): StoredConfig {
-    const k = key(params.tenantId, params.lob);
+    const k = key(params.orgId, params.lob);
     const nextVersion = (this.store.get(k)?.version ?? 0) + 1;
     const stored: StoredConfig = {
       version: nextVersion,
@@ -168,7 +168,7 @@ export class ConfigStore {
       lob: params.lob ?? "default"
     };
     this.store.set(k, stored);
-    this.persistence.saveConfig(params.tenantId, params.lob ?? "default", stored).catch(() => undefined);
+    this.persistence.saveConfig(params.orgId, params.lob ?? "default", stored).catch(() => undefined);
     return stored;
   }
 }

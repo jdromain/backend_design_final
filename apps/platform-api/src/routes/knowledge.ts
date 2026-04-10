@@ -2,7 +2,7 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { query } from "../persistence/dbClient";
 import { sendData, sendError } from "../lib/responses";
 import { authHook, resolvedAuthHook } from "../auth/jwt";
-import { requireTenantForRequest } from "../auth/tenantScope";
+import { requireOrgForRequest } from "../auth/orgScope";
 
 
 function mapKbStatus(status: string): "ready" | "processing" | "failed" | "uploading" {
@@ -19,12 +19,12 @@ export function registerKnowledgeRoutes(app: FastifyInstance) {
   app.get("/knowledge/documents", {
     preHandler: resolvedAuthHook(["admin", "editor", "viewer"]),
   }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const tenantId = requireTenantForRequest(request, reply, (request.query as any).tenantId);
-    if (!tenantId) return;
+    const orgId = requireOrgForRequest(request, reply, (request.query as any).orgId);
+    if (!orgId) return;
 
     const result = await query(
-      "SELECT * FROM kb_documents WHERE tenant_id = $1 ORDER BY created_at DESC",
-      [tenantId]
+      "SELECT * FROM kb_documents WHERE org_id = $1 ORDER BY created_at DESC",
+      [orgId]
     );
 
     const documents = result.rows.map((r: any) => {

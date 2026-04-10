@@ -2,17 +2,17 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { callStore } from "../persistence/callStore";
 import { sendData, sendError } from "../lib/responses";
 import { authHook, resolvedAuthHook } from "../auth/jwt";
-import { requireTenantForRequest } from "../auth/tenantScope";
+import { requireOrgForRequest } from "../auth/orgScope";
 
 
 export function registerPhoneLineRoutes(app: FastifyInstance) {
   app.get("/phone-lines", {
     preHandler: resolvedAuthHook(["admin", "editor", "viewer"]),
   }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const tenantId = requireTenantForRequest(request, reply, (request.query as any).tenantId);
-    if (!tenantId) return;
+    const orgId = requireOrgForRequest(request, reply, (request.query as any).orgId);
+    if (!orgId) return;
 
-    const numbers = await callStore.getPhoneNumbersByTenant(tenantId);
+    const numbers = await callStore.getPhoneNumbersByOrganization(orgId);
 
     const mapped = numbers.map((n) => ({
       id: n.id ?? n.phoneNumber,

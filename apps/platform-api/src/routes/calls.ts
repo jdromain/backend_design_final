@@ -5,7 +5,7 @@ import { callStore, CallRecord, TranscriptEntry, CallEvent } from "../persistenc
 import { query } from "../persistence/dbClient";
 import { sendData } from "../lib/responses";
 import { resolvedAuthHook } from "../auth/jwt";
-import { requireTenantForRequest } from "../auth/tenantScope";
+import { requireOrgForRequest } from "../auth/orgScope";
 import { CallsListEnvelopeSchema } from "../contracts/httpSchemas";
 
 const logger = createLogger({ service: "platform-api", module: "callRoutes" });
@@ -122,13 +122,13 @@ export function registerCallRoutes(app: FastifyInstance) {
 
   app.post("/calls/start", async (request: FastifyRequest, reply: FastifyReply) => {
     const body = request.body as Partial<CallRecord>;
-    if (!body.callId || !body.tenantId || !body.phoneNumber || !body.callerNumber) {
-      return reply.status(400).send({ error: "missing required fields: callId, tenantId, phoneNumber, callerNumber" });
+    if (!body.callId || !body.orgId || !body.phoneNumber || !body.callerNumber) {
+      return reply.status(400).send({ error: "missing required fields: callId, orgId, phoneNumber, callerNumber" });
     }
 
     const record: CallRecord = {
       callId: body.callId,
-      tenantId: body.tenantId,
+      orgId: body.orgId,
       phoneNumber: body.phoneNumber,
       callerNumber: body.callerNumber,
       twilioCallSid: body.twilioCallSid,
@@ -144,7 +144,7 @@ export function registerCallRoutes(app: FastifyInstance) {
 
     await callStore.insertEvent({
       callId: record.callId,
-      tenantId: record.tenantId,
+      orgId: record.orgId,
       eventType: "call_started",
       payload: {
         phoneNumber: record.phoneNumber,
@@ -153,14 +153,14 @@ export function registerCallRoutes(app: FastifyInstance) {
       },
     });
 
-    logger.info("call record created", { callId: record.callId, tenantId: record.tenantId });
+    logger.info("call record created", { callId: record.callId, orgId: record.orgId });
     return reply.status(201).send({ ok: true, callId: record.callId });
   });
 
   app.post("/calls/end", async (request: FastifyRequest, reply: FastifyReply) => {
     const body = request.body as {
       callId: string;
-      tenantId: string;
+      orgId: string;
       endReason?: string;
       outcome?: string;
       durationSec?: number;
@@ -184,13 +184,13 @@ export function registerCallRoutes(app: FastifyInstance) {
       }>;
     };
 
-    if (!body.callId || !body.tenantId) {
-      return reply.status(400).send({ error: "missing required fields: callId, tenantId" });
+    if (!body.callId || !body.orgId) {
+      return reply.status(400).send({ error: "missing required fields: callId, orgId" });
     }
 
     const update: CallRecord = {
       callId: body.callId,
-      tenantId: body.tenantId,
+      orgId: body.orgId,
       phoneNumber: "",
       callerNumber: "",
       status: body.outcome === "transferred" ? "transferred"
@@ -230,7 +230,7 @@ export function registerCallRoutes(app: FastifyInstance) {
     if (body.transcript && body.transcript.length > 0) {
       const entries: TranscriptEntry[] = body.transcript.map((t) => ({
         callId: body.callId,
-        tenantId: body.tenantId,
+        orgId: body.orgId,
         sequence: t.sequence,
         speaker: t.speaker,
         text: t.text,
@@ -243,7 +243,7 @@ export function registerCallRoutes(app: FastifyInstance) {
 
     await callStore.insertEvent({
       callId: body.callId,
-      tenantId: body.tenantId,
+      orgId: body.orgId,
       eventType: "call_ended",
       payload: {
         endReason: body.endReason,
@@ -265,8 +265,8 @@ export function registerCallRoutes(app: FastifyInstance) {
 
   app.post("/calls/event", async (request: FastifyRequest, reply: FastifyReply) => {
     const body = request.body as CallEvent;
-    if (!body.callId || !body.tenantId || !body.eventType) {
-      return reply.status(400).send({ error: "missing required fields: callId, tenantId, eventType" });
+    if (!body.callId || !body.orgId || !body.eventType) {
+      return reply.status(400).send({ error: "missing required fields: callId, orgId, eventType" });
     }
     await callStore.insertEvent(body);
     return reply.send({ ok: true });
@@ -279,20 +279,20 @@ export function registerCallRoutes(app: FastifyInstance) {
   app.get("/calls", {
     preHandler: resolvedAuthHook(["admin", "editor", "viewer"]),
     schema: {
-      querystring: Type.Object({ tenantId: Type.Optional(Type.String()) }),
+      querystring: Type.Object({ orgId: Type.Optional(Type.String()) }),
       response: { 200: CallsListEnvelopeSchema },
     },
   }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const tenantId = requireTenantForRequest(request, reply, (request.query as any).tenantId);
-    if (!tenantId) return;
+    const orgId = requireOrgForRequest(request, reply, (request.query as any).orgId);
+    if (!orgId) return;
 
-    const calls = await callStore.getCallsByTenant(tenantId);
+    const calls = await callStore.getCallsByOrganization(orgId);
 
     const toolEventRows = calls.length > 0
       ? (await query(
           `SELECT call_id, payload FROM call_events
-           WHERE tenant_id = $1 AND event_type = 'tool_called'`,
-          [tenantId]
+           WHERE org_id = $1 AND event_type = 'tool_called'`,
+          [orgId]
         )).rows
       : [];
 
@@ -336,13 +336,13 @@ export function registerCallRoutes(app: FastifyInstance) {
   app.get("/calls/live", {
     preHandler: resolvedAuthHook(["admin", "editor", "viewer"]),
   }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const tenantId = requireTenantForRequest(request, reply, (request.query as any).tenantId);
-    if (!tenantId) return;
+    const orgId = requireOrgForRequest(request, reply, (request.query as any).orgId);
+    if (!orgId) return;
 
     const result = await query(
-      `SELECT * FROM calls WHERE tenant_id = $1 AND status IN ('initiated','ringing','in_progress')
+      `SELECT * FROM calls WHERE org_id = $1 AND status IN ('initiated','ringing','in_progress')
        ORDER BY started_at DESC`,
-      [tenantId]
+      [orgId]
     );
 
     const liveCalls = await Promise.all(
