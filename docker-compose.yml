@@ -180,7 +180,6 @@ services:
       KAFKA_ENABLED: "false"
       EVENT_BUS_IMPL: redis
       LLM_PROVIDER: openai
-      LLM_MODEL: ${LLM_MODEL}
       LLM_MAX_TOKENS: "500"
       STT_MODEL: nova-2-phonecall
       CONCURRENCY_LIMIT: "20"

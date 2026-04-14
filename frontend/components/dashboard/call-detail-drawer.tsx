@@ -22,8 +22,8 @@ import {
 } from "lucide-react"
 import { format } from "date-fns"
 import { cn } from "@/lib/utils"
-import type { CallRecord, TimelineEvent } from "@/types/api"
-import { getTimelineForCall } from "@/lib/data/call-details"
+import type { CallRecord, TimelineEvent, TranscriptLine } from "@/types/api"
+import { getTimelineForCall, getTranscriptLines } from "@/lib/data/call-details"
 
 interface CallDetailDrawerProps {
   call: CallRecord | null
@@ -61,6 +61,7 @@ const eventColors = {
 export function CallDetailDrawer({ call, open, onOpenChange }: CallDetailDrawerProps) {
   const { toast } = useToast()
   const [timeline, setTimeline] = useState<TimelineEvent[]>([])
+  const [transcript, setTranscript] = useState<TranscriptLine[]>([])
   const [loading, setLoading] = useState(true)
 
   const handlePlayRecording = () => {
@@ -82,21 +83,27 @@ export function CallDetailDrawer({ call, open, onOpenChange }: CallDetailDrawerP
   useEffect(() => {
     if (!call) {
       setTimeline([])
+      setTranscript([])
       setLoading(false)
       return
     }
-    const loadTimeline = async () => {
+    const loadDetails = async () => {
       setLoading(true)
       try {
-        const data = await getTimelineForCall(call)
-        setTimeline(data as TimelineEvent[])
+        const [timelineData, transcriptData] = await Promise.all([
+          getTimelineForCall(call),
+          getTranscriptLines(call.callId),
+        ])
+        setTimeline(timelineData as TimelineEvent[])
+        setTranscript(transcriptData)
       } catch {
         setTimeline([])
+        setTranscript([])
       } finally {
         setLoading(false)
       }
     }
-    loadTimeline()
+    loadDetails()
   }, [call])
 
   if (!call) return null
@@ -213,6 +220,34 @@ export function CallDetailDrawer({ call, open, onOpenChange }: CallDetailDrawerP
                       )
                     })}
                   </div>
+                </CardContent>
+              </Card>
+
+              {/* Transcript */}
+              <Card className="rounded-lg shadow-sm">
+                <CardHeader>
+                  <CardTitle className="text-sm font-medium">Transcript</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  {transcript.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">No transcript available.</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {transcript.map((line) => (
+                        <div key={line.id} className="rounded-md border bg-muted/20 p-3">
+                          <div className="mb-1 flex items-center justify-between gap-2">
+                            <Badge variant={line.role === "agent" ? "default" : "outline"}>
+                              {line.role === "agent" ? "Agent" : "Caller"}
+                            </Badge>
+                            <span className="text-[11px] text-muted-foreground">
+                              {format(new Date(line.timestamp), "h:mm:ss a")}
+                            </span>
+                          </div>
+                          <p className="text-sm">{line.text}</p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </CardContent>
               </Card>
 

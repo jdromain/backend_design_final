@@ -10,7 +10,7 @@ import { Separator } from "@/components/ui/separator"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { NotesTags } from "./notes-tags"
-import type { CallRecord } from "@/types/api"
+import type { CallRecord, TimelineEvent, TranscriptLine, ToolActivity } from "@/types/api"
 import { cn } from "@/lib/utils"
 import { getTimelineForCall, getTranscriptLines, getToolActivities } from "@/lib/data/call-details"
 
@@ -38,9 +38,9 @@ function ResultBadge({ result }: { result: string }) {
 }
 
 export function CallDetailDrawer({ call, open, onClose, onCreateAction }: CallDetailDrawerProps) {
-  const [timelineEvents, setTimelineEvents] = useState<unknown[]>([])
-  const [transcriptLines, setTranscriptLines] = useState<unknown[]>([])
-  const [toolActivities, setToolActivities] = useState<unknown[]>([])
+  const [timelineEvents, setTimelineEvents] = useState<TimelineEvent[]>([])
+  const [transcriptLines, setTranscriptLines] = useState<TranscriptLine[]>([])
+  const [toolActivities, setToolActivities] = useState<ToolActivity[]>([])
   const [loading, setLoading] = useState(false)
 
   useEffect(() => {
@@ -224,7 +224,24 @@ export function CallDetailDrawer({ call, open, onClose, onCreateAction }: CallDe
               ) : transcriptLines.length === 0 ? (
                 <p className="text-xs text-muted-foreground">No transcript available.</p>
               ) : (
-                <p className="text-xs text-muted-foreground">{transcriptLines.length} turns</p>
+                <div className="space-y-2">
+                  <p className="text-xs text-muted-foreground">{transcriptLines.length} turns</p>
+                  <div className="space-y-2 rounded-lg border bg-muted/20 p-3">
+                    {transcriptLines.map((line) => (
+                      <div key={line.id} className="rounded-md border bg-background p-2">
+                        <div className="mb-1 flex items-center justify-between gap-2">
+                          <Badge variant={line.role === "agent" ? "default" : "outline"}>
+                            {line.role === "agent" ? "Agent" : "Caller"}
+                          </Badge>
+                          <span className="text-[11px] text-muted-foreground">
+                            {format(new Date(line.timestamp), "h:mm:ss a")}
+                          </span>
+                        </div>
+                        <p className="text-sm leading-relaxed">{line.text}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               )}
             </div>
 
