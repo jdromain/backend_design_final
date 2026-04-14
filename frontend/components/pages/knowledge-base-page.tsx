@@ -12,13 +12,21 @@ import { DocumentsTable, type KbDocument, type ProcessingStatus } from "@/compon
 import { DocumentDrawer } from "@/components/knowledge/document-drawer"
 import { CollectionsModal, type Collection } from "@/components/knowledge/collections-modal"
 import { AssignCollectionModal } from "@/components/knowledge/assign-collection-modal"
-import { TestRetrievalCard } from "@/components/knowledge/test-retrieval-card"
+import { TestRetrievalCard, type RetrievalResult } from "@/components/knowledge/test-retrieval-card"
 import { ErrorBoundary } from "@/components/error-boundary"
 import { OnboardingEmptyState } from "@/components/empty-state"
 import { TableSkeleton } from "@/components/loading-skeleton"
-import { getKnowledgeWorkspace } from "@/lib/data/knowledge"
+import { getKnowledgeWorkspace, ingestKnowledgeDocument, retrieveKnowledgePassages } from "@/lib/data/knowledge"
 
 const useMocks = process.env.NEXT_PUBLIC_USE_MOCKS === "true"
+const FALLBACK_NAMESPACE = "general"
+const SUPPORTED_API_UPLOAD_TYPES = new Set<KbDocument["type"]>(["txt", "md"])
+
+function inferFileType(file: File): KbDocument["type"] {
+  const ext = file.name.split(".").pop()?.toLowerCase()
+  if (ext === "pdf" || ext === "docx" || ext === "txt" || ext === "md") return ext
+  return "txt"
+}
 
 export function KnowledgeBasePage() {
   const { toast } = useToast()
@@ -37,35 +45,33 @@ export function KnowledgeBasePage() {
   const [collectionsModalOpen, setCollectionsModalOpen] = useState(false)
   const [assignModalOpen, setAssignModalOpen] = useState(false)
   const [assigningDocs, setAssigningDocs] = useState<KbDocument[]>([])
+  const [uploading, setUploading] = useState(false)
+
+  const loadWorkspace = async (opts?: { silent?: boolean }) => {
+    const silent = opts?.silent ?? false
+    if (!silent) setKbLoading(true)
+
+    try {
+      const w = await getKnowledgeWorkspace()
+      setDocuments(w.documents)
+      setCollections(w.collections)
+    } catch (e) {
+      console.error(e)
+      toast({
+        title: "Could not load knowledge base",
+        description: "Check API connection and auth token.",
+        variant: "destructive",
+      })
+      setDocuments([])
+      setCollections([])
+    } finally {
+      if (!silent) setKbLoading(false)
+    }
+  }
 
   useEffect(() => {
-    let cancelled = false
-    setKbLoading(true)
-    getKnowledgeWorkspace()
-      .then((w) => {
-        if (!cancelled) {
-          setDocuments(w.documents)
-          setCollections(w.collections)
-        }
-      })
-      .catch((e) => {
-        console.error(e)
-        if (!cancelled) {
-          toast({
-            title: "Could not load knowledge base",
-            description: "Check API connection and auth token.",
-            variant: "destructive",
-          })
-          setDocuments([])
-          setCollections([])
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setKbLoading(false)
-      })
-    return () => {
-      cancelled = true
-    }
+    void loadWorkspace()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [toast])
 
   // Computed values
@@ -106,41 +112,103 @@ export function KnowledgeBasePage() {
   }, [documents])
 
   // Handlers
-  const handleFilesSelected = (files: File[]) => {
-    if (!useMocks) {
+  const handleFilesSelected = async (files: File[]) => {
+    if (files.length === 0) return
+
+    if (useMocks) {
+      const newDocs: KbDocument[] = files.map((file, index) => ({
+        id: `doc_new_${Date.now()}_${index}`,
+        name: file.name,
+        type: inferFileType(file),
+        size: `${(file.size / 1024).toFixed(1)} KB`,
+        sizeBytes: file.size,
+        collectionId: null,
+        collectionName: null,
+        status: "queued" as ProcessingStatus,
+        processingProgress: 0,
+        chunks: 0,
+        tokenEstimate: 0,
+        usedByAgents: [],
+        uploadedAt: new Date(),
+        updatedAt: new Date(),
+      }))
+
+      setDocuments((prev) => [...newDocs, ...prev])
       toast({
-        title: "Upload via API",
-        description: "Document upload is not wired to the UI in API mode yet. Use platform-api POST /kb/docs or enable NEXT_PUBLIC_USE_MOCKS for local demos.",
+        title: "Upload started",
+        description: `${files.length} file(s) queued for processing`,
+      })
+
+      newDocs.forEach((doc) => {
+        simulateProcessing(doc.id)
       })
       return
     }
-    const newDocs: KbDocument[] = files.map((file, index) => ({
-      id: `doc_new_${Date.now()}_${index}`,
-      name: file.name,
-      type: (file.name.split(".").pop()?.toLowerCase() as KbDocument["type"]) || "txt",
-      size: `${(file.size / 1024).toFixed(1)} KB`,
-      sizeBytes: file.size,
-      collectionId: null,
-      collectionName: null,
-      status: "queued" as ProcessingStatus,
-      processingProgress: 0,
-      chunks: 0,
-      tokenEstimate: 0,
-      usedByAgents: [],
-      uploadedAt: new Date(),
-      updatedAt: new Date(),
-    }))
 
-    setDocuments((prev) => [...newDocs, ...prev])
-    toast({
-      title: "Upload started",
-      description: `${files.length} file(s) queued for processing`,
-    })
+    if (uploading) return
+    setUploading(true)
+    setKbLoading(true)
 
-    // Simulate processing
-    newDocs.forEach((doc) => {
-      simulateProcessing(doc.id)
-    })
+    try {
+      const targetNamespace =
+        collectionFilter !== "all" && collectionFilter !== "unassigned" ? collectionFilter : FALLBACK_NAMESPACE
+      let uploaded = 0
+      const failed: string[] = []
+
+      for (const file of files) {
+        const type = inferFileType(file)
+        if (!SUPPORTED_API_UPLOAD_TYPES.has(type)) {
+          failed.push(`${file.name} (unsupported format in API mode)`)
+          continue
+        }
+
+        const text = (await file.text()).trim()
+        if (!text) {
+          failed.push(`${file.name} (empty file)`)
+          continue
+        }
+
+        try {
+          const response = await ingestKnowledgeDocument({
+            namespace: targetNamespace,
+            text,
+            metadata: {
+              name: file.name,
+              filename: file.name,
+              type,
+              sizeBytes: file.size,
+            },
+            sync: true,
+          })
+          if (!response.ok) {
+            failed.push(`${file.name} (${response.error ?? "ingest failed"})`)
+            continue
+          }
+          uploaded++
+        } catch {
+          failed.push(`${file.name} (request failed)`)
+        }
+      }
+
+      await loadWorkspace({ silent: true })
+
+      if (uploaded > 0) {
+        toast({
+          title: "Knowledge upload complete",
+          description: `${uploaded} file(s) uploaded and embedded in "${targetNamespace}".`,
+        })
+      }
+      if (failed.length > 0) {
+        toast({
+          title: "Some files failed to upload",
+          description: failed.slice(0, 2).join("; "),
+          variant: "destructive",
+        })
+      }
+    } finally {
+      setKbLoading(false)
+      setUploading(false)
+    }
   }
 
   const simulateProcessing = (docId: string) => {
@@ -211,6 +279,13 @@ export function KnowledgeBasePage() {
   }
 
   const handleReprocess = (doc: KbDocument) => {
+    if (!useMocks) {
+      toast({
+        title: "Reprocess not wired in API mode",
+        description: "Re-upload the file to regenerate chunks and embeddings.",
+      })
+      return
+    }
     setDocuments((prev) =>
       prev.map((d) =>
         d.id === doc.id
@@ -223,6 +298,13 @@ export function KnowledgeBasePage() {
   }
 
   const handleBulkReprocess = () => {
+    if (!useMocks) {
+      toast({
+        title: "Reprocess not wired in API mode",
+        description: "Re-upload files to regenerate chunks and embeddings.",
+      })
+      return
+    }
     selectedIds.forEach((id) => {
       setDocuments((prev) =>
         prev.map((d) =>
@@ -288,6 +370,37 @@ export function KnowledgeBasePage() {
     }
   }
 
+  const handleLiveRetrievalSearch = async (query: string): Promise<RetrievalResult[]> => {
+    const namespaces = [
+      ...new Set(
+        documents
+          .filter((d) => d.status === "ready")
+          .map((d) => (d.collectionName ?? d.collectionId ?? FALLBACK_NAMESPACE).trim())
+          .filter((n) => n.length > 0),
+      ),
+    ]
+    if (namespaces.length === 0) return []
+
+    const docsById = new Map(documents.map((d) => [d.id, d]))
+    const passages = await retrieveKnowledgePassages({ query, namespaces, topK: 8 })
+
+    return passages.map((p, i) => {
+      const meta = p.metadata ?? {}
+      const docIdFromMeta = typeof meta.doc_id === "string" ? meta.doc_id : ""
+      const mappedDoc = docIdFromMeta ? docsById.get(docIdFromMeta) : undefined
+      const docNameFromMeta =
+        typeof meta.name === "string" ? meta.name : typeof meta.filename === "string" ? meta.filename : undefined
+
+      return {
+        id: p.id ?? `${docIdFromMeta || "doc"}_${i}`,
+        documentId: mappedDoc?.id ?? docIdFromMeta,
+        documentName: mappedDoc?.name ?? docNameFromMeta ?? "Knowledge Document",
+        chunkText: p.text,
+        score: p.similarity ?? 0,
+      }
+    })
+  }
+
   return (
     <ErrorBoundary>
       <div className="space-y-6">
@@ -315,9 +428,16 @@ export function KnowledgeBasePage() {
       {documents.length === 0 ? (
         <OnboardingEmptyState
           title="Get started with your knowledge base"
-          description="Upload documents to help your AI agent answer questions accurately. Supported formats: PDF, DOCX, TXT, MD."
+          description={
+            useMocks
+              ? "Upload documents to help your AI agent answer questions accurately. Supported formats: PDF, DOCX, TXT, MD."
+              : "Upload text documents to help your AI agent answer questions accurately. API mode currently supports TXT and MD."
+          }
           steps={[
-            { icon: Upload, text: "Upload your documents (PDF, DOCX, TXT, MD)" },
+            {
+              icon: Upload,
+              text: useMocks ? "Upload your documents (PDF, DOCX, TXT, MD)" : "Upload your documents (TXT, MD)",
+            },
             { icon: FileText, text: "Documents are automatically processed and chunked" },
             { icon: BookOpen, text: "Your agent uses this knowledge to answer questions" },
           ]}
@@ -327,7 +447,7 @@ export function KnowledgeBasePage() {
               const input = document.createElement("input")
               input.type = "file"
               input.multiple = true
-              input.accept = ".pdf,.docx,.txt,.md"
+              input.accept = useMocks ? ".pdf,.docx,.txt,.md" : ".txt,.md"
               input.onchange = (e) => {
                 const files = Array.from((e.target as HTMLInputElement).files || [])
                 if (files.length > 0) handleFilesSelected(files)
@@ -401,7 +521,12 @@ export function KnowledgeBasePage() {
       ) : null}
 
       {/* Test Retrieval */}
-      {documents.some((d) => d.status === "ready") && <TestRetrievalCard onResultClick={handleRetrievalResultClick} />}
+      {documents.some((d) => d.status === "ready") && (
+        <TestRetrievalCard
+          onResultClick={handleRetrievalResultClick}
+          onSearch={useMocks ? undefined : handleLiveRetrievalSearch}
+        />
+      )}
         </>
       )}
 

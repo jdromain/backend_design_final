@@ -85,6 +85,8 @@ export const env = {
 
   // API Keys
   OPENAI_API_KEY: optional("OPENAI_API_KEY", ""),
+  /** Canonical model id used for seeded/auto-provisioned agent configs. */
+  LLM_MODEL: optional("LLM_MODEL", ""),
   STT_API_KEY: optional("STT_API_KEY", ""),
   ELEVEN_API_KEY: optional("ELEVEN_API_KEY", ""),
   ELEVEN_VOICE_ID: optional("ELEVEN_VOICE_ID", ""),
@@ -122,6 +124,11 @@ if (env.EVENT_BUS_IMPL === "redis" && !env.REDIS_ENABLED) {
 
 if (env.KAFKA_ENABLED && !env.KAFKA_BROKERS) {
   console.error("[env] KAFKA_ENABLED=true but KAFKA_BROKERS is not set");
+  process.exit(1);
+}
+
+if (!env.LLM_MODEL.trim() && process.env.VITEST !== "true") {
+  console.error("[env] Missing required environment variable: LLM_MODEL");
   process.exit(1);
 }
 

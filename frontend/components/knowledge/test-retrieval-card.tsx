@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { ScrollArea } from "@/components/ui/scroll-area"
 
-interface RetrievalResult {
+export interface RetrievalResult {
   id: string
   documentId: string
   documentName: string
@@ -20,6 +20,7 @@ interface RetrievalResult {
 
 interface TestRetrievalCardProps {
   onResultClick: (documentId: string) => void
+  onSearch?: (query: string) => Promise<RetrievalResult[]>
 }
 
 const MOCK_RESULTS: RetrievalResult[] = [
@@ -49,7 +50,7 @@ const MOCK_RESULTS: RetrievalResult[] = [
   },
 ]
 
-export function TestRetrievalCard({ onResultClick }: TestRetrievalCardProps) {
+export function TestRetrievalCard({ onResultClick, onSearch }: TestRetrievalCardProps) {
   const [query, setQuery] = useState("")
   const [isSearching, setIsSearching] = useState(false)
   const [results, setResults] = useState<RetrievalResult[]>([])
@@ -58,10 +59,20 @@ export function TestRetrievalCard({ onResultClick }: TestRetrievalCardProps) {
     if (!query.trim()) return
 
     setIsSearching(true)
-    // Simulate search delay
-    await new Promise((r) => setTimeout(r, 800))
-    setResults(MOCK_RESULTS)
-    setIsSearching(false)
+    try {
+      if (onSearch) {
+        const liveResults = await onSearch(query)
+        setResults(liveResults)
+      } else {
+        // Simulate search delay
+        await new Promise((r) => setTimeout(r, 800))
+        setResults(MOCK_RESULTS)
+      }
+    } catch {
+      setResults([])
+    } finally {
+      setIsSearching(false)
+    }
   }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {

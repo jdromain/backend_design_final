@@ -2,7 +2,7 @@ import { assertMockSafety } from "./_env-check"
 import { getMockKnowledgeCollections, getMockKnowledgeDocuments } from "@/data/mock/knowledge"
 import type { KbDocument, ProcessingStatus } from "@/components/knowledge/documents-table"
 import type { Collection } from "@/components/knowledge/collections-modal"
-import { appendOrgQuery, get } from "@/lib/api-client"
+import { appendOrgQuery, get, post } from "@/lib/api-client"
 
 assertMockSafety()
 
@@ -18,6 +18,33 @@ export type KbDocumentApiRow = {
   chunks: number
   ingestedAt: string
   updatedAt: string
+}
+
+type IngestKnowledgeBody = {
+  namespace: string
+  text: string
+  metadata?: Record<string, unknown>
+  doc_id?: string
+  sync?: boolean
+}
+
+type IngestKnowledgeResponse = {
+  ok: boolean
+  doc_id: string
+  chunks?: number
+  mode?: "sync" | "async"
+  error?: string
+}
+
+type KbRetrievePassage = {
+  id: string
+  text: string
+  metadata?: Record<string, unknown>
+  similarity?: number
+}
+
+type KbRetrieveResponse = {
+  passages: KbRetrievePassage[]
 }
 
 function formatBytes(n: number): string {
@@ -77,4 +104,48 @@ export async function getKnowledgeWorkspace(): Promise<{ documents: KbDocument[]
     documents,
     collections: documents.length > 0 ? deriveCollections(documents) : [],
   }
+}
+
+export async function ingestKnowledgeDocument(input: IngestKnowledgeBody): Promise<IngestKnowledgeResponse> {
+  if (useMocks) {
+    return {
+      ok: true,
+      doc_id: input.doc_id ?? `mock_${Date.now()}`,
+      chunks: Math.max(1, Math.floor(input.text.length / 1200)),
+      mode: "sync",
+    }
+  }
+  return post<IngestKnowledgeResponse>(appendOrgQuery("/kb/docs"), {
+    namespace: input.namespace,
+    text: input.text,
+    metadata: input.metadata ?? {},
+    doc_id: input.doc_id,
+    sync: input.sync ?? true,
+  })
+}
+
+export async function retrieveKnowledgePassages(params: {
+  query: string
+  namespaces: string[]
+  topK?: number
+}): Promise<KbRetrievePassage[]> {
+  if (useMocks) return []
+
+  const uniqueNamespaces = [...new Set(params.namespaces.map((n) => n.trim()).filter(Boolean))]
+  if (uniqueNamespaces.length === 0) return []
+
+  const results = await Promise.all(
+    uniqueNamespaces.map((namespace) =>
+      post<KbRetrieveResponse>(appendOrgQuery("/kb/retrieve"), {
+        namespace,
+        query: params.query,
+        topK: params.topK ?? 5,
+      }).catch(() => ({ passages: [] })),
+    ),
+  )
+
+  return results
+    .flatMap((r) => r.passages ?? [])
+    .sort((a, b) => (b.similarity ?? 0) - (a.similarity ?? 0))
+    .slice(0, params.topK ?? 8)
 }

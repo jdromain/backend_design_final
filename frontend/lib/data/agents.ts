@@ -1,6 +1,6 @@
 import type { Agent } from "@/components/agents/agents-table"
 import { assertMockSafety } from "./_env-check"
-import { appendOrgQuery, get } from "@/lib/api-client"
+import { appendOrgQuery, get, patch } from "@/lib/api-client"
 
 assertMockSafety()
 
@@ -24,6 +24,19 @@ export type AgentDetailApi = {
   status: "active" | "paused" | "draft"
   agentType: "booking" | "support" | "sales" | "custom"
 }
+
+export type UpdateAgentDetailPayload = Partial<{
+  name: string
+  description: string
+  systemPrompt: string
+  temperature: number
+  maxTokens: number
+  voice: string
+  silenceTimeout: number
+  interruptionSensitivity: number
+  kbNamespace: string
+  toolAccess: string[]
+}>
 
 type ApiAgentListRow = {
   id: string
@@ -143,4 +156,17 @@ export async function getAgentDetail(agentId: string): Promise<AgentDetailApi> {
     }
   }
   return get<AgentDetailApi>(appendOrgQuery(`/agents/${encodeURIComponent(agentId)}`))
+}
+
+export async function updateAgentDetail(agentId: string, payload: UpdateAgentDetailPayload): Promise<AgentDetailApi> {
+  if (useMocks) {
+    const current = await getAgentDetail(agentId)
+    return {
+      ...current,
+      ...payload,
+      kbNamespace: payload.kbNamespace ?? current.kbNamespace,
+      toolAccess: payload.toolAccess ?? current.toolAccess,
+    }
+  }
+  return patch<AgentDetailApi>(appendOrgQuery(`/agents/${encodeURIComponent(agentId)}`), payload)
 }

@@ -52,7 +52,7 @@ export const env = {
   // LLM
   LLM_PROVIDER: optional("LLM_PROVIDER", "openai"),
   OPENAI_API_KEY: optional("OPENAI_API_KEY", ""),
-  LLM_MODEL: optional("LLM_MODEL", "gpt-4o-mini"),
+  LLM_MODEL: optional("LLM_MODEL", ""),
   LLM_MAX_TOKENS: optionalInt("LLM_MAX_TOKENS", 500),
 
   // STT (Deepgram)
@@ -110,5 +110,10 @@ if (env.EVENT_BUS_IMPL === "redis" && !env.REDIS_ENABLED) {
 
 if (env.KAFKA_ENABLED && !env.KAFKA_BROKERS) {
   console.error("[env] KAFKA_ENABLED=true but KAFKA_BROKERS is not set");
+  process.exit(1);
+}
+
+if (!env.LLM_MODEL.trim()) {
+  console.error("[env] Missing required environment variable: LLM_MODEL");
   process.exit(1);
 }

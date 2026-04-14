@@ -73,7 +73,7 @@ export class ConfigCache {
   }
 }
 
-export function makeDefaultSnapshot(orgId: string, lob = "default"): {
+export function makeDefaultSnapshot(orgId: string, lob = "default", llmProfileId = ""): {
   phoneNumbers: PhoneNumberConfig[];
   agents: AgentConfigSnapshot[];
   plans: PlanSnapshot[];
@@ -94,7 +94,7 @@ export function makeDefaultSnapshot(orgId: string, lob = "default"): {
       friday: [{ open: "09:00", close: "17:00" }]
     },
     languagePrefs: ["en"],
-    llmProfileId: "gpt-4o",
+    llmProfileId,
     toolAccess: ["book_appointment"],
     kbNamespace: "default-kb",
     maxCallDurationSec: 900,
@@ -126,4 +126,3 @@ export function makeDefaultSnapshot(orgId: string, lob = "default"): {
     lob
   };
 }
-

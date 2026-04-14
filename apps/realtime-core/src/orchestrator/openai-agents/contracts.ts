@@ -94,6 +94,14 @@ export const AssistantTurnOutputSchema = z.object({
     retryReason: z.string().optional(),
     turnLatencyMs: z.number().nonnegative(),
     specialist: SpecialistRouteSchema,
+    history_len: z.number().int().nonnegative().optional(),
+    active_agent: z.string().optional(),
+    tool_calls: z.array(z.string()).optional(),
+    approval_gate_state: z
+      .enum(["none", "awaiting_confirmation", "approved_for_turn", "rejected"])
+      .optional(),
+    ttft_ms: z.number().nonnegative().optional(),
+    llm_total_ms: z.number().nonnegative().optional(),
   }),
 });
 

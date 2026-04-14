@@ -33,8 +33,9 @@ import { ConfirmDialog } from "@/components/confirm-dialog"
 import { toast } from "@/hooks/use-toast"
 import { Phone, CheckCircle, Clock, Users } from "lucide-react"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { getAgentDetail } from "@/lib/data/agents"
+import { getAgentDetail, updateAgentDetail } from "@/lib/data/agents"
 import { getAgentPerformance } from "@/lib/data/analytics"
+import { getKnowledgeWorkspace } from "@/lib/data/knowledge"
 
 interface AgentConfig {
   name: string
@@ -45,6 +46,7 @@ interface AgentConfig {
   voice: string
   silenceTimeout: number
   interruptionSensitivity: number
+  kbNamespace: string
   version?: number
 }
 
@@ -86,6 +88,7 @@ const emptyConfig = (): AgentConfig => ({
   voice: "alloy",
   silenceTimeout: 5,
   interruptionSensitivity: 0.5,
+  kbNamespace: "",
   version: 1,
 })
 
@@ -96,6 +99,7 @@ export function AgentDetailPage({ agentId, onBack }: AgentDetailPageProps) {
   const [originalConfig, setOriginalConfig] = useState<AgentConfig>(emptyConfig)
   const [tools, setTools] = useState<Tool[]>([])
   const [collections, setCollections] = useState<KBCollection[]>([])
+  const [availableCollections, setAvailableCollections] = useState<KBCollection[]>([])
   const [activityLog, setActivityLog] = useState<ActivityLog[]>([])
   const [recentCalls, setRecentCalls] = useState<
     { id: string; caller: string; duration: string; outcome: string; timestamp: string }[]
@@ -116,8 +120,8 @@ export function AgentDetailPage({ agentId, onBack }: AgentDetailPageProps) {
   useEffect(() => {
     let cancelled = false
     setIsLoading(true)
-    Promise.all([getAgentDetail(agentId), getAgentPerformance().catch(() => null)])
-      .then(([detail, performance]) => {
+    Promise.all([getAgentDetail(agentId), getAgentPerformance().catch(() => null), getKnowledgeWorkspace().catch(() => null)])
+      .then(([detail, performance, knowledge]) => {
         if (cancelled) return
         const next: AgentConfig = {
           name: detail.name,
@@ -128,6 +132,7 @@ export function AgentDetailPage({ agentId, onBack }: AgentDetailPageProps) {
           voice: detail.voice,
           silenceTimeout: detail.silenceTimeout,
           interruptionSensitivity: detail.interruptionSensitivity,
+          kbNamespace: detail.kbNamespace ?? "",
           version: detail.version,
         }
         setConfig(next)
@@ -140,9 +145,21 @@ export function AgentDetailPage({ agentId, onBack }: AgentDetailPageProps) {
             enabled: true,
           })),
         )
+        const available = (knowledge?.collections ?? []).map((c) => ({
+          id: c.id,
+          name: c.name,
+          documentCount: c.docsCount,
+          status: "connected" as const,
+        }))
+        setAvailableCollections(available)
         setCollections(
           detail.kbNamespace
-            ? [{ id: "kb-1", name: detail.kbNamespace, documentCount: 0, status: "connected" as const }]
+            ? [{
+                id: detail.kbNamespace,
+                name: detail.kbNamespace,
+                documentCount: available.find((c) => c.name === detail.kbNamespace)?.documentCount ?? 0,
+                status: "connected" as const,
+              }]
             : [],
         )
         setActivityLog([])
@@ -173,14 +190,64 @@ export function AgentDetailPage({ agentId, onBack }: AgentDetailPageProps) {
     setHasUnsavedChanges(JSON.stringify(config) !== JSON.stringify(originalConfig))
   }, [config, originalConfig])
 
-  const handleSave = () => {
-    setOriginalConfig(config)
-    setHasUnsavedChanges(false)
-    toast({ title: "Changes Saved", description: "Agent configuration has been updated" })
+  const handleSave = async () => {
+    try {
+      const updated = await updateAgentDetail(agentId, {
+        name: config.name,
+        description: config.description,
+        systemPrompt: config.systemPrompt,
+        temperature: config.temperature,
+        maxTokens: config.maxTokens,
+        voice: config.voice,
+        silenceTimeout: config.silenceTimeout,
+        interruptionSensitivity: config.interruptionSensitivity,
+        kbNamespace: config.kbNamespace,
+        toolAccess: tools.filter((t) => t.enabled).map((t) => t.name),
+      })
+
+      const next: AgentConfig = {
+        name: updated.name,
+        description: updated.description,
+        systemPrompt: updated.systemPrompt,
+        temperature: updated.temperature,
+        maxTokens: updated.maxTokens,
+        voice: updated.voice,
+        silenceTimeout: updated.silenceTimeout,
+        interruptionSensitivity: updated.interruptionSensitivity,
+        kbNamespace: updated.kbNamespace ?? "",
+        version: updated.version,
+      }
+      setConfig(next)
+      setOriginalConfig(next)
+      setCollections(
+        updated.kbNamespace
+          ? [{
+              id: updated.kbNamespace,
+              name: updated.kbNamespace,
+              documentCount: availableCollections.find((c) => c.name === updated.kbNamespace)?.documentCount ?? 0,
+              status: "connected" as const,
+            }]
+          : [],
+      )
+      setHasUnsavedChanges(false)
+      toast({ title: "Changes Saved", description: "Agent configuration has been updated" })
+    } catch {
+      toast({ title: "Save failed", description: "Could not update agent configuration." })
+    }
   }
 
   const handleDiscard = () => {
     setConfig(originalConfig)
+    setCollections(
+      originalConfig.kbNamespace
+        ? [{
+            id: originalConfig.kbNamespace,
+            name: originalConfig.kbNamespace,
+            documentCount: availableCollections.find((c) => c.name === originalConfig.kbNamespace)?.documentCount ?? 0,
+            status: "connected" as const,
+          }]
+        : [],
+    )
     setHasUnsavedChanges(false)
     setDiscardConfirmOpen(false)
   }
@@ -531,17 +598,48 @@ export function AgentDetailPage({ agentId, onBack }: AgentDetailPageProps) {
                         >
                           {collection.status}
                         </Badge>
-                        <Button variant="ghost" size="sm">
-                          View
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => {
+                            setConfig({ ...config, kbNamespace: "" })
+                            setCollections([])
+                          }}
+                        >
+                          Remove
                         </Button>
                       </div>
                     </div>
                   ))
                 )}
               </div>
-              <Button variant="outline" className="w-full mt-4 bg-transparent">
-                Add Collection
-              </Button>
+              <div className="mt-4 flex gap-2">
+                <select
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  value={config.kbNamespace}
+                  onChange={(e) => {
+                    const ns = e.target.value
+                    setConfig({ ...config, kbNamespace: ns })
+                    setCollections(
+                      ns
+                        ? [{
+                            id: ns,
+                            name: ns,
+                            documentCount: availableCollections.find((c) => c.name === ns)?.documentCount ?? 0,
+                            status: "connected" as const,
+                          }]
+                        : [],
+                    )
+                  }}
+                >
+                  <option value="">No collection</option>
+                  {availableCollections.map((collection) => (
+                    <option key={collection.id} value={collection.name}>
+                      {collection.name} ({collection.documentCount} docs)
+                    </option>
+                  ))}
+                </select>
+              </div>
             </CardContent>
           </Card>
         </TabsContent>

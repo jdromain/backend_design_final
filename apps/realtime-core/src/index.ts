@@ -109,7 +109,7 @@ async function bootstrap(): Promise<void> {
     }
   } catch (err) {
     logger.warn("failed to hydrate from platform-api, using default snapshot", { error: (err as Error).message });
-    cache.hydrate(makeDefaultSnapshot(env.REALTIME_BOOTSTRAP_ORG_ID));
+    cache.hydrate(makeDefaultSnapshot(env.REALTIME_BOOTSTRAP_ORG_ID, "default", env.LLM_MODEL));
   }
 
   await bus.subscribe("ConfigChanged", async (event: TypedEventEnvelope<"ConfigChanged">) => {

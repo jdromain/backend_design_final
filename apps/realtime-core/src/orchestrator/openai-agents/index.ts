@@ -31,6 +31,4 @@ export async function fetchKbPassages(
   return [];
 }
 
-export { TurnOrchestratorV2 } from "./turnOrchestratorV2";
-export type { OnSentenceCallback, TurnOrchestratorV2Result } from "./turnOrchestratorV2";
 export type { TurnDiagnostics } from "./contracts";

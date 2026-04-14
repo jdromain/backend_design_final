@@ -98,6 +98,7 @@ export class CallController {
     try {
       this.throwIfAborted(ctx?.signal);
       session = new CallSession(phoneConfig, agentConfig, { callId });
+      await session.restoreFromStore();
       mediaSession = await this.deps.media.startSession({ callId: session.id, did, orgId });
 
       await this.publishCallStarted({ session, did, orgId, phoneConfig, callerNumber: args.callerNumber });
@@ -162,7 +163,7 @@ export class CallController {
     // 1. Send greeting
     this.throwIfAborted(signal);
     const greet = session.greet();
-    if (tts && greet.type === "speak") {
+    if (tts && greet.type === "speak" && greet.text.trim().length > 0) {
       const ttsStart = Date.now();
       await this.synthesizeAndSend(tts, greet.text, mediaSession, bridgeConnection,
         (chars, seconds) => session.addTtsUsage(chars, seconds), signal);

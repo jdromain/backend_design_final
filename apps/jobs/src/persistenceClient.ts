@@ -80,4 +80,17 @@ export const persistenceClient = {
       logger.warn("markDocumentEmbedded failed", { error: (err as Error).message, orgId, docId });
     }
   },
+
+  async markDocumentFailed(orgId: string, docId: string): Promise<void> {
+    try {
+      await getPool().query(
+        `UPDATE kb_documents
+         SET status = 'failed', updated_at = now()
+         WHERE org_id = $1 AND doc_id = $2`,
+        [orgId, docId]
+      );
+    } catch (err) {
+      logger.warn("markDocumentFailed failed", { error: (err as Error).message, orgId, docId });
+    }
+  },
 };

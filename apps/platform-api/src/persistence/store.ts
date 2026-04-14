@@ -181,6 +181,32 @@ export class PersistenceStore {
     }
   }
 
+  async markDocumentEmbedded(orgId: string, docId: string, chunks: number): Promise<void> {
+    try {
+      await query(
+        `UPDATE kb_documents
+         SET embedded_chunks = $1, status = 'embedded', updated_at = now()
+         WHERE org_id = $2 AND doc_id = $3`,
+        [chunks, orgId, docId]
+      );
+    } catch (err) {
+      logger.warn("markDocumentEmbedded failed", { error: (err as Error).message, orgId, docId });
+    }
+  }
+
+  async markDocumentFailed(orgId: string, docId: string): Promise<void> {
+    try {
+      await query(
+        `UPDATE kb_documents
+         SET status = 'failed', updated_at = now()
+         WHERE org_id = $1 AND doc_id = $2`,
+        [orgId, docId]
+      );
+    } catch (err) {
+      logger.warn("markDocumentFailed failed", { error: (err as Error).message, orgId, docId });
+    }
+  }
+
   async loadDocuments(filter: { orgId: string; namespace?: string }): Promise<StoredDocument[]> {
     try {
       let sql = "SELECT * FROM kb_documents WHERE org_id = $1";

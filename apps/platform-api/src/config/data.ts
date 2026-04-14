@@ -7,6 +7,7 @@ import {
   RouteType,
   TypedEventEnvelope
 } from "@rezovo/core-types";
+import { env } from "../env";
 
 type ConfigSnapshot = {
   orgId: string;
@@ -64,7 +65,7 @@ const defaultAgentConfig: AgentConfigSnapshot = {
     friday: [{ open: "09:00", close: "17:00" }]
   },
   languagePrefs: ["en"],
-  llmProfileId: "gpt-4o-mini",
+  llmProfileId: env.LLM_MODEL,
   toolAccess: ["book_appointment", "send_sms"],
   kbNamespace: "general",
   maxCallDurationSec: 900,
@@ -203,4 +204,3 @@ export function buildConfigChangedEvent(payload: {
 export function createDefaultOrganizationConfig(orgId: string, lob = "default"): ConfigSnapshot {
   return getSnapshot(orgId, lob);
 }
-

@@ -13,6 +13,7 @@ import { PgVectorStore, OpenAIEmbedder } from "@rezovo/vector-store";
 import { getPool } from "./persistence/dbClient";
 import { PersistenceStore } from "./persistence/store";
 import { env } from "./env";
+import { requireOrgForRequest } from "./auth/orgScope";
 
 const logger = createLogger({ service: "platform-api", module: "kb" });
 const persistence = new PersistenceStore();
@@ -36,16 +37,16 @@ function getVectorStore(): PgVectorStore {
 // ─── Types ───
 
 type KbRetrieveBody = {
-  org_id: string;
-  business_id: string;
+  org_id?: string;
+  business_id?: string;
   namespace: string;
   query: string;
   topK?: number;
 };
 
 type KbDocsBody = {
-  org_id: string;
-  business_id: string;
+  org_id?: string;
+  business_id?: string;
   namespace: string;
   doc_id?: string;
   text: string;
@@ -57,6 +58,51 @@ type KbStatusQuery = {
   orgId: string;
   docId: string;
 };
+
+function asNonEmptyString(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function resolveOrgIdForKbRequest(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  bodyOrgId: unknown,
+): string | null {
+  const providedOrgId = asNonEmptyString(bodyOrgId);
+
+  if (request.internalServiceAuth) {
+    if (!providedOrgId) {
+      reply.status(400);
+      return null;
+    }
+    return providedOrgId;
+  }
+
+  return requireOrgForRequest(request, reply, providedOrgId);
+}
+
+async function resolveBusinessIdForOrg(orgId: string): Promise<string> {
+  const explicit = asNonEmptyString(orgId);
+  if (!explicit) return "business-default";
+
+  try {
+    const result = await getPool().query<{ business_id: string | null }>(
+      "SELECT business_id FROM organizations WHERE id = $1 LIMIT 1",
+      [orgId]
+    );
+    const dbValue = asNonEmptyString(result.rows[0]?.business_id);
+    if (dbValue) return dbValue;
+  } catch (err) {
+    logger.warn("failed to resolve business id for KB request", {
+      orgId,
+      error: (err as Error).message,
+    });
+  }
+
+  return `business-${orgId}`;
+}
 
 // ─── Text Chunker (inline for sync ingestion) ───
 
@@ -113,27 +159,33 @@ export async function kbRetrieveHandler(
   reply: FastifyReply
 ): Promise<unknown> {
   const { org_id, business_id, namespace, query, topK } = request.body ?? {};
-  if (!org_id || !business_id || !namespace || !query) {
-    reply.status(400);
-    return { ok: false, error: "org_id, business_id, namespace, query required" };
+  const resolvedOrgId = resolveOrgIdForKbRequest(request, reply, org_id);
+  if (!resolvedOrgId) {
+    return reply;
   }
 
-  logger.info("kb retrieve", { org_id, business_id, namespace, topK: topK ?? 5 });
+  const effectiveBusinessId = asNonEmptyString(business_id) ?? (await resolveBusinessIdForOrg(resolvedOrgId));
+  if (!namespace || !query) {
+    reply.status(400);
+    return { ok: false, error: "namespace and query required" };
+  }
+
+  logger.info("kb retrieve", { org_id: resolvedOrgId, business_id: effectiveBusinessId, namespace, topK: topK ?? 5 });
 
   try {
     const store = getVectorStore();
     const passages = await store.query({
-      orgId: org_id,
+      orgId: resolvedOrgId,
       namespace,
       queryText: query,
       topK: topK ?? 5,
       threshold: 0.3, // Generous threshold — let the model decide relevance
     });
 
-    logger.info("kb retrieve results", { org_id, namespace, matchCount: passages.length });
+    logger.info("kb retrieve results", { org_id: resolvedOrgId, namespace, matchCount: passages.length });
     return { passages };
   } catch (err) {
-    logger.error("kb retrieve failed", { error: (err as Error).message, org_id, namespace });
+    logger.error("kb retrieve failed", { error: (err as Error).message, org_id: resolvedOrgId, namespace });
     // Return empty results rather than crashing — agent can still function without KB
     return { passages: [] };
   }
@@ -145,15 +197,21 @@ export async function kbIngestHandler(
   reply: FastifyReply
 ): Promise<unknown> {
   const { org_id, business_id, namespace, text, metadata, doc_id } = request.body ?? {};
-  if (!org_id || !business_id || !namespace || !text) {
-    reply.status(400);
-    return { ok: false, error: "org_id, business_id, namespace, text required" };
+  const resolvedOrgId = resolveOrgIdForKbRequest(request, reply, org_id);
+  if (!resolvedOrgId) {
+    return reply;
   }
+
+  if (!namespace || !text) {
+    reply.status(400);
+    return { ok: false, error: "namespace and text required" };
+  }
+  const effectiveBusinessId = asNonEmptyString(business_id) ?? (await resolveBusinessIdForOrg(resolvedOrgId));
 
   const id = doc_id ?? uuidv4();
   const docRecord = {
-    orgId: org_id,
-    businessId: business_id,
+    orgId: resolvedOrgId,
+    businessId: effectiveBusinessId,
     namespace,
     docId: id,
     text,
@@ -166,40 +224,48 @@ export async function kbIngestHandler(
   const useSync = request.body?.sync === true || !env.KAFKA_ENABLED;
 
   if (useSync) {
-    logger.info("kb doc ingested, embedding inline (sync mode)", { org_id, namespace, doc_id: id, textLen: text.length });
+    logger.info("kb doc ingested, embedding inline (sync mode)", { org_id: resolvedOrgId, namespace, doc_id: id, textLen: text.length });
 
     try {
       const store = getVectorStore();
       const chunks = chunkTextInline(text);
 
       if (chunks.length === 0) {
+        await persistence.markDocumentEmbedded(resolvedOrgId, id, 0);
         return { ok: true, doc_id: id, chunks: 0, mode: "sync" };
       }
 
       const insertedCount = await store.upsertChunks({
         docId: id,
-        orgId: org_id,
+        orgId: resolvedOrgId,
         namespace,
         chunks: chunks.map(c => ({
           index: c.index,
           text: c.text,
-          metadata: { business_id, doc_id: id, ...metadata },
+          metadata: { business_id: effectiveBusinessId, doc_id: id, ...metadata },
         })),
       });
 
+      await persistence.markDocumentEmbedded(resolvedOrgId, id, insertedCount);
       logger.info("kb sync embed complete", { doc_id: id, chunks: insertedCount, namespace });
       return { ok: true, doc_id: id, chunks: insertedCount, mode: "sync" };
     } catch (err) {
+      await persistence.markDocumentFailed(resolvedOrgId, id);
       logger.error("kb sync embed failed", { doc_id: id, error: (err as Error).message });
       reply.status(500);
       return { ok: false, error: "Embedding failed: " + (err as Error).message };
     }
   }
 
-  logger.info("kb doc ingested, queuing embed job (async mode)", { org_id, business_id, namespace, doc_id: id });
+  logger.info("kb doc ingested, queuing embed job (async mode)", {
+    org_id: resolvedOrgId,
+    business_id: effectiveBusinessId,
+    namespace,
+    doc_id: id,
+  });
   const envelope = createEventEnvelope({
     eventType: "DocIngestRequested",
-    orgId: org_id,
+    orgId: resolvedOrgId,
     payload: { doc_id: id, namespace },
   });
   await eventBus.publish(envelope);

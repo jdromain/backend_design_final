@@ -102,6 +102,7 @@ export async function registerKbReembedWorker(bus: EventBusClient): Promise<() =
         textLength: document.text.length,
       });
     } catch (err) {
+      await persistenceClient.markDocumentFailed(orgId, docId);
       logger.error("kb ingest failed", {
         docId,
         namespace,

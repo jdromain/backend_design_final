@@ -69,8 +69,14 @@ const TEMPLATES = [
   { id: "sales", name: "Sales Agent", description: "Product inquiries and lead qualification" },
 ]
 
+const OPENAI_MODELS = (process.env.NEXT_PUBLIC_LLM_MODELS ?? process.env.NEXT_PUBLIC_LLM_MODEL ?? "")
+  .split(",")
+  .map((m) => m.trim())
+  .filter(Boolean)
+const DEFAULT_LLM_MODEL = process.env.NEXT_PUBLIC_LLM_MODEL?.trim() || OPENAI_MODELS[0] || ""
+
 const LLM_PROVIDERS = [
-  { id: "openai", name: "OpenAI", models: ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo"] },
+  { id: "openai", name: "OpenAI", models: OPENAI_MODELS },
   { id: "anthropic", name: "Anthropic", models: ["claude-3-5-sonnet", "claude-3-opus", "claude-3-haiku"] },
   { id: "google", name: "Google", models: ["gemini-1.5-pro", "gemini-1.5-flash"] },
 ]
@@ -113,7 +119,7 @@ export function CreateAgentWizard({ open, onOpenChange, existingAgents, onCreate
     name: "",
     description: "",
     llmProvider: "openai",
-    llmModel: "gpt-4o",
+    llmModel: DEFAULT_LLM_MODEL,
     llmTemperature: 0.7,
     voiceId: "alloy",
     knowledgeNamespaces: [],
@@ -134,6 +140,8 @@ export function CreateAgentWizard({ open, onOpenChange, existingAgents, onCreate
         return true
       case 1: // Basics
         return formData.name.trim().length > 0
+      case 2: // Voice & Model
+        return formData.llmModel.trim().length > 0
       default:
         return true
     }
@@ -175,7 +183,7 @@ export function CreateAgentWizard({ open, onOpenChange, existingAgents, onCreate
         name: "",
         description: "",
         llmProvider: "openai",
-        llmModel: "gpt-4o",
+        llmModel: DEFAULT_LLM_MODEL,
         llmTemperature: 0.7,
         voiceId: "alloy",
         knowledgeNamespaces: [],
@@ -368,6 +376,11 @@ export function CreateAgentWizard({ open, onOpenChange, existingAgents, onCreate
                   ))}
                 </SelectContent>
               </Select>
+              {selectedProvider?.models.length === 0 ? (
+                <p className="text-xs text-destructive">
+                  No models configured for this provider. Set the relevant NEXT_PUBLIC_* model env vars.
+                </p>
+              ) : null}
             </div>
 
             <div className="space-y-4">
