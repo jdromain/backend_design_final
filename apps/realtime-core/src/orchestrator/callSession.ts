@@ -14,6 +14,7 @@ import {
   RunContext,
   type Agent,
   type AgentInputItem,
+  type RunResult,
   type RunItem,
   type RunToolCallItem,
 } from "@openai/agents";
@@ -34,7 +35,7 @@ import {
   type ApprovalGateState,
   type CallContext,
 } from "./openai-agents/agents";
-import { runStreamWithModelGuardrails, validateRunInputHistory } from "./openai-agents/modelGuardrails";
+import { runStreamWithModelGuardrails, runWithModelGuardrails, validateRunInputHistory } from "./openai-agents/modelGuardrails";
 import { sessionStore } from "./openai-agents/sessionStore";
 
 export type OrchestratorResponse =
@@ -47,6 +48,12 @@ export type OnSentenceCallback = (sentence: string) => void | Promise<void>;
 const logger = createLogger({ service: "realtime-core", module: "callSession" });
 
 const FALLBACK_STREAM_REPLY = "I can help with that. Could you share one more detail?";
+const LOG_TEXT_PREVIEW = 220;
+
+function textPreview(text: string, maxLen = LOG_TEXT_PREVIEW): string {
+  if (text.length <= maxLen) return text;
+  return `${text.slice(0, maxLen)}...`;
+}
 
 function formatOpeningHours(openingHours: AgentConfigSnapshot["openingHours"]): string {
   const days = Object.entries(openingHours ?? {});
@@ -108,20 +115,69 @@ function extractToolCalls(runItems: RunItem[]): string[] {
     if (item.type !== "tool_call_item") continue;
 
     const toolCall = item as RunToolCallItem;
-    const raw = toolCall.rawItem;
-    if (!raw) continue;
+    const raw = toolCall.rawItem as unknown;
+    if (!raw || typeof raw !== "object") continue;
 
-    if (raw.type === "function_call" || raw.type === "hosted_tool_call") {
-      calls.push(raw.name);
+    const rawRecord = raw as Record<string, unknown>;
+    const rawType = typeof rawRecord.type === "string" ? rawRecord.type : "";
+    const rawName = typeof rawRecord.name === "string" ? rawRecord.name : "";
+
+    if ((rawType === "function_call" || rawType === "hosted_tool_call") && rawName) {
+      calls.push(rawName);
       continue;
     }
 
-    if (raw.type === "computer_call") {
+    if (rawType === "computer_call") {
       calls.push("computer_call");
     }
   }
 
   return calls;
+}
+
+function extractAssistantTextFromHistory(history: AgentInputItem[]): string {
+  for (let i = history.length - 1; i >= 0; i--) {
+    const item = history[i] as unknown as Record<string, unknown>;
+    if (!item || item.role !== "assistant" || !Array.isArray(item.content)) continue;
+    const texts = (item.content as Array<Record<string, unknown>>)
+      .filter((part) => part.type === "output_text" && typeof part.text === "string")
+      .map((part) => String(part.text).trim())
+      .filter((text) => text.length > 0);
+    if (texts.length > 0) {
+      return texts.join(" ");
+    }
+  }
+  return "";
+}
+
+function historyRole(item: AgentInputItem): string {
+  const role = (item as unknown as Record<string, unknown>).role;
+  return typeof role === "string" ? role : "unknown";
+}
+
+function summarizeHistoryTail(history: AgentInputItem[], maxItems = 4): Array<Record<string, unknown>> {
+  return history.slice(-maxItems).map((item) => {
+    const raw = item as unknown as Record<string, unknown>;
+    const content = Array.isArray(raw.content) ? raw.content : [];
+    return {
+      role: historyRole(item),
+      contentTypes: content
+        .map((part) => (part && typeof part === "object" ? (part as Record<string, unknown>).type : undefined))
+        .filter((type): type is string => typeof type === "string"),
+      status: typeof raw.status === "string" ? raw.status : undefined,
+    };
+  });
+}
+
+function errorName(error: unknown): string {
+  if (error instanceof Error && error.name) return error.name;
+  const name = (error as { name?: unknown } | null)?.name;
+  return typeof name === "string" && name.length > 0 ? name : "UnknownError";
+}
+
+function errorStackPreview(error: unknown): string | undefined {
+  if (!(error instanceof Error) || typeof error.stack !== "string") return undefined;
+  return error.stack.split("\n").slice(0, 4).join("\n");
 }
 
 export class CallSession {
@@ -319,8 +375,23 @@ export class CallSession {
 
       const cleanedUtterance = utterance.trim();
       if (!cleanedUtterance) {
+        logger.warn("empty user utterance, returning local fallback", {
+          callId: this.id,
+          turnId,
+          turn: this.turnCount,
+          activeAgent: this.lastAgentName,
+        });
         return { type: "speak", text: this.localFallbackForTurn(this.turnCount) };
       }
+
+      logger.info("turn started", {
+        callId: this.id,
+        turnId,
+        turn: this.turnCount,
+        activeAgent: this.lastAgentName,
+        historyLen: this.history.length,
+        utterancePreview: textPreview(cleanedUtterance),
+      });
 
       if (this.kbFetchPromise) {
         this.kbPassages = await this.kbFetchPromise;
@@ -338,10 +409,25 @@ export class CallSession {
 
       if (env.NODE_ENV !== "development") {
         const inputCheck = await guardrailsEngine.checkInput(cleanedUtterance, this.id);
+        logger.info("input guardrail evaluated", {
+          callId: this.id,
+          turnId,
+          action: inputCheck.action,
+          blocked: inputCheck.blocked,
+          messagePreview: inputCheck.message ? textPreview(inputCheck.message) : null,
+          activeAgent: this.lastAgentName,
+        });
 
         if (inputCheck.blocked || inputCheck.action === "transfer") {
           const transferText = inputCheck.message || "Let me connect you with someone right away.";
           await this.emitSentenceWithOutputGuardrail(transferText, onSentence);
+          logger.warn("response emitted from input guardrail transfer", {
+            callId: this.id,
+            turnId,
+            source: "guardrail_transfer",
+            agent: this.lastAgentName,
+            textPreview: textPreview(transferText),
+          });
           this.applyGuardrailHistory(cleanedUtterance, transferText);
 
           this.lastTurnDiagnostics = {
@@ -367,6 +453,13 @@ export class CallSession {
         if (inputCheck.action === "warn" && inputCheck.message) {
           const warningText = inputCheck.message;
           await this.emitSentenceWithOutputGuardrail(warningText, onSentence);
+          logger.warn("response emitted from input guardrail warning", {
+            callId: this.id,
+            turnId,
+            source: "guardrail_warn",
+            agent: this.lastAgentName,
+            textPreview: textPreview(warningText),
+          });
           this.applyGuardrailHistory(cleanedUtterance, warningText);
 
           this.lastTurnDiagnostics = {
@@ -394,13 +487,30 @@ export class CallSession {
       this.callContext.currentDateTime = new Date().toISOString();
       this.callContext.kbPassages = this.kbPassages;
 
-      const candidateInput = [...this.history, buildUserInputItem(cleanedUtterance)];
-      const validatedInput = validateRunInputHistory(candidateInput);
-      if (validatedInput.history.length === 0) {
+      // Validate only the new user item; keep prior SDK history untouched.
+      const validatedUserInput = validateRunInputHistory([buildUserInputItem(cleanedUtterance)]);
+      if (validatedUserInput.history.length === 0) {
         throw new Error("validated run history was empty");
       }
+      if (validatedUserInput.issues.length > 0 || validatedUserInput.truncated) {
+        logger.warn("user input item sanitized before run", {
+          callId: this.id,
+          turnId,
+          issueCount: validatedUserInput.issues.length,
+          truncated: validatedUserInput.truncated,
+        });
+      }
 
-      this.history = validatedInput.history;
+      this.history = [...this.history, validatedUserInput.history[0]];
+      const agentBeforeRun = this.lastAgentName;
+      logger.info("llm run starting", {
+        callId: this.id,
+        turnId,
+        agentBeforeRun,
+        historyLen: this.history.length,
+        approvalGateState: this.callContext.approvalGateState,
+        pendingActionTool: this.callContext.pendingAction?.toolName ?? null,
+      });
 
       traceLog.turnStart(this.id, turnId, cleanedUtterance, {
         orchestrator: "sdk_native",
@@ -419,6 +529,8 @@ export class CallSession {
           context: runContext,
           signal: this.abortController.signal,
         },
+        // Preserve exact SDK history shape between turns (reasoning/tool linkage).
+        trustInputHistory: true,
       });
 
       const streamResult = runResponse.result;
@@ -436,6 +548,12 @@ export class CallSession {
         if (ttftMs === 0) {
           ttftMs = Date.now() - llmStart;
           traceLog.streamFirstToken(this.id, turnId, ttftMs, this.lastAgentName);
+          logger.info("llm first token", {
+            callId: this.id,
+            turnId,
+            agentAtRunStart: agentBeforeRun,
+            ttftMs,
+          });
         }
 
         fullText += chunk;
@@ -446,12 +564,26 @@ export class CallSession {
 
         for (const sentence of extracted.sentences) {
           const safeSentence = await this.emitSentenceWithOutputGuardrail(sentence, onSentence);
+          logger.info("agent sentence emitted", {
+            callId: this.id,
+            turnId,
+            source: "model_stream",
+            agentAtRunStart: agentBeforeRun,
+            textPreview: textPreview(safeSentence),
+          });
           emittedAtLeastOneSentence = emittedAtLeastOneSentence || safeSentence.length > 0;
         }
       }
 
       if (sentenceBuffer.trim().length > 0) {
         const safeTail = await this.emitSentenceWithOutputGuardrail(sentenceBuffer.trim(), onSentence);
+        logger.info("agent sentence emitted", {
+          callId: this.id,
+          turnId,
+          source: "model_stream_tail",
+          agentAtRunStart: agentBeforeRun,
+          textPreview: textPreview(safeTail),
+        });
         emittedAtLeastOneSentence = emittedAtLeastOneSentence || safeTail.length > 0;
       }
 
@@ -462,6 +594,14 @@ export class CallSession {
       this.history = streamResult.history;
       this.currentAgent = streamResult.currentAgent ?? streamResult.lastAgent ?? this.currentAgent;
       this.lastAgentName = this.currentAgent.name;
+      logger.info("llm run completed", {
+        callId: this.id,
+        turnId,
+        agentBeforeRun,
+        agentAfterRun: this.lastAgentName,
+        handoffOccurred: agentBeforeRun !== this.lastAgentName,
+        newItemsCount: streamResult.newItems.length,
+      });
 
       normalizeApprovalStateAfterTurn(this.callContext);
 
@@ -478,6 +618,13 @@ export class CallSession {
       if (!emittedAtLeastOneSentence) {
         const fallback = FALLBACK_STREAM_REPLY;
         await this.emitSentenceWithOutputGuardrail(fallback, onSentence);
+        logger.warn("no stream sentence emitted, using stream fallback reply", {
+          callId: this.id,
+          turnId,
+          source: "empty_stream_fallback",
+          agentAfterRun: this.lastAgentName,
+          textPreview: textPreview(fallback),
+        });
         fullText = fullText.trim() ? fullText : fallback;
       }
 
@@ -535,6 +682,17 @@ export class CallSession {
         },
       );
       traceLog.sessionResponse(this.id, turnId, responseAction, finalText);
+      logger.info("turn completed", {
+        callId: this.id,
+        turnId,
+        responseAction,
+        agent: this.lastAgentName,
+        toolCalls,
+        approvalGateState: this.callContext.approvalGateState,
+        finalTextPreview: textPreview(finalText),
+        ttftMs,
+        llmTotalMs,
+      });
 
       await this.persistConversationState();
 
@@ -549,16 +707,136 @@ export class CallSession {
       return { type: "speak", text: finalText };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
+      const streamSignalAborted = this.abortController?.signal.aborted ?? false;
       if (msg === "Aborted") {
         logger.info("turn aborted (caller hangup)", { callId: this.id });
         throw error;
       }
 
       traceLog.streamError(this.id, turnId, msg);
-      logger.error("error processing user input (streaming)", { callId: this.id, error: msg });
+      logger.error("error processing user input (streaming)", {
+        callId: this.id,
+        turnId,
+        error: msg,
+        errorName: errorName(error),
+        stackPreview: errorStackPreview(error),
+        streamSignalAborted,
+        historyLen: this.history.length,
+        historyTail: summarizeHistoryTail(this.history),
+        activeAgent: this.lastAgentName,
+      });
+
+      if (msg.includes("Model did not produce a final response")) {
+        try {
+          logger.warn("stream produced no final response, retrying in non-stream mode", {
+            callId: this.id,
+            turnId,
+            activeAgent: this.lastAgentName,
+            historyLen: this.history.length,
+            streamSignalAborted,
+            historyTail: summarizeHistoryTail(this.history),
+          });
+
+          const recoveryContext = new RunContext<CallContext>(this.callContext);
+          const recovery = await runWithModelGuardrails({
+            agent: this.currentAgent,
+            input: this.history,
+            runOptions: {
+              context: recoveryContext,
+              signal: this.abortController?.signal ?? undefined,
+            },
+            trustInputHistory: true,
+          });
+
+          const recoveredResult = recovery.result as RunResult<CallContext, Agent<CallContext, any>>;
+          const recoveredText =
+            (typeof recoveredResult.finalOutput === "string" ? recoveredResult.finalOutput.trim() : "") ||
+            extractAssistantTextFromHistory(recoveredResult.history);
+
+          if (recoveredText) {
+            await this.emitSentenceWithOutputGuardrail(recoveredText, onSentence);
+
+            this.history = recoveredResult.history;
+            this.currentAgent = recoveredResult.lastAgent ?? this.currentAgent;
+            this.lastAgentName = this.currentAgent.name;
+            normalizeApprovalStateAfterTurn(this.callContext);
+
+            this.latestIntent = inferIntentFromAgentName(this.lastAgentName);
+            this.latestIntentConfidence = 0.72;
+            this.latestSlots = { ...this.callContext.slotMemory };
+            this.context.slots = {
+              ...(this.context.slots as Record<string, unknown>),
+              ...this.latestSlots,
+            } as CallSessionContext["slots"];
+
+            this.addTranscriptEntry({
+              from: "agent",
+              text: recoveredText,
+              timestamp: new Date().toISOString(),
+            });
+
+            this.addLlmUsage(recoveryContext.usage.inputTokens, recoveryContext.usage.outputTokens);
+
+            this.lastTurnDiagnostics = {
+              intent: this.latestIntent,
+              confidence: this.latestIntentConfidence || undefined,
+              decisionMode: "recovery",
+              pendingAction: this.callContext.pendingAction?.toolName ?? null,
+              modelProfile: recovery.modelProfile,
+              retryReason: "stream_no_final_response_recovered_non_stream",
+              turnLatencyMs: Date.now() - turnStart,
+              specialist: inferSpecialistFromAgentName(this.lastAgentName),
+              history_len: this.history.length,
+              active_agent: this.lastAgentName,
+              tool_calls: [],
+              approval_gate_state: this.callContext.approvalGateState,
+              ttft_ms: 0,
+              llm_total_ms: 0,
+            };
+
+            logger.info("non-stream recovery succeeded after stream finalization failure", {
+              callId: this.id,
+              turnId,
+              activeAgent: this.lastAgentName,
+              textPreview: textPreview(recoveredText),
+            });
+
+            await this.persistConversationState();
+            return { type: "speak", text: recoveredText };
+          }
+
+          logger.warn("non-stream recovery returned no text output", {
+            callId: this.id,
+            turnId,
+            activeAgent: this.lastAgentName,
+          });
+        } catch (recoveryError) {
+          logger.error("non-stream recovery failed after stream finalization failure", {
+            callId: this.id,
+            turnId,
+            error: recoveryError instanceof Error ? recoveryError.message : String(recoveryError),
+            errorName: errorName(recoveryError),
+            stackPreview: errorStackPreview(recoveryError),
+            historyLen: this.history.length,
+            historyTail: summarizeHistoryTail(this.history),
+          });
+        }
+      }
 
       const fallback = this.localFallbackForTurn(this.turnCount);
       await this.emitSentenceWithOutputGuardrail(fallback, onSentence);
+      this.history = [...this.history, buildAssistantOutputItem(fallback)];
+      logger.warn("session exception fallback emitted", {
+        callId: this.id,
+        turnId,
+        source: "session_exception",
+        agent: this.lastAgentName,
+        error: msg,
+        errorName: errorName(error),
+        streamSignalAborted,
+        fallbackTextPreview: textPreview(fallback),
+        historyLen: this.history.length,
+      });
       this.addTranscriptEntry({
         from: "agent",
         text: fallback,
@@ -647,6 +925,56 @@ export class CallSession {
 
   getTurnCount(): number {
     return this.turnCount;
+  }
+
+  markRealtimeUserTurn(text: string, timestamp = new Date().toISOString()): void {
+    this.turnCount++;
+    this.addTranscriptEntry({
+      from: "user",
+      text: text.trim(),
+      timestamp,
+    });
+  }
+
+  markRealtimeAgentTurn(text: string, timestamp = new Date().toISOString()): void {
+    this.addTranscriptEntry({
+      from: "agent",
+      text: text.trim(),
+      timestamp,
+    });
+  }
+
+  setRealtimeAgentState(agentName: string, slotMemory: Record<string, unknown>): void {
+    this.lastAgentName = agentName;
+    this.latestIntent = inferIntentFromAgentName(agentName);
+    this.latestIntentConfidence = 0.76;
+    this.latestSlots = { ...slotMemory };
+    this.context.slots = {
+      ...(this.context.slots as Record<string, unknown>),
+      ...slotMemory,
+    } as CallSessionContext["slots"];
+  }
+
+  setRealtimeTurnDiagnostics(diagnostics: TurnDiagnostics): void {
+    this.lastTurnDiagnostics = diagnostics;
+  }
+
+  restoreRealtimeSnapshot(snapshot: {
+    transcript: CallTranscriptEntry[];
+    turnCount: number;
+    latestIntent?: string;
+    latestIntentConfidence?: number;
+    latestSlots?: Record<string, unknown>;
+    agentName?: string;
+  }): void {
+    this.context.transcript = snapshot.transcript;
+    this.turnCount = snapshot.turnCount;
+    this.latestIntent = snapshot.latestIntent;
+    this.latestIntentConfidence = snapshot.latestIntentConfidence ?? 0;
+    this.latestSlots = snapshot.latestSlots ?? {};
+    if (snapshot.agentName) {
+      this.lastAgentName = snapshot.agentName;
+    }
   }
 
   async cleanup(): Promise<void> {

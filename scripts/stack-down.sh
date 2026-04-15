@@ -27,4 +27,8 @@ for arg in "$@"; do
   fi
 done
 
+if [[ -f "$ROOT/.env.docker" ]]; then
+  exec docker compose --env-file "$ROOT/.env.docker" down "$@"
+fi
+
 exec docker compose down "$@"

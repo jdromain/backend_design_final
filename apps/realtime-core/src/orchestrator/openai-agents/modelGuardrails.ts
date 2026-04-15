@@ -631,23 +631,38 @@ export async function runWithModelGuardrails<TContext>(opts: {
   agent: Agent<TContext, any>;
   input: string | AgentInputItem[];
   runOptions?: NonStreamRunOptions<TContext>;
+  trustInputHistory?: boolean;
 }): Promise<GuardrailedNonStreamResult<TContext>>;
 
 export async function runWithModelGuardrails<TContext>(opts: {
   agent: Agent<TContext, any>;
   input: string | AgentInputItem[];
   runOptions: StreamRunOptions<TContext>;
+  trustInputHistory?: boolean;
 }): Promise<GuardrailedStreamResult<TContext>>;
 
 export async function runWithModelGuardrails<TContext>(opts: {
   agent: Agent<TContext, any>;
   input: string | AgentInputItem[];
   runOptions?: NonStreamRunOptions<TContext> | StreamRunOptions<TContext>;
+  /**
+   * When true and `input` is already an AgentInputItem[] from SDK-managed history,
+   * skip shape sanitization to avoid stripping required linked items (e.g. reasoning).
+   */
+  trustInputHistory?: boolean;
 }): Promise<GuardrailedNonStreamResult<TContext> | GuardrailedStreamResult<TContext>> {
-  const { agent, input, runOptions } = opts;
+  const { agent, input, runOptions, trustInputHistory } = opts;
 
   const modelProfile = typeof agent.model === "string" ? agent.model : "custom-model";
-  const inputValidation = normalizeInputToHistory(input);
+  const inputValidation =
+    trustInputHistory && Array.isArray(input)
+      ? ({
+          isValid: true,
+          history: input,
+          issues: [],
+          truncated: false,
+        } as RunInputValidationResult)
+      : normalizeInputToHistory(input);
   if (inputValidation.history.length === 0) {
     throw new Error("Run input history is empty after validation");
   }
@@ -738,15 +753,17 @@ export async function runStreamWithModelGuardrails<TContext>(opts: {
   agent: Agent<TContext, any>;
   input: string | AgentInputItem[];
   runOptions: Omit<StreamRunOptions<TContext>, "stream">;
+  trustInputHistory?: boolean;
 }): Promise<GuardrailedStreamResult<TContext>> {
-  return runWithModelGuardrails({
+  return runWithModelGuardrails<TContext>({
     agent: opts.agent,
     input: opts.input,
     runOptions: {
       ...opts.runOptions,
       stream: true,
-    },
-  });
+    } as StreamRunOptions<TContext>,
+    trustInputHistory: opts.trustInputHistory,
+  }) as Promise<GuardrailedStreamResult<TContext>>;
 }
 
 export const RUN_INPUT_LIMITS = {

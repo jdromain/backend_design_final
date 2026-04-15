@@ -109,8 +109,8 @@ class DeepgramSttStream implements SttStream {
         channels: '1',
         punctuate: 'true',
         interim_results: 'true',       // KEY: Enable partial results
-        endpointing: '300',             // Detect end-of-speech after 300ms
-        utterance_end_ms: '1000',      // Finalize after 1s of silence
+        endpointing: '700',            // Less aggressive split of natural pauses
+        utterance_end_ms: '1500',      // Finalize after longer silence window
         vad_events: 'true'             // Voice activity detection events
       }).toString();
 
@@ -219,4 +219,3 @@ class DeepgramSttStream implements SttStream {
     }
   }
 }
-

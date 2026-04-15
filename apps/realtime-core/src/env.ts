@@ -52,8 +52,16 @@ export const env = {
   // LLM
   LLM_PROVIDER: optional("LLM_PROVIDER", "openai"),
   OPENAI_API_KEY: optional("OPENAI_API_KEY", ""),
-  LLM_MODEL: optional("LLM_MODEL", ""),
+  LLM_MODEL: optional("LLM_MODEL", "gpt-realtime-mini"),
   LLM_MAX_TOKENS: optionalInt("LLM_MAX_TOKENS", 500),
+  CONVERSATION_ENGINE: optional("CONVERSATION_ENGINE", "realtime_agents") as
+    | "realtime_agents"
+    | "legacy",
+  REALTIME_LIFECYCLE_FIX_ENABLED: optionalBool("REALTIME_LIFECYCLE_FIX_ENABLED", true),
+  REALTIME_CHUNK_QUEUE_V2_ENABLED: optionalBool("REALTIME_CHUNK_QUEUE_V2_ENABLED", true),
+  REALTIME_BARGE_CLEAR_PACING_ENABLED: optionalBool("REALTIME_BARGE_CLEAR_PACING_ENABLED", true),
+  REALTIME_RAG_RELIABILITY_ENABLED: optionalBool("REALTIME_RAG_RELIABILITY_ENABLED", true),
+  REALTIME_CANARY_PERCENT: optionalInt("REALTIME_CANARY_PERCENT", 100),
 
   // STT (Deepgram)
   STT_PROVIDER: optional("STT_PROVIDER", "mock") as "deepgram" | "mock",

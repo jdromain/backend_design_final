@@ -157,7 +157,7 @@ export const traceLog = {
 };
 
 /** Helper to summarize history for tracing (no PII, just shape) */
-export function summarizeHistoryForTrace(history: Array<{ role?: string; content?: unknown; type?: string; name?: string; call_id?: string }>): Array<{ role: string; contentKind: string; contentLen?: number; textPreview?: string }> {
+export function summarizeHistoryForTrace(history: Array<{ role?: string; content?: unknown; type?: string; name?: string; call_id?: string | null; callId?: string | null }>): Array<{ role: string; contentKind: string; contentLen?: number; textPreview?: string }> {
   return history.map((item) => {
     // SDK tool call items have type: "tool_call" and no role
     if ((item as any).type === "tool_call" || (item as any).type === "function_call") {

@@ -5,8 +5,7 @@ import { createLogger } from "@rezovo/logging";
 import { createInMemoryEventBus, createRedisEventBus } from "@rezovo/event-bus";
 import { env } from "./env";
 import { ConfigChangedPayload, TypedEventEnvelope } from "@rezovo/core-types";
-import { setDefaultOpenAIClient } from "@openai/agents";
-import OpenAI from "openai";
+import { setDefaultOpenAIKey } from "@openai/agents";
 
 import { ConfigCache, makeDefaultSnapshot } from "./config-cache/cache";
 import { fetchConfigSnapshot } from "./config-cache/fetcher";
@@ -26,6 +25,7 @@ function printEnvDiagnostics(): void {
     provider: env.LLM_PROVIDER,
     model: env.LLM_MODEL,
     maxTokens: env.LLM_MAX_TOKENS,
+    conversationEngine: env.CONVERSATION_ENGINE,
     OPENAI_API_KEY: env.OPENAI_API_KEY ? "***set***" : "(NOT SET — agent calls will fail)",
   });
 
@@ -67,14 +67,11 @@ function printEnvDiagnostics(): void {
 }
 
 async function bootstrap(): Promise<void> {
-  // Configure the OpenAI client globally before any agent is used.
-  // 8s timeout: any voice turn beyond this is a failed interaction.
-  // maxRetries: 1 — the SDK auto-retries 500s, timeouts, and 429s with exponential backoff.
-  setDefaultOpenAIClient(new OpenAI({
-    apiKey: env.OPENAI_API_KEY,
-    timeout: 8_000,
-    maxRetries: 1,
-  }));
+  // Configure OpenAI auth for Agents SDK before any agent is used.
+  // Use SDK-managed client construction to avoid cross-version OpenAI type conflicts.
+  if (env.OPENAI_API_KEY.trim()) {
+    setDefaultOpenAIKey(env.OPENAI_API_KEY);
+  }
 
   printEnvDiagnostics();
 
@@ -142,6 +139,7 @@ async function bootstrap(): Promise<void> {
 
   logger.info("─── realtime-core READY ───", {
     webhookPort: WEBHOOK_LISTEN_PORT,
+    conversationEngine: env.CONVERSATION_ENGINE,
     stt: env.STT_PROVIDER,
     tts: env.ELEVEN_API_KEY ? "elevenlabs" : "disabled",
     rtpBridge: env.RTP_BRIDGE_URL ? "live" : "mock",

@@ -4,6 +4,8 @@ import { fetchConfigSnapshot } from "../config-cache/fetcher";
 import { CallEndReason, CallEndedPayload, PhoneNumberConfig } from "@rezovo/core-types";
 import { EventPublisher } from "../events/eventPublisher";
 import { CallSession } from "../orchestrator/callSession";
+import { runRealtimeConversation } from "../orchestrator/realtime/realtimeConversation";
+import { sessionStore } from "../orchestrator/openai-agents/sessionStore";
 import { createTtsProvider } from "../media/ttsElevenLabs";
 import { BillingQuotaClient } from "../billingClient";
 import { MediaSession, RtpBridgeClient, RtpBridgeConnection } from "../media/rtpBridgeClient";
@@ -98,7 +100,9 @@ export class CallController {
     try {
       this.throwIfAborted(ctx?.signal);
       session = new CallSession(phoneConfig, agentConfig, { callId });
-      await session.restoreFromStore();
+      if (env.CONVERSATION_ENGINE !== "realtime_agents") {
+        await session.restoreFromStore();
+      }
       mediaSession = await this.deps.media.startSession({ callId: session.id, did, orgId });
 
       await this.publishCallStarted({ session, did, orgId, phoneConfig, callerNumber: args.callerNumber });
@@ -141,13 +145,6 @@ export class CallController {
         ? createTtsProvider({ apiKey: this.deps.elevenApiKey, voiceId: this.deps.elevenVoiceId })
         : null;
 
-    // Initialize STT client using env object
-    const stt = new SttClient({
-      provider: env.STT_PROVIDER,
-      apiKey: env.STT_API_KEY,
-      model: env.STT_MODEL,
-    });
-
     // Connect to RTP bridge for audio streaming
     let bridgeConnection: RtpBridgeConnection | null = null;
     try {
@@ -159,6 +156,25 @@ export class CallController {
         error: (err as Error).message,
       });
     }
+
+    if (env.CONVERSATION_ENGINE === "realtime_agents") {
+      await this.handleDialogueRealtime(
+        session,
+        initialUtterance,
+        mediaSession,
+        bridgeConnection,
+        tts,
+        signal,
+      );
+      return;
+    }
+
+    // Initialize STT client using env object
+    const stt = new SttClient({
+      provider: env.STT_PROVIDER,
+      apiKey: env.STT_API_KEY,
+      model: env.STT_MODEL,
+    });
 
     // 1. Send greeting
     this.throwIfAborted(signal);
@@ -199,7 +215,10 @@ export class CallController {
     let lastActivityAt = Date.now();
     const SILENCE_PROMPT_MS = 8_000;
     const MAX_SILENCE_PROMPTS = 2;
+    const FINAL_SEGMENT_DEBOUNCE_MS = 700;
     let silencePromptCount = 0;
+    let pendingFinalUtterance = "";
+    let pendingFinalTimer: ReturnType<typeof setTimeout> | null = null;
 
     const processTurn = async (userText: string, sttStreamRef: { close: () => void }) => {
       isProcessing = true;
@@ -207,6 +226,11 @@ export class CallController {
       silencePromptCount = 0;
       traceLog.sttFinal(session.id, userText);
       logger.info("processing user utterance", { callId: session.id, text: userText });
+      logger.info("turn processing started", {
+        callId: session.id,
+        activeAgent: session.getCurrentAgentName(),
+        utterancePreview: userText.slice(0, 220),
+      });
       let sentenceIndex = 0;
       try {
         const response = await session.receiveUserStreaming(
@@ -221,6 +245,14 @@ export class CallController {
             }
           }
         );
+        logger.info("turn processing completed", {
+          callId: session.id,
+          responseType: response.type,
+          activeAgent: session.getCurrentAgentName(),
+          responsePreview: response.type === "handoff" || response.type === "end"
+            ? (response.text ?? "").slice(0, 220)
+            : response.text.slice(0, 220),
+        });
 
         const turnDiagnostics = session.getLastTurnDiagnostics();
         if (turnDiagnostics) {
@@ -256,6 +288,26 @@ export class CallController {
       }
     };
 
+    const clearPendingFinalTimer = () => {
+      if (!pendingFinalTimer) return;
+      clearTimeout(pendingFinalTimer);
+      pendingFinalTimer = null;
+    };
+
+    const flushPendingFinalUtterance = async (sttStreamRef: { close: () => void }) => {
+      const userText = pendingFinalUtterance.trim();
+      pendingFinalUtterance = "";
+      if (!userText || callEnded) return;
+
+      if (isProcessing) {
+        pendingUtterance = pendingUtterance ? `${pendingUtterance} ${userText}` : userText;
+        logger.debug("turn in progress, buffering utterance", { callId: session.id, text: userText });
+        return;
+      }
+
+      await processTurn(userText, sttStreamRef);
+    };
+
     try {
       // Create a dummy connection for STT if no bridge (required by startStream signature)
       const sttConnection = bridgeConnection ?? { callId: session.id } as RtpBridgeConnection;
@@ -263,6 +315,13 @@ export class CallController {
       const sttStream = await stt.startStream(
         sttConnection,
         async (segment: TranscriptSegment) => {
+          if (callEnded) return;
+
+          if (segment.text.trim().length > 0) {
+            // Any speech activity (partial or final) should reset silence timeout.
+            lastActivityAt = Date.now();
+          }
+
           // Accumulate partial transcripts (for future barge-in support)
           if (!segment.isFinal) {
             transcriptBuffer = segment.text;
@@ -270,21 +329,18 @@ export class CallController {
             return;
           }
 
-          lastActivityAt = Date.now();
-
-          if (callEnded) return;
-
           const userText = segment.text.trim();
           if (userText.length === 0) return;
 
-          if (isProcessing) {
-            // Buffer the most recent utterance — will be drained after current turn finishes
-            pendingUtterance = userText;
-            logger.debug("turn in progress, buffering utterance", { callId: session.id, text: userText });
-            return;
-          }
-
-          await processTurn(userText, sttStream);
+          // Deepgram can finalize one thought in multiple short segments.
+          // Debounce finals so we send one coherent user turn to the LLM.
+          pendingFinalUtterance = pendingFinalUtterance
+            ? `${pendingFinalUtterance} ${userText}`
+            : userText;
+          clearPendingFinalTimer();
+          pendingFinalTimer = setTimeout(() => {
+            void flushPendingFinalUtterance(sttStream);
+          }, FINAL_SEGMENT_DEBOUNCE_MS);
         }
       );
 
@@ -292,6 +348,7 @@ export class CallController {
       const silenceCheck = setInterval(async () => {
         if (callEnded || isProcessing) return;
         if (Date.now() - lastActivityAt < SILENCE_PROMPT_MS) return;
+        if (transcriptBuffer.trim().length > 0 || pendingFinalUtterance.trim().length > 0) return;
 
         if (silencePromptCount >= MAX_SILENCE_PROMPTS) {
           logger.info("max silence prompts reached, ending call", { callId: session.id });
@@ -306,6 +363,12 @@ export class CallController {
           ? "Are you still there?"
           : "I'll let you go — have a great day, goodbye!";
         logger.info("silence prompt", { callId: session.id, attempt: silencePromptCount, prompt });
+        logger.info("system prompt emitted", {
+          callId: session.id,
+          source: "silence_monitor",
+          activeAgent: session.getCurrentAgentName(),
+          textPreview: prompt,
+        });
         if (tts) {
           try {
             const ttsStart = Date.now();
@@ -337,6 +400,7 @@ export class CallController {
           logger.warn("call timeout reached", { callId: session.id, maxCallDuration });
           callEnded = true;
           clearInterval(silenceCheck);
+          clearPendingFinalTimer();
           sttStream.close();
           resolve();
         }, maxCallDuration);
@@ -347,6 +411,7 @@ export class CallController {
             clearTimeout(timeout);
             callEnded = true;
             clearInterval(silenceCheck);
+            clearPendingFinalTimer();
             sttStream.close();
             resolve();
           });
@@ -358,6 +423,7 @@ export class CallController {
             clearTimeout(timeout);
             clearInterval(check);
             clearInterval(silenceCheck);
+            clearPendingFinalTimer();
             resolve();
           }
         }, 200);
@@ -372,6 +438,90 @@ export class CallController {
       traceLog.callEnd(session.id, { turns: session.getTranscript().length });
       await session.cleanup();
       logger.info("dialogue loop ended", { callId: session.id, turns: session.getTranscript().length });
+    }
+  }
+
+  private async handleDialogueRealtime(
+    session: CallSession,
+    initialUtterance: string,
+    mediaSession: MediaSession,
+    bridgeConnection: RtpBridgeConnection | null,
+    tts: ReturnType<typeof createTtsProvider> | null,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    let sentenceIndex = 0;
+
+    try {
+      const restored = await sessionStore.getRealtimeConversationState(session.id);
+      const shouldGreet = !restored || restored.transcript.length === 0;
+      const greetingText =
+        (session.context.agentConfig as unknown as { greetingMessage?: string }).greetingMessage ||
+        "Hello! Thanks for calling. How can I help you today?";
+
+      if (shouldGreet) {
+        session.markRealtimeAgentTurn(greetingText);
+        if (tts && greetingText.trim().length > 0) {
+          const ttsStart = Date.now();
+          await this.synthesizeAndSend(
+            tts,
+            greetingText,
+            mediaSession,
+            bridgeConnection,
+            (chars, seconds) => session.addTtsUsage(chars, seconds),
+            signal,
+          );
+          traceLog.autoMessage(session.id, "greeting", greetingText, Date.now() - ttsStart);
+        }
+      }
+
+      const stopReason = await runRealtimeConversation({
+        session,
+        bridgeConnection,
+        initialUtterance,
+        signal,
+        maxCallDurationMs: (session.context.agentConfig.maxCallDurationSec ?? 1800) * 1000,
+        onCallerAudioBytes: (bytes) => mediaSession.markCallerFrame(bytes),
+        onSentence: async (sentence) => {
+          if (!tts) return;
+          const synthesisMs = await this.synthesizeAndSend(
+            tts,
+            sentence,
+            mediaSession,
+            bridgeConnection,
+            (chars, seconds) => session.addTtsUsage(chars, seconds),
+            signal,
+          );
+          traceLog.ttsSentence(session.id, "", sentenceIndex++, sentence.length, synthesisMs);
+        },
+        onTurnDiagnostics: (diagnostics) => {
+          persistCallEvent({
+            callId: session.id,
+            orgId: session.context.orgId,
+            eventType: "turn_diagnostic",
+            payload: diagnostics,
+          }).catch((err) =>
+            logger.warn("turn diagnostics persistence failed", {
+              callId: session.id,
+              error: err instanceof Error ? err.message : String(err),
+            }),
+          );
+        },
+      });
+
+      logger.info("realtime dialogue loop ended", {
+        callId: session.id,
+        reason: stopReason,
+        turns: session.getTurnCount(),
+      });
+    } catch (error) {
+      logger.error("realtime dialogue loop error", {
+        callId: session.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      if (bridgeConnection) bridgeConnection.close();
+      traceLog.callEnd(session.id, { turns: session.getTranscript().length });
+      await session.cleanup();
     }
   }
 

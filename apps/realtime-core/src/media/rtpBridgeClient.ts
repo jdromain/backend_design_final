@@ -24,7 +24,10 @@ export type AudioFrame = {
 export interface RtpBridgeConnection {
   callId: string;
   onAudio(callback: (frame: AudioFrame) => void): void;
+  onClose(callback: () => void): void;
+  onError(callback: (error: Error) => void): void;
   sendAudio(frame: AudioFrame): void;
+  clearPlayback(): void;
   close(): void;
 }
 
@@ -134,7 +137,10 @@ class MockRtpBridgeConnection implements RtpBridgeConnection {
     this.callId = callId;
   }
   onAudio(_callback: (frame: AudioFrame) => void): void {}
+  onClose(_callback: () => void): void {}
+  onError(_callback: (error: Error) => void): void {}
   sendAudio(_frame: AudioFrame): void {}
+  clearPlayback(): void {}
   close(): void {}
 }
 
@@ -144,6 +150,8 @@ class RealRtpBridgeConnection implements RtpBridgeConnection {
   private framesSent = 0;
   private bytesSent = 0;
   private audioCallback: ((frame: AudioFrame) => void) | null = null;
+  private closeCallback: (() => void) | null = null;
+  private errorCallback: ((error: Error) => void) | null = null;
 
   constructor(callId: string, ws: WebSocket) {
     this.callId = callId;
@@ -169,15 +177,29 @@ class RealRtpBridgeConnection implements RtpBridgeConnection {
 
     ws.on("close", () => {
       logger.info("RTP bridge connection closed", { callId });
+      if (this.closeCallback) {
+        this.closeCallback();
+      }
     });
 
     ws.on("error", (err) => {
       logger.error("RTP bridge WebSocket error", { error: err.message, callId });
+      if (this.errorCallback) {
+        this.errorCallback(err);
+      }
     });
   }
 
   onAudio(callback: (frame: AudioFrame) => void): void {
     this.audioCallback = callback;
+  }
+
+  onClose(callback: () => void): void {
+    this.closeCallback = callback;
+  }
+
+  onError(callback: (error: Error) => void): void {
+    this.errorCallback = callback;
   }
 
   sendAudio(frame: AudioFrame): void {
@@ -204,6 +226,20 @@ class RealRtpBridgeConnection implements RtpBridgeConnection {
     }
   }
 
+  clearPlayback(): void {
+    if (this.ws.readyState === 1) {
+      try {
+        this.ws.send(JSON.stringify({ type: "clear" }));
+        logger.info("rtp_bridge_clear_sent", { callId: this.callId });
+      } catch (err) {
+        logger.warn("Failed to send clear to RTP bridge", {
+          callId: this.callId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+  }
+
   close(): void {
     if (this.ws.readyState === 1) { // 1 = OPEN
       this.ws.send(JSON.stringify({ type: "end" }));
@@ -211,4 +247,3 @@ class RealRtpBridgeConnection implements RtpBridgeConnection {
     this.ws.close();
   }
 }
-

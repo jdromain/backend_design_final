@@ -44,6 +44,17 @@ export interface CallContext {
   calendlyTimezone?: string;
   restaurantId?: string;
   kbPassages: string[];
+  kbHealth?: {
+    status: "unknown" | "healthy" | "degraded";
+    totalQueries: number;
+    hitQueries: number;
+    zeroHitStreak: number;
+    lastCheckedAt?: string;
+    lastHitAt?: string;
+    lastNamespaceUsed?: string;
+    lastMatchCount?: number;
+  };
+  lastNamespaceUsed?: string;
   openingHours?: string;
 
   // Persistent conversational state
@@ -686,7 +697,8 @@ const bookingAgent: Agent<CallContext> = new Agent({
       "Never announce yourself as a specialist; just respond naturally.\n" +
       "Collect only missing details, then use tools to search options and complete booking.\n" +
       "Before any state-changing operation, explicitly confirm details with the caller.\n" +
-      "If caller asks something unrelated to booking, hand off back to Receptionist.",
+      "If caller asks something unrelated to booking, hand off back to Receptionist silently.\n" +
+      "Do not say you are transferring or connecting the caller unless a real human transfer is actually happening.",
   ),
   model: env.LLM_MODEL,
   tools: [
@@ -707,7 +719,8 @@ const cancelAgent: Agent<CallContext> = new Agent({
       "Never announce yourself as a specialist; just respond naturally.\n" +
       "Use lookup tools first if reservation details are incomplete.\n" +
       "Confirm before cancellation or modification.\n" +
-      "If caller needs unrelated help, hand off back to Receptionist.",
+      "If caller needs unrelated help, hand off back to Receptionist silently.\n" +
+      "Do not say you are transferring or connecting the caller unless a real human transfer is actually happening.",
   ),
   model: env.LLM_MODEL,
   tools: [
@@ -727,7 +740,8 @@ const complaintAgent: Agent<CallContext> = new Agent({
     "You handle complaints with empathy and professionalism.\n" +
       "Acknowledge the issue first, then collect callback details.\n" +
       "Log the complaint once details are complete and confirmed.\n" +
-      "If caller asks for something else, hand off back to Receptionist.",
+      "If caller asks for something else, hand off back to Receptionist silently.\n" +
+      "Do not say you are transferring or connecting the caller unless a real human transfer is actually happening.",
   ),
   model: env.LLM_MODEL,
   tools: [logComplaint],
@@ -740,7 +754,8 @@ const infoAgent: Agent<CallContext> = new Agent({
   instructions: withContext(
     "You answer general questions about the business.\n" +
       "Use provided knowledge first. If unknown, say so honestly.\n" +
-      "If user wants booking/cancellation/complaint help, hand off to the right specialist.",
+      "If user wants booking/cancellation/complaint help, hand off to the right specialist silently.\n" +
+      "Do not say you are transferring or connecting the caller unless a real human transfer is actually happening.",
   ),
   model: env.LLM_MODEL,
   tools: [otSearchAvailability, otGetReservationDetails],
@@ -756,6 +771,8 @@ const triageAgent: Agent<CallContext> = new Agent({
       "- Cancellation Specialist: cancellation/reschedule\n" +
       "- Customer Care Specialist: complaints/manager requests\n" +
       "- Information Specialist: general questions\n" +
+      "If intent is clear, hand off immediately and silently.\n" +
+      "Do not narrate internal routing or say you are transferring/connecting.\n" +
       "If intent is unclear, ask one short clarification question.",
   ),
   model: env.LLM_MODEL,

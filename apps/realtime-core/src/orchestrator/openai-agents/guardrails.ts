@@ -67,6 +67,12 @@ export class GuardrailsEngine {
    */
   async checkInput(text: string, callId: string): Promise<GuardrailResult> {
     try {
+      logger.info("guardrail input check started", {
+        callId,
+        textLen: text.length,
+        textPreview: text.slice(0, 160),
+      });
+
       // 1. Explicit transfer request (not a safety issue, just routing)
       if (this.detectTransferRequest(text)) {
         logger.info("transfer request detected", { callId });
@@ -101,6 +107,7 @@ export class GuardrailsEngine {
         }
       }
 
+      logger.info("guardrail input check passed", { callId, action: "none" });
       return { blocked: false, action: "none" };
     } catch (error) {
       logger.error("guardrail input check failed", {
@@ -117,6 +124,12 @@ export class GuardrailsEngine {
    */
   async checkOutput(text: string, callId: string): Promise<GuardrailResult> {
     try {
+      logger.info("guardrail output check started", {
+        callId,
+        textLen: text.length,
+        textPreview: text.slice(0, 160),
+      });
+
       // Check for PII in output that shouldn't be there
       // (In a booking context, some PII like phone/name is expected and OK)
       const suspiciousPiiPatterns = [
@@ -149,6 +162,7 @@ export class GuardrailsEngine {
       };
       }
 
+      logger.info("guardrail output check passed", { callId, action: "none" });
       return { blocked: false, action: "none" };
     } catch (error) {
       logger.error("guardrail output check failed", {

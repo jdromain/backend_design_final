@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"log"
 	"net/http"
@@ -423,6 +424,9 @@ func (b *MediaBridge) handleRealtimeCoreConnection(w http.ResponseWriter, r *htt
 		case "audio":
 			// Audio from realtime-core (TTS) - forward to Twilio
 			session.forwardToTwilio(msg)
+		case "clear":
+			// Clear Twilio playback buffer on barge-in/interruption.
+			session.forwardClearToTwilio()
 		case "end":
 			log.Printf("realtime-core ended call: %s", callID)
 			session.close()
@@ -508,34 +512,98 @@ func (s *MediaSession) forwardToTwilio(realtimeCoreMsg map[string]interface{}) {
 		return
 	}
 
-	// Send to Twilio in Media Stream format with streamSid (REQUIRED!)
-	twilioMsg := map[string]interface{}{
-		"event":     "media",
-		"streamSid": streamSid,
-		"media": map[string]interface{}{
-			"payload": audioData,
-		},
-	}
-
-	if err := conn.WriteJSON(twilioMsg); err != nil {
-		if s.metrics != nil {
-			s.metrics.incWebSocketError("twilio_write")
+	decoded, decodeErr := base64.StdEncoding.DecodeString(audioData)
+	if decodeErr != nil || len(decoded) == 0 {
+		if err := s.sendTwilioMediaPayload(conn, streamSid, audioData); err != nil {
+			if s.metrics != nil {
+				s.metrics.incWebSocketError("twilio_write")
+			}
+			log.Printf("[RTP-BRIDGE] ERROR: send to Twilio failed, call=%s, err=%v", s.callID, err)
+			return
 		}
-		log.Printf("[RTP-BRIDGE] ERROR: send to Twilio failed, call=%s, err=%v", s.callID, err)
-	} else {
 		s.mu.Lock()
 		s.framesSent++
 		frames := s.framesSent
 		s.mu.Unlock()
-
 		if s.metrics != nil {
 			s.metrics.incEgressFrame()
 		}
-
-		// Throttled progress log: every 50th frame (~1 second)
 		if frames%50 == 0 {
 			log.Printf("[RTP-BRIDGE] egress_progress call=%s frames=%d streamSid=%s", s.callID, frames, streamSid)
 		}
+		return
+	}
+
+	const pacedFrameBytes = 160 // 20ms @ 8khz mu-law
+	for start := 0; start < len(decoded); start += pacedFrameBytes {
+		end := start + pacedFrameBytes
+		if end > len(decoded) {
+			end = len(decoded)
+		}
+		chunk := decoded[start:end]
+		payload := base64.StdEncoding.EncodeToString(chunk)
+		if err := s.sendTwilioMediaPayload(conn, streamSid, payload); err != nil {
+			if s.metrics != nil {
+				s.metrics.incWebSocketError("twilio_write")
+			}
+			log.Printf("[RTP-BRIDGE] ERROR: send paced audio to Twilio failed, call=%s, err=%v", s.callID, err)
+			return
+		}
+
+		s.mu.Lock()
+		s.framesSent++
+		frames := s.framesSent
+		s.mu.Unlock()
+		if s.metrics != nil {
+			s.metrics.incEgressFrame()
+		}
+		if frames%50 == 0 {
+			log.Printf("[RTP-BRIDGE] egress_progress call=%s frames=%d streamSid=%s", s.callID, frames, streamSid)
+		}
+
+		if end < len(decoded) {
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+}
+
+func (s *MediaSession) sendTwilioMediaPayload(conn *websocket.Conn, streamSid string, payload string) error {
+	twilioMsg := map[string]interface{}{
+		"event":     "media",
+		"streamSid": streamSid,
+		"media": map[string]interface{}{
+			"payload": payload,
+		},
+	}
+
+	if err := conn.WriteJSON(twilioMsg); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *MediaSession) forwardClearToTwilio() {
+	s.mu.Lock()
+	conn := s.twilioConn
+	streamSid := s.streamSid
+	s.mu.Unlock()
+
+	if conn == nil || streamSid == "" {
+		return
+	}
+
+	clearMsg := map[string]interface{}{
+		"event":     "clear",
+		"streamSid": streamSid,
+	}
+
+	if err := conn.WriteJSON(clearMsg); err != nil {
+		if s.metrics != nil {
+			s.metrics.incWebSocketError("twilio_write")
+		}
+		log.Printf("[RTP-BRIDGE] ERROR: clear to Twilio failed, call=%s, err=%v", s.callID, err)
+	} else {
+		log.Printf("[RTP-BRIDGE] clear_sent call=%s streamSid=%s", s.callID, streamSid)
 	}
 }
 

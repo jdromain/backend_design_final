@@ -35,7 +35,7 @@ const SlotValueSchema = z.union([z.string(), z.number(), z.boolean(), z.null()])
 
 export const ToolExecutionRequestSchema = z.object({
   name: z.string().min(1),
-  args: z.record(z.any()).default({}),
+  args: z.record(z.string(), z.any()).default({}),
   isStateChanging: z.boolean().default(false),
   requiresConfirmation: z.boolean().default(false),
 });
@@ -50,12 +50,12 @@ export const TurnInterpretationSchema = z.object({
   userConfirmation: z.enum(["yes", "no", "unclear"]).default("unclear"),
   endCall: z.boolean().default(false),
   escalateToHuman: z.boolean().default(false),
-  extractedSlots: z.record(SlotValueSchema).default({}),
+  extractedSlots: z.record(z.string(), SlotValueSchema).default({}),
   missingSlotsHint: z.array(z.string()).default([]),
   requestedTool: z
     .object({
       name: z.string().min(1),
-      args: z.record(z.any()).default({}),
+      args: z.record(z.string(), z.any()).default({}),
       stateChanging: z.boolean().optional(),
       rationale: z.string().optional(),
     })
@@ -84,7 +84,7 @@ export const AssistantTurnOutputSchema = z.object({
   agentName: z.string().min(1),
   intent: TurnIntentSchema.optional(),
   confidence: z.number().min(0).max(1).optional(),
-  slots: z.record(z.any()).default({}),
+  slots: z.record(z.string(), z.any()).default({}),
   diagnostics: z.object({
     intent: z.string().optional(),
     confidence: z.number().min(0).max(1).optional(),
@@ -102,6 +102,23 @@ export const AssistantTurnOutputSchema = z.object({
       .optional(),
     ttft_ms: z.number().nonnegative().optional(),
     llm_total_ms: z.number().nonnegative().optional(),
+    ingress_to_transcript_ms: z.number().nonnegative().optional(),
+    transcript_to_first_text_delta_ms: z.number().nonnegative().optional(),
+    first_text_delta_to_first_tts_ms: z.number().nonnegative().optional(),
+    turn_total_ms: z.number().nonnegative().optional(),
+    empty_passes: z.number().int().nonnegative().optional(),
+    chunks_synthesized: z.number().int().nonnegative().optional(),
+    queue_wait_p95_ms: z.number().nonnegative().optional(),
+    rag_fallback_used: z.boolean().optional(),
+    timeline_ms: z
+      .object({
+        transcript: z.number().nonnegative().optional(),
+        response_requested: z.number().nonnegative().optional(),
+        first_text_delta: z.number().nonnegative().optional(),
+        first_tts: z.number().nonnegative().optional(),
+        finalized: z.number().nonnegative().optional(),
+      })
+      .optional(),
   }),
 });
 

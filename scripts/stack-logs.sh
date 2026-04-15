@@ -14,9 +14,14 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+COMPOSE_ARGS=()
+if [[ -f "$ROOT/.env.docker" ]]; then
+  COMPOSE_ARGS+=(--env-file "$ROOT/.env.docker")
+fi
+
 # Default to all application services (not infra).
 if [[ $# -eq 0 ]]; then
-  exec docker compose logs -f --tail=100 platform-api realtime-core jobs rtp-bridge frontend
+  exec docker compose "${COMPOSE_ARGS[@]}" logs -f --tail=100 platform-api realtime-core jobs rtp-bridge frontend
 else
-  exec docker compose logs -f --tail=100 "$@"
+  exec docker compose "${COMPOSE_ARGS[@]}" logs -f --tail=100 "$@"
 fi

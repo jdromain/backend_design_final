@@ -20,4 +20,9 @@ if [[ ! -f "$ROOT/.env.docker" ]]; then
   exit 1
 fi
 
-exec docker compose up -d "$@"
+set -a
+# shellcheck source=/dev/null
+source "$ROOT/.env.docker"
+set +a
+
+exec docker compose --env-file "$ROOT/.env.docker" up -d "$@"
