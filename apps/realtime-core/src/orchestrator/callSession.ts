@@ -49,6 +49,14 @@ const logger = createLogger({ service: "realtime-core", module: "callSession" })
 
 const FALLBACK_STREAM_REPLY = "I can help with that. Could you share one more detail?";
 const LOG_TEXT_PREVIEW = 220;
+const MAX_KB_PASSAGES = 4;
+const MAX_KB_PASSAGE_CHARS = 360;
+
+type LegacyTurnState = "transcript_finalized" | "run_requested" | "streaming" | "finalized";
+type TurnOutputGuardrailCache = {
+  moderationPromise: Promise<{ blocked: boolean; message?: string }> | null;
+  moderationText: string;
+};
 
 function textPreview(text: string, maxLen = LOG_TEXT_PREVIEW): string {
   if (text.length <= maxLen) return text;
@@ -150,6 +158,32 @@ function extractAssistantTextFromHistory(history: AgentInputItem[]): string {
   return "";
 }
 
+function sanitizeTransferNarration(text: string): string {
+  let out = text;
+  out = out.replace(
+    /\b(i('|’)ll|let me|i can|we can)\s+(get|connect|transfer|route|put)\s+you(\s+(over|through|with|to))?\s+(to\s+)?(the\s+)?(right\s+)?(specialist|team|agent|department|person)(\s+now)?[.!]?/gi,
+    "I can help with that.",
+  );
+  out = out.replace(
+    /\b(i('|’)m|we('|’)re)\s+(transferring|connecting|routing)\s+you(\s+(now|over|through|to\s+the\s+(right\s+)?(specialist|team|agent|department|person)))?[.!]?/gi,
+    "I can help with that.",
+  );
+  out = out.replace(/\bone moment,\s*please[.!]?/gi, "");
+  const cleaned = out.replace(/\s{2,}/g, " ").trim();
+  return cleaned.length > 0 ? cleaned : "I can help with that.";
+}
+
+function fastLocalChunkGuardrail(text: string): string {
+  const suspiciousPiiPatterns = [
+    /\b\d{3}-\d{2}-\d{4}\b/,
+    /\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b/,
+  ];
+  for (const pattern of suspiciousPiiPatterns) {
+    if (pattern.test(text)) return "I apologize, let me rephrase that.";
+  }
+  return text;
+}
+
 function historyRole(item: AgentInputItem): string {
   const role = (item as unknown as Record<string, unknown>).role;
   return typeof role === "string" ? role : "unknown";
@@ -199,6 +233,9 @@ export class CallSession {
 
   private kbPassages: string[] = [];
   private kbFetchPromise: Promise<string[]> | null = null;
+  private kbQueryCache = new Map<string, { passages: string[]; expiresAt: number }>();
+  private kbCacheHits = 0;
+  private kbCacheLookups = 0;
 
   private restoreCompleted = false;
   private restoredFromStore = false;
@@ -357,6 +394,7 @@ export class CallSession {
   async receiveUserStreaming(
     utterance: string,
     onSentence: OnSentenceCallback,
+    timing?: { ingressStartedAt: number | null; sttFinalizedAt: number },
   ): Promise<OrchestratorResponse> {
     if (this.processing) {
       logger.warn("receiveUserStreaming called while already processing", { callId: this.id });
@@ -369,6 +407,30 @@ export class CallSession {
 
     const turnStart = Date.now();
     const turnId = uuidv4();
+    let turnState: LegacyTurnState = "transcript_finalized";
+    let duplicateFinalizeBlocked = 0;
+    let streamRecoveryUsed = false;
+    let emittedAtLeastOneSentence = false;
+    let fullText = "";
+    let ttftMs = 0;
+    let llmTotalMs = 0;
+    const outputGuardrailCache: TurnOutputGuardrailCache = {
+      moderationPromise: null,
+      moderationText: "",
+    };
+    const markTurnFinalized = (reason: string): void => {
+      if (turnState === "finalized") {
+        duplicateFinalizeBlocked += 1;
+        logger.warn("duplicate turn finalize blocked", {
+          callId: this.id,
+          turnId,
+          reason,
+          duplicateFinalizeBlocked,
+        });
+        return;
+      }
+      turnState = "finalized";
+    };
 
     try {
       await this.restoreFromStore();
@@ -381,6 +443,7 @@ export class CallSession {
           turn: this.turnCount,
           activeAgent: this.lastAgentName,
         });
+        markTurnFinalized("empty_utterance");
         return { type: "speak", text: this.localFallbackForTurn(this.turnCount) };
       }
 
@@ -394,12 +457,19 @@ export class CallSession {
       });
 
       if (this.kbFetchPromise) {
-        this.kbPassages = await this.kbFetchPromise;
+        const startupPromise = this.kbFetchPromise;
         this.kbFetchPromise = null;
-        this.callContext.kbPassages = this.kbPassages;
+        void startupPromise
+          .then((passages) => {
+            if (passages.length > 0) {
+              this.kbPassages = passages.slice(0, MAX_KB_PASSAGES).map((p) => p.slice(0, MAX_KB_PASSAGE_CHARS));
+              this.callContext.kbPassages = this.kbPassages;
+            }
+          })
+          .catch(() => undefined);
       }
 
-      await this.refreshKbForUtterance(cleanedUtterance);
+      void this.refreshKbForUtterance(cleanedUtterance, turnId);
 
       this.addTranscriptEntry({
         from: "user",
@@ -419,12 +489,15 @@ export class CallSession {
         });
 
         if (inputCheck.blocked || inputCheck.action === "transfer") {
-          const transferText = inputCheck.message || "Let me connect you with someone right away.";
-          await this.emitSentenceWithOutputGuardrail(transferText, onSentence);
-          logger.warn("response emitted from input guardrail transfer", {
+          const transferText = sanitizeTransferNarration(
+            inputCheck.message || "I can help with that. Could you share a bit more detail?",
+          );
+          outputGuardrailCache.moderationText = transferText.slice(0, 2000);
+          await this.emitSentenceWithOutputGuardrail(transferText, onSentence, outputGuardrailCache);
+          logger.warn("response emitted from input guardrail", {
             callId: this.id,
             turnId,
-            source: "guardrail_transfer",
+            source: "guardrail",
             agent: this.lastAgentName,
             textPreview: textPreview(transferText),
           });
@@ -433,7 +506,7 @@ export class CallSession {
           this.lastTurnDiagnostics = {
             intent: this.latestIntent,
             confidence: this.latestIntentConfidence || undefined,
-            decisionMode: "guardrail_transfer",
+            decisionMode: "recovery",
             pendingAction: this.callContext.pendingAction?.toolName ?? null,
             modelProfile: env.LLM_MODEL,
             turnLatencyMs: Date.now() - turnStart,
@@ -444,15 +517,28 @@ export class CallSession {
             approval_gate_state: this.callContext.approvalGateState,
             ttft_ms: 0,
             llm_total_ms: 0,
+            ingress_to_stt_final_ms:
+              timing?.ingressStartedAt !== null && typeof timing?.ingressStartedAt === "number"
+                ? Math.max(0, timing.sttFinalizedAt - timing.ingressStartedAt)
+                : undefined,
+            stt_final_to_run_request_ms: 0,
+            run_request_to_first_text_ms: 0,
+            duplicate_turn_finalize_blocked: duplicateFinalizeBlocked,
+            stream_recovery_used: streamRecoveryUsed,
+            tts_chunks_per_turn: 0,
+            kb_cache_hit_rate:
+              this.kbCacheLookups === 0 ? 0 : Number((this.kbCacheHits / this.kbCacheLookups).toFixed(4)),
           };
 
           await this.persistConversationState();
-          return { type: "handoff", reason: "guardrail_transfer", text: transferText };
+          markTurnFinalized("guardrail_response");
+          return { type: "speak", text: transferText };
         }
 
         if (inputCheck.action === "warn" && inputCheck.message) {
-          const warningText = inputCheck.message;
-          await this.emitSentenceWithOutputGuardrail(warningText, onSentence);
+          const warningText = sanitizeTransferNarration(inputCheck.message);
+          outputGuardrailCache.moderationText = warningText.slice(0, 2000);
+          await this.emitSentenceWithOutputGuardrail(warningText, onSentence, outputGuardrailCache);
           logger.warn("response emitted from input guardrail warning", {
             callId: this.id,
             turnId,
@@ -476,16 +562,30 @@ export class CallSession {
             approval_gate_state: this.callContext.approvalGateState,
             ttft_ms: 0,
             llm_total_ms: 0,
+            ingress_to_stt_final_ms:
+              timing?.ingressStartedAt !== null && typeof timing?.ingressStartedAt === "number"
+                ? Math.max(0, timing.sttFinalizedAt - timing.ingressStartedAt)
+                : undefined,
+            stt_final_to_run_request_ms: 0,
+            run_request_to_first_text_ms: 0,
+            duplicate_turn_finalize_blocked: duplicateFinalizeBlocked,
+            stream_recovery_used: streamRecoveryUsed,
+            tts_chunks_per_turn: 0,
+            kb_cache_hit_rate:
+              this.kbCacheLookups === 0 ? 0 : Number((this.kbCacheHits / this.kbCacheLookups).toFixed(4)),
           };
 
           await this.persistConversationState();
+          markTurnFinalized("guardrail_warn");
           return { type: "speak", text: warningText };
         }
       }
 
       prepareApprovalStateForUserTurn(this.callContext, cleanedUtterance);
       this.callContext.currentDateTime = new Date().toISOString();
-      this.callContext.kbPassages = this.kbPassages;
+      this.callContext.kbPassages = this.kbPassages
+        .slice(0, MAX_KB_PASSAGES)
+        .map((p) => p.slice(0, MAX_KB_PASSAGE_CHARS));
 
       // Validate only the new user item; keep prior SDK history untouched.
       const validatedUserInput = validateRunInputHistory([buildUserInputItem(cleanedUtterance)]);
@@ -503,6 +603,8 @@ export class CallSession {
 
       this.history = [...this.history, validatedUserInput.history[0]];
       const agentBeforeRun = this.lastAgentName;
+      const runRequestedAt = Date.now();
+      turnState = "run_requested";
       logger.info("llm run starting", {
         callId: this.id,
         turnId,
@@ -535,10 +637,7 @@ export class CallSession {
 
       const streamResult = runResponse.result;
 
-      let fullText = "";
       let sentenceBuffer = "";
-      let ttftMs = 0;
-      let emittedAtLeastOneSentence = false;
 
       const textStream = streamResult.toTextStream({ compatibleWithNodeStreams: true });
       for await (const rawChunk of textStream) {
@@ -554,16 +653,22 @@ export class CallSession {
             agentAtRunStart: agentBeforeRun,
             ttftMs,
           });
+          turnState = "streaming";
         }
 
         fullText += chunk;
         sentenceBuffer += chunk;
+        outputGuardrailCache.moderationText = fullText.slice(0, 2000);
 
         const extracted = extractSentences(sentenceBuffer);
         sentenceBuffer = extracted.remainder;
 
         for (const sentence of extracted.sentences) {
-          const safeSentence = await this.emitSentenceWithOutputGuardrail(sentence, onSentence);
+          const safeSentence = await this.emitSentenceWithOutputGuardrail(
+            sentence,
+            onSentence,
+            outputGuardrailCache,
+          );
           logger.info("agent sentence emitted", {
             callId: this.id,
             turnId,
@@ -576,7 +681,11 @@ export class CallSession {
       }
 
       if (sentenceBuffer.trim().length > 0) {
-        const safeTail = await this.emitSentenceWithOutputGuardrail(sentenceBuffer.trim(), onSentence);
+        const safeTail = await this.emitSentenceWithOutputGuardrail(
+          sentenceBuffer.trim(),
+          onSentence,
+          outputGuardrailCache,
+        );
         logger.info("agent sentence emitted", {
           callId: this.id,
           turnId,
@@ -590,7 +699,7 @@ export class CallSession {
       await streamResult.completed;
       traceLog.streamComplete(this.id, turnId, true);
 
-      const llmTotalMs = Date.now() - llmStart;
+      llmTotalMs = Date.now() - llmStart;
       this.history = streamResult.history;
       this.currentAgent = streamResult.currentAgent ?? streamResult.lastAgent ?? this.currentAgent;
       this.lastAgentName = this.currentAgent.name;
@@ -616,8 +725,9 @@ export class CallSession {
       } as CallSessionContext["slots"];
 
       if (!emittedAtLeastOneSentence) {
-        const fallback = FALLBACK_STREAM_REPLY;
-        await this.emitSentenceWithOutputGuardrail(fallback, onSentence);
+        const fallback = sanitizeTransferNarration(FALLBACK_STREAM_REPLY);
+        outputGuardrailCache.moderationText = fallback.slice(0, 2000);
+        await this.emitSentenceWithOutputGuardrail(fallback, onSentence, outputGuardrailCache);
         logger.warn("no stream sentence emitted, using stream fallback reply", {
           callId: this.id,
           turnId,
@@ -628,7 +738,7 @@ export class CallSession {
         fullText = fullText.trim() ? fullText : fallback;
       }
 
-      const finalText = fullText.trim() || FALLBACK_STREAM_REPLY;
+      const finalText = sanitizeTransferNarration(fullText.trim() || FALLBACK_STREAM_REPLY);
       this.addTranscriptEntry({
         from: "agent",
         text: finalText,
@@ -643,9 +753,7 @@ export class CallSession {
         intent: this.latestIntent,
         confidence: this.latestIntentConfidence || undefined,
         decisionMode:
-          responseAction === "transfer"
-            ? "transfer"
-            : responseAction === "end"
+          responseAction === "end"
               ? "end"
               : this.determineDecisionMode(toolCalls, this.callContext.approvalGateState),
         pendingAction: this.callContext.pendingAction?.toolName ?? null,
@@ -659,6 +767,18 @@ export class CallSession {
         approval_gate_state: this.callContext.approvalGateState,
         ttft_ms: ttftMs,
         llm_total_ms: llmTotalMs,
+        ingress_to_stt_final_ms:
+          timing?.ingressStartedAt !== null && typeof timing?.ingressStartedAt === "number"
+            ? Math.max(0, timing.sttFinalizedAt - timing.ingressStartedAt)
+            : undefined,
+        stt_final_to_run_request_ms:
+          timing?.sttFinalizedAt ? Math.max(0, runRequestedAt - timing.sttFinalizedAt) : undefined,
+        run_request_to_first_text_ms: ttftMs || undefined,
+        duplicate_turn_finalize_blocked: duplicateFinalizeBlocked,
+        stream_recovery_used: streamRecoveryUsed,
+        tts_chunks_per_turn: 0,
+        kb_cache_hit_rate:
+          this.kbCacheLookups === 0 ? 0 : Number((this.kbCacheHits / this.kbCacheLookups).toFixed(4)),
       };
 
       traceLog.turnTimingSummary(this.id, turnId, {
@@ -695,10 +815,7 @@ export class CallSession {
       });
 
       await this.persistConversationState();
-
-      if (responseAction === "transfer") {
-        return { type: "handoff", reason: this.lastAgentName, text: finalText };
-      }
+      markTurnFinalized("normal_completion");
 
       if (responseAction === "end") {
         return { type: "end", text: finalText };
@@ -726,8 +843,13 @@ export class CallSession {
         activeAgent: this.lastAgentName,
       });
 
-      if (msg.includes("Model did not produce a final response")) {
+      if (
+        msg.includes("Model did not produce a final response") &&
+        !emittedAtLeastOneSentence &&
+        fullText.trim().length === 0
+      ) {
         try {
+          streamRecoveryUsed = true;
           logger.warn("stream produced no final response, retrying in non-stream mode", {
             callId: this.id,
             turnId,
@@ -754,7 +876,13 @@ export class CallSession {
             extractAssistantTextFromHistory(recoveredResult.history);
 
           if (recoveredText) {
-            await this.emitSentenceWithOutputGuardrail(recoveredText, onSentence);
+            const sanitizedRecoveredText = sanitizeTransferNarration(recoveredText);
+            outputGuardrailCache.moderationText = sanitizedRecoveredText.slice(0, 2000);
+            await this.emitSentenceWithOutputGuardrail(
+              sanitizedRecoveredText,
+              onSentence,
+              outputGuardrailCache,
+            );
 
             this.history = recoveredResult.history;
             this.currentAgent = recoveredResult.lastAgent ?? this.currentAgent;
@@ -771,7 +899,7 @@ export class CallSession {
 
             this.addTranscriptEntry({
               from: "agent",
-              text: recoveredText,
+              text: sanitizedRecoveredText,
               timestamp: new Date().toISOString(),
             });
 
@@ -792,16 +920,28 @@ export class CallSession {
               approval_gate_state: this.callContext.approvalGateState,
               ttft_ms: 0,
               llm_total_ms: 0,
+              ingress_to_stt_final_ms:
+                timing?.ingressStartedAt !== null && typeof timing?.ingressStartedAt === "number"
+                  ? Math.max(0, timing.sttFinalizedAt - timing.ingressStartedAt)
+                  : undefined,
+              stt_final_to_run_request_ms: 0,
+              run_request_to_first_text_ms: 0,
+              duplicate_turn_finalize_blocked: duplicateFinalizeBlocked,
+              stream_recovery_used: streamRecoveryUsed,
+              tts_chunks_per_turn: 0,
+              kb_cache_hit_rate:
+                this.kbCacheLookups === 0 ? 0 : Number((this.kbCacheHits / this.kbCacheLookups).toFixed(4)),
             };
 
             logger.info("non-stream recovery succeeded after stream finalization failure", {
               callId: this.id,
               turnId,
               activeAgent: this.lastAgentName,
-              textPreview: textPreview(recoveredText),
+              textPreview: textPreview(sanitizedRecoveredText),
             });
 
             await this.persistConversationState();
+            markTurnFinalized("stream_recovery_non_stream_success");
             return { type: "speak", text: recoveredText };
           }
 
@@ -823,8 +963,48 @@ export class CallSession {
         }
       }
 
-      const fallback = this.localFallbackForTurn(this.turnCount);
-      await this.emitSentenceWithOutputGuardrail(fallback, onSentence);
+      if (emittedAtLeastOneSentence && fullText.trim().length > 0) {
+        const partialText = sanitizeTransferNarration(fullText.trim());
+        this.addTranscriptEntry({
+          from: "agent",
+          text: partialText,
+          timestamp: new Date().toISOString(),
+        });
+        this.lastTurnDiagnostics = {
+          intent: this.latestIntent,
+          confidence: this.latestIntentConfidence || undefined,
+          decisionMode: "recovery",
+          pendingAction: this.callContext.pendingAction?.toolName ?? null,
+          modelProfile: env.LLM_MODEL,
+          retryReason: "stream_error_after_partial_output",
+          turnLatencyMs: Date.now() - turnStart,
+          specialist: inferSpecialistFromAgentName(this.lastAgentName),
+          history_len: this.history.length,
+          active_agent: this.lastAgentName,
+          tool_calls: [],
+          approval_gate_state: this.callContext.approvalGateState,
+          ttft_ms: ttftMs,
+          llm_total_ms: llmTotalMs,
+          ingress_to_stt_final_ms:
+            timing?.ingressStartedAt !== null && typeof timing?.ingressStartedAt === "number"
+              ? Math.max(0, timing.sttFinalizedAt - timing.ingressStartedAt)
+              : undefined,
+          stt_final_to_run_request_ms: 0,
+          run_request_to_first_text_ms: ttftMs || undefined,
+          duplicate_turn_finalize_blocked: duplicateFinalizeBlocked,
+          stream_recovery_used: streamRecoveryUsed,
+          tts_chunks_per_turn: 0,
+          kb_cache_hit_rate:
+            this.kbCacheLookups === 0 ? 0 : Number((this.kbCacheHits / this.kbCacheLookups).toFixed(4)),
+        };
+        await this.persistConversationState();
+        markTurnFinalized("stream_error_after_partial_output");
+        return { type: "speak", text: partialText };
+      }
+
+      const fallback = sanitizeTransferNarration(this.localFallbackForTurn(this.turnCount));
+      outputGuardrailCache.moderationText = fallback.slice(0, 2000);
+      await this.emitSentenceWithOutputGuardrail(fallback, onSentence, outputGuardrailCache);
       this.history = [...this.history, buildAssistantOutputItem(fallback)];
       logger.warn("session exception fallback emitted", {
         callId: this.id,
@@ -858,9 +1038,21 @@ export class CallSession {
         approval_gate_state: this.callContext.approvalGateState,
         ttft_ms: 0,
         llm_total_ms: 0,
+        ingress_to_stt_final_ms:
+          timing?.ingressStartedAt !== null && typeof timing?.ingressStartedAt === "number"
+            ? Math.max(0, timing.sttFinalizedAt - timing.ingressStartedAt)
+            : undefined,
+        stt_final_to_run_request_ms: 0,
+        run_request_to_first_text_ms: 0,
+        duplicate_turn_finalize_blocked: duplicateFinalizeBlocked,
+        stream_recovery_used: streamRecoveryUsed,
+        tts_chunks_per_turn: 0,
+        kb_cache_hit_rate:
+          this.kbCacheLookups === 0 ? 0 : Number((this.kbCacheHits / this.kbCacheLookups).toFixed(4)),
       };
 
       await this.persistConversationState();
+      markTurnFinalized("session_exception_fallback");
       return { type: "speak", text: fallback };
     } finally {
       this.processing = false;
@@ -983,22 +1175,56 @@ export class CallSession {
     logger.debug("call session cleaned up", { callId: this.id });
   }
 
-  private async refreshKbForUtterance(utterance: string): Promise<void> {
+  private async refreshKbForUtterance(utterance: string, turnId?: string): Promise<void> {
     const namespace = this.context.agentConfig.kbNamespace;
     if (!namespace || utterance.length < 3) return;
+    const normalizedQuery = utterance.trim().toLowerCase().replace(/\s+/g, " ");
+    if (!normalizedQuery) return;
+
+    const now = Date.now();
+    this.kbCacheLookups += 1;
+    const cached = this.kbQueryCache.get(normalizedQuery);
+    if (cached && cached.expiresAt > now) {
+      this.kbCacheHits += 1;
+      if (cached.passages.length > 0) {
+        this.kbPassages = cached.passages;
+        this.callContext.kbPassages = cached.passages;
+      }
+      return;
+    }
 
     try {
-      const passages = await fetchKbPassages(
-        this.id,
-        utterance,
-        this.context.orgId,
-        this.context.businessId,
-        namespace,
-      );
+      const timeoutResult = { timeout: true } as const;
+      const result = await Promise.race<string[] | typeof timeoutResult>([
+        fetchKbPassages(
+          this.id,
+          utterance,
+          this.context.orgId,
+          this.context.businessId,
+          namespace,
+        ).catch(() => [] as string[]),
+        new Promise<typeof timeoutResult>((resolve) => setTimeout(() => resolve(timeoutResult), 450)),
+      ]);
+
+      if ("timeout" in result) return;
+
+      const passages = result
+        .slice(0, MAX_KB_PASSAGES)
+        .map((p) => p.slice(0, MAX_KB_PASSAGE_CHARS));
+      this.kbQueryCache.set(normalizedQuery, {
+        passages,
+        expiresAt: now + Math.max(1_000, env.LEGACY_KB_CACHE_TTL_MS),
+      });
       if (passages.length > 0) {
         this.kbPassages = passages;
         this.callContext.kbPassages = passages;
       }
+      logger.debug("kb refresh completed", {
+        callId: this.id,
+        turnId,
+        queryPreview: textPreview(normalizedQuery, 100),
+        matchCount: passages.length,
+      });
     } catch {
       // best effort only
     }
@@ -1007,22 +1233,46 @@ export class CallSession {
   private async emitSentenceWithOutputGuardrail(
     sentence: string,
     onSentence: OnSentenceCallback,
+    cache?: TurnOutputGuardrailCache,
   ): Promise<string> {
     const trimmed = sentence.trim();
     if (!trimmed) return "";
+    const localChecked = fastLocalChunkGuardrail(sanitizeTransferNarration(trimmed));
 
     if (env.NODE_ENV === "development") {
-      await onSentence(trimmed);
-      return trimmed;
+      await onSentence(localChecked);
+      return localChecked;
     }
 
-    const outputCheck = await guardrailsEngine.checkOutput(trimmed, this.id);
+    const seedText = cache?.moderationText?.trim() || localChecked;
+    if (cache && !cache.moderationPromise) {
+      cache.moderationPromise = Promise.race([
+        guardrailsEngine
+          .checkOutput(seedText.slice(0, 2000), this.id)
+          .then((result) => ({ blocked: result.blocked, message: result.message })),
+        new Promise<{ blocked: boolean; message?: string }>((resolve) =>
+          setTimeout(() => resolve({ blocked: false }), Math.max(50, env.LEGACY_OUTPUT_MODERATION_TIMEOUT_MS)),
+        ),
+      ]).catch((): { blocked: boolean; message?: string } => ({ blocked: false }));
+    }
+
+    const outputCheck: { blocked: boolean; message?: string } = cache?.moderationPromise
+      ? await cache.moderationPromise
+      : await Promise.race([
+          guardrailsEngine
+            .checkOutput(localChecked, this.id)
+            .then((result) => ({ blocked: result.blocked, message: result.message })),
+          new Promise<{ blocked: boolean; message?: string }>((resolve) =>
+            setTimeout(() => resolve({ blocked: false }), Math.max(50, env.LEGACY_OUTPUT_MODERATION_TIMEOUT_MS)),
+          ),
+        ]).catch((): { blocked: boolean; message?: string } => ({ blocked: false }));
+
     if (!outputCheck.blocked) {
-      await onSentence(trimmed);
-      return trimmed;
+      await onSentence(localChecked);
+      return localChecked;
     }
 
-    const fallback = outputCheck.message || "I apologize, let me rephrase that.";
+    const fallback = sanitizeTransferNarration(outputCheck.message || "I apologize, let me rephrase that.");
     await onSentence(fallback);
     return fallback;
   }
@@ -1046,16 +1296,9 @@ export class CallSession {
     return "execute_read_only";
   }
 
-  private pickResponseAction(utterance: string, text: string): "speak" | "transfer" | "end" {
+  private pickResponseAction(utterance: string, text: string): "speak" | "end" {
     const loweredText = text.toLowerCase();
     const loweredUtterance = utterance.toLowerCase();
-
-    if (
-      /\b(connect|transfer)\b/.test(loweredText) &&
-      /\b(manager|someone|person|human|representative|agent)\b/.test(loweredText)
-    ) {
-      return "transfer";
-    }
 
     if (
       /\b(bye|goodbye|take care|have a great day)\b/.test(loweredText) &&
@@ -1087,7 +1330,9 @@ export class CallSession {
         approvedActionHash: this.callContext.approvedActionHash,
         approvalGateState: this.callContext.approvalGateState,
         currentDateTime: this.callContext.currentDateTime,
-        kbPassages: this.callContext.kbPassages,
+        kbPassages: this.callContext.kbPassages
+          .slice(0, MAX_KB_PASSAGES)
+          .map((p) => p.slice(0, MAX_KB_PASSAGE_CHARS)),
       },
       transcript: this.context.transcript,
       turnCount: this.turnCount,

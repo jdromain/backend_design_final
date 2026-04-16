@@ -13,8 +13,63 @@ import { SttClient, TranscriptSegment } from "../media/sttClient";
 import { persistCallStart, persistCallEnd, persistCallEvent, TranscriptLine } from "../callPersistence";
 import { env } from "../env";
 import { traceLog } from "../traceLog";
+import type { TurnDiagnostics } from "../orchestrator/openai-agents";
 
 const logger = createLogger({ service: "realtime-core", module: "callController" });
+
+const SHORT_LEAD_INS = new Set([
+  "got it.",
+  "got it!",
+  "thanks.",
+  "thank you.",
+  "thank you!",
+  "perfect.",
+  "great.",
+  "sure.",
+  "okay.",
+  "ok.",
+  "absolutely.",
+  "of course.",
+]);
+
+export function sanitizeTransferNarration(text: string): string {
+  let out = text;
+  out = out.replace(
+    /\b(i('|’)ll|let me)\s+(get|connect|transfer|put)\s+you\s+(over|through|with|to)\s+(to\s+)?(the\s+)?(right\s+)?(specialist|team|agent)(\s+now)?[.!]?/gi,
+    "I can help with that.",
+  );
+  out = out.replace(/\bone moment,\s*please[.!]?/gi, "");
+  return out.replace(/\s{2,}/g, " ").trim();
+}
+
+export function isShortLeadIn(text: string): boolean {
+  const normalized = text.trim().toLowerCase();
+  return normalized.length > 0 && normalized.length <= 14 && SHORT_LEAD_INS.has(normalized);
+}
+
+export function percentile(values: number[], p: number): number | undefined {
+  if (values.length === 0) return undefined;
+  const sorted = [...values].sort((a, b) => a - b);
+  const idx = Math.min(sorted.length - 1, Math.max(0, Math.ceil((p / 100) * sorted.length) - 1));
+  return sorted[idx];
+}
+
+export function computeAdaptiveDebounceMs(text: string, confidence?: number): number {
+  const base = Math.max(160, Math.min(900, env.LEGACY_FINAL_DEBOUNCE_MS));
+  const trimmed = text.trim();
+
+  if (/[.!?]$/.test(trimmed)) {
+    return Math.max(160, Math.min(320, Math.floor(base * 0.8)));
+  }
+  if (typeof confidence === "number" && confidence >= 0.9) {
+    return Math.max(160, Math.min(300, Math.floor(base * 0.85)));
+  }
+  if (trimmed.length < 24) {
+    return Math.max(220, Math.min(420, Math.floor(base * 1.2)));
+  }
+
+  return base;
+}
 
 export type InboundCallArgs = {
   callId?: string;
@@ -142,7 +197,11 @@ export class CallController {
   ): Promise<void> {
     const tts =
       this.deps.elevenApiKey && this.deps.elevenVoiceId
-        ? createTtsProvider({ apiKey: this.deps.elevenApiKey, voiceId: this.deps.elevenVoiceId })
+        ? createTtsProvider({
+            apiKey: this.deps.elevenApiKey,
+            voiceId: this.deps.elevenVoiceId,
+            modelId: env.ELEVEN_MODEL_ID || undefined,
+          })
         : null;
 
     // Connect to RTP bridge for audio streaming
@@ -174,6 +233,8 @@ export class CallController {
       provider: env.STT_PROVIDER,
       apiKey: env.STT_API_KEY,
       model: env.STT_MODEL,
+      endpointingMs: env.LEGACY_STT_ENDPOINTING_MS,
+      utteranceEndMs: env.LEGACY_STT_UTTERANCE_END_MS,
     });
 
     // 1. Send greeting
@@ -186,88 +247,295 @@ export class CallController {
       traceLog.autoMessage(session.id, "greeting", greet.text, Date.now() - ttsStart);
     }
 
-    // 2. Process initial utterance if provided (e.g. from IVR text input)
-    if (initialUtterance && initialUtterance.trim().length > 0 && initialUtterance !== "I need to book an appointment") {
-      this.throwIfAborted(signal);
-      const response = await session.receiveUserStreaming(
-        initialUtterance,
-        async (sentence: string) => {
-          if (tts) {
-            await this.synthesizeAndSend(tts, sentence, mediaSession, bridgeConnection,
-              (chars, seconds) => session.addTtsUsage(chars, seconds), signal);
-          }
-        }
-      );
-      if (response.type === "handoff" || response.type === "end") {
-        await session.cleanup();
-        if (bridgeConnection) bridgeConnection.close();
+    const minChunkChars = Math.max(8, env.LEGACY_TTS_MIN_CHUNK_CHARS);
+    const maxChunkChars = Math.max(minChunkChars + 8, env.LEGACY_TTS_MAX_CHUNK_CHARS);
+    const maxChunkWaitMs = Math.max(80, env.LEGACY_TTS_MAX_CHUNK_WAIT_MS);
+    let callEnded = false;
+
+    // 2. Legacy TTS queue + assembler (single-flight dispatch, non-blocking for LLM stream)
+    let ttsQueueGeneration = 0;
+    let ttsQueueBusy = false;
+    let lastBargeClearAt = 0;
+    const ttsQueue: Array<{
+      text: string;
+      turnKey: string;
+      generation: number;
+      enqueuedAt: number;
+    }> = [];
+    const turnAssembler = new Map<
+      string,
+      {
+        buffer: string;
+        pendingLeadIn: string | null;
+        flushTimer: ReturnType<typeof setTimeout> | null;
+      }
+    >();
+    const turnTtsMetrics = new Map<
+      string,
+      {
+        chunksDispatched: number;
+        queueWaitSamples: number[];
+        firstTtsAt: number | null;
+      }
+    >();
+
+    const clearAssemblerState = (turnKey: string): void => {
+      const state = turnAssembler.get(turnKey);
+      if (!state) return;
+      if (state.flushTimer) clearTimeout(state.flushTimer);
+      turnAssembler.delete(turnKey);
+    };
+
+    const getTurnMetrics = (turnKey: string) => {
+      const existing = turnTtsMetrics.get(turnKey);
+      if (existing) return existing;
+      const created = { chunksDispatched: 0, queueWaitSamples: [], firstTtsAt: null };
+      turnTtsMetrics.set(turnKey, created);
+      return created;
+    };
+
+    const enqueueChunk = (turnKey: string, text: string): void => {
+      const trimmed = sanitizeTransferNarration(text.trim());
+      if (!trimmed) return;
+      ttsQueue.push({
+        text: trimmed,
+        turnKey,
+        generation: ttsQueueGeneration,
+        enqueuedAt: Date.now(),
+      });
+      void pumpTtsQueue();
+    };
+
+    const scheduleAssemblerFlush = (turnKey: string): void => {
+      const state = turnAssembler.get(turnKey);
+      if (!state || state.flushTimer) return;
+      state.flushTimer = setTimeout(() => {
+        state.flushTimer = null;
+        flushAssembler(turnKey, true);
+      }, maxChunkWaitMs);
+    };
+
+    const flushAssembler = (turnKey: string, force: boolean): void => {
+      const state = turnAssembler.get(turnKey);
+      if (!state) return;
+
+      if (!state.buffer.trim() && state.pendingLeadIn) {
+        state.buffer = state.pendingLeadIn;
+        state.pendingLeadIn = null;
+      }
+
+      let working = state.buffer.trim();
+      if (!working) return;
+
+      while (working.length > maxChunkChars) {
+        const splitAtSpace = working.lastIndexOf(" ", maxChunkChars);
+        const splitIdx = splitAtSpace > Math.floor(maxChunkChars * 0.6) ? splitAtSpace : maxChunkChars;
+        const head = working.slice(0, splitIdx).trim();
+        if (head) enqueueChunk(turnKey, head);
+        working = working.slice(splitIdx).trim();
+      }
+
+      if (working.length >= minChunkChars || force) {
+        enqueueChunk(turnKey, working);
+        state.buffer = "";
         return;
       }
-    }
+
+      state.buffer = working;
+      scheduleAssemblerFlush(turnKey);
+    };
+
+    const appendSentence = (turnKey: string, sentence: string): void => {
+      if (!tts) return;
+      const safeSentence = sanitizeTransferNarration(sentence.trim());
+      if (!safeSentence) return;
+
+      const state =
+        turnAssembler.get(turnKey) ??
+        (() => {
+          const created = { buffer: "", pendingLeadIn: null as string | null, flushTimer: null as ReturnType<typeof setTimeout> | null };
+          turnAssembler.set(turnKey, created);
+          return created;
+        })();
+
+      let nextSentence = safeSentence;
+      if (!state.buffer.trim() && isShortLeadIn(nextSentence)) {
+        if (state.pendingLeadIn) {
+          nextSentence = `${state.pendingLeadIn} ${nextSentence}`;
+          state.pendingLeadIn = null;
+        } else {
+          state.pendingLeadIn = nextSentence;
+          return;
+        }
+      }
+
+      if (state.pendingLeadIn) {
+        nextSentence = `${state.pendingLeadIn} ${nextSentence}`;
+        state.pendingLeadIn = null;
+      }
+
+      state.buffer = state.buffer.trim().length > 0 ? `${state.buffer.trim()} ${nextSentence}` : nextSentence;
+      if (state.buffer.length >= maxChunkChars) {
+        flushAssembler(turnKey, false);
+        return;
+      }
+
+      if (state.buffer.length >= minChunkChars && /[.!?]$/.test(nextSentence)) {
+        flushAssembler(turnKey, false);
+        return;
+      }
+
+      scheduleAssemblerFlush(turnKey);
+    };
+
+    const interruptLegacyTts = (reason: string): void => {
+      if (!tts) return;
+      const now = Date.now();
+      if (now - lastBargeClearAt < 220) return;
+      lastBargeClearAt = now;
+
+      const dropped = ttsQueue.length;
+      ttsQueueGeneration++;
+      ttsQueue.length = 0;
+      for (const state of turnAssembler.values()) {
+        if (state.flushTimer) clearTimeout(state.flushTimer);
+        state.flushTimer = null;
+        state.buffer = "";
+        state.pendingLeadIn = null;
+      }
+      if (bridgeConnection) {
+        bridgeConnection.clearPlayback();
+      }
+      logger.info("legacy tts queue interrupted", {
+        callId: session.id,
+        reason,
+        droppedChunks: dropped,
+      });
+    };
+
+    const pumpTtsQueue = async (): Promise<void> => {
+      if (!tts || ttsQueueBusy) return;
+      ttsQueueBusy = true;
+      try {
+        while (ttsQueue.length > 0 && !callEnded) {
+          const next = ttsQueue.shift();
+          if (!next) continue;
+          if (next.generation !== ttsQueueGeneration) continue;
+
+          const metrics = getTurnMetrics(next.turnKey);
+          if (metrics.firstTtsAt === null) {
+            metrics.firstTtsAt = Date.now();
+          }
+          const queueWaitMs = Date.now() - next.enqueuedAt;
+          metrics.queueWaitSamples.push(queueWaitMs);
+
+          const synthesisMs = await this.synthesizeAndSend(
+            tts,
+            next.text,
+            mediaSession,
+            bridgeConnection,
+            (chars, seconds) => session.addTtsUsage(chars, seconds),
+            signal,
+            () => next.generation === ttsQueueGeneration && !callEnded,
+          );
+          if (synthesisMs <= 0) continue;
+
+          const sentenceIndex = metrics.chunksDispatched;
+          metrics.chunksDispatched += 1;
+          traceLog.ttsSentence(session.id, next.turnKey, sentenceIndex, next.text.length, synthesisMs);
+        }
+      } finally {
+        ttsQueueBusy = false;
+      }
+    };
 
     // 3. START CONVERSATIONAL LOOP — STT ↔ LLM ↔ TTS
     let transcriptBuffer = "";
     let isProcessing = false;
-    let callEnded = false;
     let pendingUtterance: string | null = null;
+    let pendingUtteranceIngressAt: number | null = null;
+    let pendingUtteranceSttFinalAt: number | null = null;
 
     // Silence detection state
     let lastActivityAt = Date.now();
     const SILENCE_PROMPT_MS = 8_000;
     const MAX_SILENCE_PROMPTS = 2;
-    const FINAL_SEGMENT_DEBOUNCE_MS = 700;
     let silencePromptCount = 0;
     let pendingFinalUtterance = "";
     let pendingFinalTimer: ReturnType<typeof setTimeout> | null = null;
 
-    const processTurn = async (userText: string, sttStreamRef: { close: () => void }) => {
+    const processTurn = async (
+      userText: string,
+      sttStreamRef: { close: () => void },
+      timing?: { ingressStartedAt: number | null; sttFinalizedAt: number },
+    ) => {
       isProcessing = true;
       lastActivityAt = Date.now();
       silencePromptCount = 0;
+      const turnKey = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
       traceLog.sttFinal(session.id, userText);
       logger.info("processing user utterance", { callId: session.id, text: userText });
       logger.info("turn processing started", {
         callId: session.id,
         activeAgent: session.getCurrentAgentName(),
         utterancePreview: userText.slice(0, 220),
+        turnKey,
       });
-      let sentenceIndex = 0;
       try {
         const response = await session.receiveUserStreaming(
           userText,
           async (sentence: string) => {
-            if (tts && !callEnded) {
-              const synthesisMs = await this.synthesizeAndSend(
-                tts, sentence, mediaSession, bridgeConnection,
-                (chars, seconds) => session.addTtsUsage(chars, seconds), signal
-              );
-              traceLog.ttsSentence(session.id, "", sentenceIndex++, sentence.length, synthesisMs);
-            }
-          }
+            if (!callEnded) appendSentence(turnKey, sentence);
+          },
+          timing,
         );
+        flushAssembler(turnKey, true);
+        clearAssemblerState(turnKey);
+        void pumpTtsQueue();
+
         logger.info("turn processing completed", {
           callId: session.id,
           responseType: response.type,
           activeAgent: session.getCurrentAgentName(),
-          responsePreview: response.type === "handoff" || response.type === "end"
-            ? (response.text ?? "").slice(0, 220)
-            : response.text.slice(0, 220),
+          turnKey,
+          responsePreview: (response.text ?? "").slice(0, 220),
         });
 
         const turnDiagnostics = session.getLastTurnDiagnostics();
         if (turnDiagnostics) {
+          const ttsMetrics = getTurnMetrics(turnKey);
+          const queueWaitP95 = percentile(ttsMetrics.queueWaitSamples, 95);
+          const enriched: TurnDiagnostics = {
+            ...turnDiagnostics,
+            first_text_delta_to_first_tts_ms:
+              typeof turnDiagnostics.run_request_to_first_text_ms === "number" &&
+              typeof turnDiagnostics.stt_final_to_run_request_ms === "number" &&
+              timing?.sttFinalizedAt &&
+              ttsMetrics.firstTtsAt !== null
+                ? Math.max(
+                    0,
+                    ttsMetrics.firstTtsAt -
+                      (timing.sttFinalizedAt +
+                        turnDiagnostics.stt_final_to_run_request_ms +
+                        turnDiagnostics.run_request_to_first_text_ms),
+                  )
+                : turnDiagnostics.first_text_delta_to_first_tts_ms,
+            chunks_synthesized: ttsMetrics.chunksDispatched,
+            tts_chunks_per_turn: ttsMetrics.chunksDispatched,
+            queue_wait_p95_ms: queueWaitP95,
+          };
           persistCallEvent({
             callId: session.id,
             orgId: session.context.orgId,
             eventType: "turn_diagnostic",
-            payload: turnDiagnostics,
+            payload: enriched,
           }).catch((err) => logger.warn("turn diagnostics persistence failed", {
             callId: session.id,
             error: err instanceof Error ? err.message : String(err),
           }));
         }
 
-        if (response.type === "handoff" || response.type === "end") {
+        if (response.type === "end") {
           callEnded = true;
           sttStreamRef.close();
         }
@@ -282,8 +550,15 @@ export class CallController {
         // Drain buffered utterance that arrived while we were busy
         if (pendingUtterance && !callEnded) {
           const next = pendingUtterance;
+          const nextIngressAt = pendingUtteranceIngressAt;
+          const nextSttFinalAt = pendingUtteranceSttFinalAt;
           pendingUtterance = null;
-          await processTurn(next, sttStreamRef);
+          pendingUtteranceIngressAt = null;
+          pendingUtteranceSttFinalAt = null;
+          await processTurn(next, sttStreamRef, {
+            ingressStartedAt: nextIngressAt,
+            sttFinalizedAt: nextSttFinalAt ?? Date.now(),
+          });
         }
       }
     };
@@ -298,15 +573,46 @@ export class CallController {
       const userText = pendingFinalUtterance.trim();
       pendingFinalUtterance = "";
       if (!userText || callEnded) return;
+      const timing = {
+        ingressStartedAt: pendingUtteranceIngressAt,
+        sttFinalizedAt: Date.now(),
+      };
 
       if (isProcessing) {
         pendingUtterance = pendingUtterance ? `${pendingUtterance} ${userText}` : userText;
+        pendingUtteranceIngressAt = timing.ingressStartedAt;
+        pendingUtteranceSttFinalAt = timing.sttFinalizedAt;
         logger.debug("turn in progress, buffering utterance", { callId: session.id, text: userText });
         return;
       }
 
-      await processTurn(userText, sttStreamRef);
+      pendingUtteranceIngressAt = null;
+      pendingUtteranceSttFinalAt = null;
+      await processTurn(userText, sttStreamRef, timing);
     };
+
+    // 2b. Process initial utterance if provided (e.g. from IVR text input)
+    if (initialUtterance && initialUtterance.trim().length > 0 && initialUtterance !== "I need to book an appointment") {
+      this.throwIfAborted(signal);
+      const response = await session.receiveUserStreaming(
+        initialUtterance,
+        async (sentence: string) => {
+          appendSentence("initial", sentence);
+        },
+        {
+          ingressStartedAt: Date.now(),
+          sttFinalizedAt: Date.now(),
+        },
+      );
+      flushAssembler("initial", true);
+      clearAssemblerState("initial");
+      void pumpTtsQueue();
+      if (response.type === "end") {
+        await session.cleanup();
+        if (bridgeConnection) bridgeConnection.close();
+        return;
+      }
+    }
 
     try {
       // Create a dummy connection for STT if no bridge (required by startStream signature)
@@ -320,6 +626,10 @@ export class CallController {
           if (segment.text.trim().length > 0) {
             // Any speech activity (partial or final) should reset silence timeout.
             lastActivityAt = Date.now();
+            if (pendingUtteranceIngressAt === null) {
+              pendingUtteranceIngressAt = Date.now();
+            }
+            interruptLegacyTts("caller_speaking");
           }
 
           // Accumulate partial transcripts (for future barge-in support)
@@ -338,9 +648,10 @@ export class CallController {
             ? `${pendingFinalUtterance} ${userText}`
             : userText;
           clearPendingFinalTimer();
+          const debounceMs = computeAdaptiveDebounceMs(userText, segment.confidence);
           pendingFinalTimer = setTimeout(() => {
             void flushPendingFinalUtterance(sttStream);
-          }, FINAL_SEGMENT_DEBOUNCE_MS);
+          }, debounceMs);
         }
       );
 
@@ -434,6 +745,14 @@ export class CallController {
         error: error instanceof Error ? error.message : String(error),
       });
     } finally {
+      callEnded = true;
+      ttsQueueGeneration++;
+      ttsQueue.length = 0;
+      for (const state of turnAssembler.values()) {
+        if (state.flushTimer) clearTimeout(state.flushTimer);
+      }
+      turnAssembler.clear();
+      turnTtsMetrics.clear();
       if (bridgeConnection) bridgeConnection.close();
       traceLog.callEnd(session.id, { turns: session.getTranscript().length });
       await session.cleanup();
@@ -648,7 +967,8 @@ export class CallController {
     mediaSession: MediaSession,
     bridgeConnection: RtpBridgeConnection | null,
     usageCb: (chars: number, seconds: number) => void,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    dispatchGuard?: () => boolean,
   ): Promise<number> {
     for (let attempt = 1; attempt <= 2; attempt++) {
       this.throwIfAborted(signal);
@@ -656,8 +976,9 @@ export class CallController {
         const synthStart = Date.now();
         const audio = await tts.synthesize(text, { outputFormat: "ulaw_8000" });
         const synthesisMs = Date.now() - synthStart;
-        mediaSession.markAgentFrame(audio.audio.length);
-        usageCb(text.length, audio.audio.length / 32000);
+        if (dispatchGuard && !dispatchGuard()) {
+          return synthesisMs;
+        }
 
         // Send audio back through bridge → Twilio → caller
         if (bridgeConnection) {
@@ -666,6 +987,8 @@ export class CallController {
             timestamp: Date.now(),
           });
         }
+        mediaSession.markAgentFrame(audio.audio.length);
+        usageCb(text.length, audio.audio.length / 32000);
         return synthesisMs;
       } catch (err) {
         if (attempt === 2) {

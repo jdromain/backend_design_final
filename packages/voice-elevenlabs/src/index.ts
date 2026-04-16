@@ -31,7 +31,7 @@ export class ElevenLabsClient {
   }
 
   async synthesize(req: TtsRequest): Promise<TtsResponse> {
-    const modelId = req.modelId ?? "eleven_multilingual_v2";
+    const modelId = req.modelId ?? "eleven_flash_v2_5";
     const outputFormat = req.outputFormat ?? "mp3_44100_128";
     const url = `${this.baseUrl}/text-to-speech/${req.voiceId}?output_format=${outputFormat}`;
 
@@ -70,4 +70,3 @@ async function safeError(res: Response): Promise<string> {
     return "";
   }
 }
-

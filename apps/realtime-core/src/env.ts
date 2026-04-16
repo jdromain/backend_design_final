@@ -52,9 +52,9 @@ export const env = {
   // LLM
   LLM_PROVIDER: optional("LLM_PROVIDER", "openai"),
   OPENAI_API_KEY: optional("OPENAI_API_KEY", ""),
-  LLM_MODEL: optional("LLM_MODEL", "gpt-realtime-mini"),
+  LLM_MODEL: optional("LLM_MODEL", "gpt-5-nano"),
   LLM_MAX_TOKENS: optionalInt("LLM_MAX_TOKENS", 500),
-  CONVERSATION_ENGINE: optional("CONVERSATION_ENGINE", "realtime_agents") as
+  CONVERSATION_ENGINE: optional("CONVERSATION_ENGINE", "legacy") as
     | "realtime_agents"
     | "legacy",
   REALTIME_LIFECYCLE_FIX_ENABLED: optionalBool("REALTIME_LIFECYCLE_FIX_ENABLED", true),
@@ -67,10 +67,19 @@ export const env = {
   STT_PROVIDER: optional("STT_PROVIDER", "mock") as "deepgram" | "mock",
   STT_API_KEY: optional("STT_API_KEY", ""),
   STT_MODEL: optional("STT_MODEL", "nova-2-phonecall"),
+  LEGACY_FINAL_DEBOUNCE_MS: optionalInt("LEGACY_FINAL_DEBOUNCE_MS", 260),
+  LEGACY_STT_ENDPOINTING_MS: optionalInt("LEGACY_STT_ENDPOINTING_MS", 300),
+  LEGACY_STT_UTTERANCE_END_MS: optionalInt("LEGACY_STT_UTTERANCE_END_MS", 1000),
 
   // TTS (ElevenLabs)
   ELEVEN_API_KEY: optional("ELEVEN_API_KEY", ""),
   ELEVEN_VOICE_ID: optional("ELEVEN_VOICE_ID", ""),
+  ELEVEN_MODEL_ID: optional("ELEVEN_MODEL_ID", ""),
+  LEGACY_TTS_MIN_CHUNK_CHARS: optionalInt("LEGACY_TTS_MIN_CHUNK_CHARS", 28),
+  LEGACY_TTS_MAX_CHUNK_CHARS: optionalInt("LEGACY_TTS_MAX_CHUNK_CHARS", 180),
+  LEGACY_TTS_MAX_CHUNK_WAIT_MS: optionalInt("LEGACY_TTS_MAX_CHUNK_WAIT_MS", 300),
+  LEGACY_OUTPUT_MODERATION_TIMEOUT_MS: optionalInt("LEGACY_OUTPUT_MODERATION_TIMEOUT_MS", 250),
+  LEGACY_KB_CACHE_TTL_MS: optionalInt("LEGACY_KB_CACHE_TTL_MS", 60_000),
 
   // Redis
   REDIS_ENABLED: optionalBool("REDIS_ENABLED", false),

@@ -33,6 +33,9 @@ function printEnvDiagnostics(): void {
   logger.info("STT config", {
     provider: env.STT_PROVIDER,
     model: env.STT_MODEL,
+    endpointingMs: env.LEGACY_STT_ENDPOINTING_MS,
+    utteranceEndMs: env.LEGACY_STT_UTTERANCE_END_MS,
+    finalDebounceMs: env.LEGACY_FINAL_DEBOUNCE_MS,
     STT_API_KEY: env.STT_API_KEY ? "***set***" : "(NOT SET — transcription will fail)",
   });
   if (env.STT_PROVIDER === "mock") {
@@ -43,6 +46,10 @@ function printEnvDiagnostics(): void {
   logger.info("TTS config", {
     ELEVEN_API_KEY: env.ELEVEN_API_KEY ? "***set***" : "(NOT SET — voice synthesis will fail)",
     ELEVEN_VOICE_ID: env.ELEVEN_VOICE_ID || "(NOT SET — no voice selected)",
+    ELEVEN_MODEL_ID: env.ELEVEN_MODEL_ID || "(default: eleven_flash_v2_5)",
+    chunkMinChars: env.LEGACY_TTS_MIN_CHUNK_CHARS,
+    chunkMaxChars: env.LEGACY_TTS_MAX_CHUNK_CHARS,
+    chunkWaitMs: env.LEGACY_TTS_MAX_CHUNK_WAIT_MS,
   });
 
   // RTP Bridge

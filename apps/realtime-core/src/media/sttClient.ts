@@ -8,6 +8,8 @@ export interface SttConfig {
   provider: "deepgram" | "whisper" | "mock";
   apiKey?: string;
   model?: string;
+  endpointingMs?: number;
+  utteranceEndMs?: number;
 }
 
 export interface TranscriptSegment {
@@ -21,11 +23,15 @@ export class SttClient {
   private provider: string;
   private apiKey?: string;
   private model: string;
+  private endpointingMs?: number;
+  private utteranceEndMs?: number;
 
   constructor(config: SttConfig) {
     this.provider = config.provider;
     this.apiKey = config.apiKey;
     this.model = config.model || "general";
+    this.endpointingMs = config.endpointingMs;
+    this.utteranceEndMs = config.utteranceEndMs;
   }
 
   async startStream(
@@ -42,7 +48,10 @@ export class SttClient {
         throw new Error("Deepgram API key required");
       }
       logger.info("starting Deepgram STT stream", { callId: connection.callId, model: this.model });
-      return new DeepgramSttStream(this.apiKey, this.model, onTranscript);
+      return new DeepgramSttStream(this.apiKey, this.model, onTranscript, {
+        endpointingMs: this.endpointingMs,
+        utteranceEndMs: this.utteranceEndMs,
+      });
     }
 
     throw new Error(`Unsupported STT provider: ${this.provider}`);
@@ -90,11 +99,29 @@ class DeepgramSttStream implements SttStream {
   private partialBuffer = '';
   private framesSent = 0;
   private bytesSent = 0;
+  private endpointingMs: number;
+  private utteranceEndMs: number;
 
-  constructor(apiKey: string, model: string, onTranscript: (segment: TranscriptSegment) => void) {
+  constructor(
+    apiKey: string,
+    model: string,
+    onTranscript: (segment: TranscriptSegment) => void,
+    opts?: { endpointingMs?: number; utteranceEndMs?: number },
+  ) {
     this.apiKey = apiKey;
     this.model = model;
     this.onTranscript = onTranscript;
+    const requestedEndpointingMs = Math.floor(opts?.endpointingMs ?? 700);
+    const requestedUtteranceEndMs = Math.floor(opts?.utteranceEndMs ?? 1500);
+    this.endpointingMs = Math.max(120, Math.min(1500, requestedEndpointingMs));
+    // Deepgram rejects sub-1000 utterance_end_ms for this WS setup.
+    this.utteranceEndMs = Math.max(1000, Math.min(3000, requestedUtteranceEndMs));
+    if (this.utteranceEndMs !== requestedUtteranceEndMs) {
+      logger.warn("adjusted invalid utterance_end_ms for Deepgram", {
+        requestedUtteranceEndMs,
+        appliedUtteranceEndMs: this.utteranceEndMs,
+      });
+    }
     this.connect();
   }
 
@@ -109,8 +136,8 @@ class DeepgramSttStream implements SttStream {
         channels: '1',
         punctuate: 'true',
         interim_results: 'true',       // KEY: Enable partial results
-        endpointing: '700',            // Less aggressive split of natural pauses
-        utterance_end_ms: '1500',      // Finalize after longer silence window
+        endpointing: String(this.endpointingMs),
+        utterance_end_ms: String(this.utteranceEndMs),
         vad_events: 'true'             // Voice activity detection events
       }).toString();
 
@@ -122,7 +149,11 @@ class DeepgramSttStream implements SttStream {
 
       this.ws.on('open', () => {
         this.isConnected = true;
-        logger.info('Deepgram WebSocket connected', { model: this.model });
+        logger.info('Deepgram WebSocket connected', {
+          model: this.model,
+          endpointingMs: this.endpointingMs,
+          utteranceEndMs: this.utteranceEndMs,
+        });
       });
 
       this.ws.on('message', (data: WebSocket.Data) => {

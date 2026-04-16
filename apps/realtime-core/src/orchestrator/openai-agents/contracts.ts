@@ -102,6 +102,9 @@ export const AssistantTurnOutputSchema = z.object({
       .optional(),
     ttft_ms: z.number().nonnegative().optional(),
     llm_total_ms: z.number().nonnegative().optional(),
+    ingress_to_stt_final_ms: z.number().nonnegative().optional(),
+    stt_final_to_run_request_ms: z.number().nonnegative().optional(),
+    run_request_to_first_text_ms: z.number().nonnegative().optional(),
     ingress_to_transcript_ms: z.number().nonnegative().optional(),
     transcript_to_first_text_delta_ms: z.number().nonnegative().optional(),
     first_text_delta_to_first_tts_ms: z.number().nonnegative().optional(),
@@ -109,6 +112,10 @@ export const AssistantTurnOutputSchema = z.object({
     empty_passes: z.number().int().nonnegative().optional(),
     chunks_synthesized: z.number().int().nonnegative().optional(),
     queue_wait_p95_ms: z.number().nonnegative().optional(),
+    duplicate_turn_finalize_blocked: z.number().int().nonnegative().optional(),
+    stream_recovery_used: z.boolean().optional(),
+    tts_chunks_per_turn: z.number().nonnegative().optional(),
+    kb_cache_hit_rate: z.number().min(0).max(1).optional(),
     rag_fallback_used: z.boolean().optional(),
     timeline_ms: z
       .object({

@@ -66,7 +66,8 @@ export interface CallContext {
 
 const VOICE_DIRECTIVE =
   "You are on a live phone call. Keep every reply to 1-2 short sentences. " +
-  "Be warm and natural. Reply with ONLY what you would say out loud to the caller.";
+  "Be warm and natural. Reply with ONLY what you would say out loud to the caller. " +
+  "Never mention internal routing, handoffs, specialists, departments, or that you are transferring/connecting the caller.";
 
 const STATE_CHANGING_TOOLS = new Set<string>([
   "calendly_create_booking",
@@ -251,7 +252,9 @@ function withContext(basePrompt: string) {
     }
     if (c.kbPassages.length > 0) {
       parts.push("Relevant business knowledge:");
-      c.kbPassages.slice(0, 6).forEach((p, i) => parts.push(`  [${i + 1}] ${p}`));
+      c.kbPassages
+        .slice(0, 4)
+        .forEach((p, i) => parts.push(`  [${i + 1}] ${String(p).slice(0, 360)}`));
     }
 
     if (c.pendingAction) {
@@ -694,11 +697,12 @@ const bookingAgent: Agent<CallContext> = new Agent({
   handoffDescription: "Handles new appointment and reservation bookings",
   instructions: withContext(
     "You help callers schedule appointments and reservations.\n" +
-      "Never announce yourself as a specialist; just respond naturally.\n" +
+      "Never announce yourself as a specialist; just respond naturally as the same assistant voice.\n" +
+      "If the caller asks to make a reservation/booking, your first reply must directly collect the booking fields in one concise question: date/time, party size, caller name, and callback phone (email only if truly required).\n" +
       "Collect only missing details, then use tools to search options and complete booking.\n" +
       "Before any state-changing operation, explicitly confirm details with the caller.\n" +
       "If caller asks something unrelated to booking, hand off back to Receptionist silently.\n" +
-      "Do not say you are transferring or connecting the caller unless a real human transfer is actually happening.",
+      "Do not say you are transferring, routing, or connecting the caller.",
   ),
   model: env.LLM_MODEL,
   tools: [
@@ -716,11 +720,11 @@ const cancelAgent: Agent<CallContext> = new Agent({
   handoffDescription: "Handles appointment and reservation cancellations",
   instructions: withContext(
     "You help callers cancel or adjust existing bookings.\n" +
-      "Never announce yourself as a specialist; just respond naturally.\n" +
+      "Never announce yourself as a specialist; just respond naturally as the same assistant voice.\n" +
       "Use lookup tools first if reservation details are incomplete.\n" +
       "Confirm before cancellation or modification.\n" +
       "If caller needs unrelated help, hand off back to Receptionist silently.\n" +
-      "Do not say you are transferring or connecting the caller unless a real human transfer is actually happening.",
+      "Do not say you are transferring, routing, or connecting the caller.",
   ),
   model: env.LLM_MODEL,
   tools: [
@@ -741,7 +745,7 @@ const complaintAgent: Agent<CallContext> = new Agent({
       "Acknowledge the issue first, then collect callback details.\n" +
       "Log the complaint once details are complete and confirmed.\n" +
       "If caller asks for something else, hand off back to Receptionist silently.\n" +
-      "Do not say you are transferring or connecting the caller unless a real human transfer is actually happening.",
+      "Do not say you are transferring, routing, or connecting the caller.",
   ),
   model: env.LLM_MODEL,
   tools: [logComplaint],
@@ -755,7 +759,7 @@ const infoAgent: Agent<CallContext> = new Agent({
     "You answer general questions about the business.\n" +
       "Use provided knowledge first. If unknown, say so honestly.\n" +
       "If user wants booking/cancellation/complaint help, hand off to the right specialist silently.\n" +
-      "Do not say you are transferring or connecting the caller unless a real human transfer is actually happening.",
+      "Do not say you are transferring, routing, or connecting the caller.",
   ),
   model: env.LLM_MODEL,
   tools: [otSearchAvailability, otGetReservationDetails],
@@ -772,7 +776,7 @@ const triageAgent: Agent<CallContext> = new Agent({
       "- Customer Care Specialist: complaints/manager requests\n" +
       "- Information Specialist: general questions\n" +
       "If intent is clear, hand off immediately and silently.\n" +
-      "Do not narrate internal routing or say you are transferring/connecting.\n" +
+      "Do not narrate internal routing and never say transfer/connect/route to the caller.\n" +
       "If intent is unclear, ask one short clarification question.",
   ),
   model: env.LLM_MODEL,
