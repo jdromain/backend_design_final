@@ -3,6 +3,7 @@ import { createLogger } from "@rezovo/logging";
 
 import { registerKbReembedWorker } from "./kbReembedWorker";
 import { startBillingReconciliation } from "./billingReconciliation";
+import { startStaleCallReconciler } from "./staleCallReconciler";
 
 const logger = createLogger({ service: "jobs", module: "bootstrap" });
 
@@ -30,6 +31,7 @@ async function bootstrap(): Promise<void> {
 
   await registerKbReembedWorker(bus);
   startBillingReconciliation();
+  startStaleCallReconciler();
 
   logger.info("jobs runtime initialized", { eventBusImpl: impl });
 }
@@ -38,4 +40,3 @@ bootstrap().catch((err) => {
   logger.error("jobs runtime bootstrap failed", { error: err });
   process.exit(1);
 });
-

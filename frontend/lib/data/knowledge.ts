@@ -2,7 +2,7 @@ import { assertMockSafety } from "./_env-check"
 import { getMockKnowledgeCollections, getMockKnowledgeDocuments } from "@/data/mock/knowledge"
 import type { KbDocument, ProcessingStatus } from "@/components/knowledge/documents-table"
 import type { Collection } from "@/components/knowledge/collections-modal"
-import { appendOrgQuery, get, post } from "@/lib/api-client"
+import { ApiError, appendOrgQuery, get, patch, post } from "@/lib/api-client"
 
 assertMockSafety()
 
@@ -16,6 +16,7 @@ export type KbDocumentApiRow = {
   sizeBytes: number
   status: "chunking" | "ready" | "failed"
   chunks: number
+  active?: boolean
   ingestedAt: string
   updatedAt: string
 }
@@ -35,6 +36,12 @@ type IngestKnowledgeResponse = {
   mode?: "sync" | "async"
   error?: string
 }
+
+type UpdateKnowledgeDocumentBody = Partial<{
+  namespace: string
+  active: boolean
+  name: string
+}>
 
 type KbRetrievePassage = {
   id: string
@@ -69,6 +76,7 @@ function mapRowToKbDocument(row: KbDocumentApiRow): KbDocument {
     processingProgress: progress,
     chunks: row.chunks,
     tokenEstimate: 0,
+    isActive: row.active ?? true,
     usedByAgents: [],
     uploadedAt: new Date(row.ingestedAt),
     updatedAt: new Date(row.updatedAt),
@@ -122,6 +130,46 @@ export async function ingestKnowledgeDocument(input: IngestKnowledgeBody): Promi
     doc_id: input.doc_id,
     sync: input.sync ?? true,
   })
+}
+
+export async function updateKnowledgeDocument(docId: string, body: UpdateKnowledgeDocumentBody): Promise<{ ok: boolean }> {
+  if (useMocks) return { ok: true }
+  return patch<{ ok: boolean }>(appendOrgQuery(`/knowledge/documents/${encodeURIComponent(docId)}`), body)
+}
+
+export async function deleteKnowledgeDocument(docId: string): Promise<{
+  ok: boolean
+  status?: number
+  errorCode?: string
+  errorMessage?: string
+  requestId?: string
+}> {
+  if (useMocks) return { ok: true }
+  try {
+    return await post<{ ok: boolean }>(
+      appendOrgQuery(`/knowledge/documents/${encodeURIComponent(docId)}/delete`),
+      {},
+    )
+  } catch (err) {
+    if (err instanceof ApiError) {
+      const body = err.body as { error?: { code?: string; message?: string; requestId?: string } } | string
+      if (typeof body === "object" && body && "error" in body) {
+        return {
+          ok: false,
+          status: err.status,
+          errorCode: body.error?.code,
+          errorMessage: body.error?.message ?? "Delete failed",
+          requestId: body.error?.requestId,
+        }
+      }
+      return {
+        ok: false,
+        status: err.status,
+        errorMessage: typeof body === "string" ? body : "Delete failed",
+      }
+    }
+    return { ok: false, errorMessage: "Delete failed" }
+  }
 }
 
 export async function retrieveKnowledgePassages(params: {

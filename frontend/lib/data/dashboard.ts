@@ -84,7 +84,7 @@ function mapApiIncidentToPanel(i: ApiIncident): Incident {
     i.id === "inc-failures"
       ? { label: "View calls", page: "history", params: { filter: "failed" } }
       : i.id === "inc-handoff-rate"
-        ? { label: "View calls", page: "history", params: { filter: "transferred" } }
+        ? { label: "View calls", page: "history", params: { filter: "handoff" } }
         : i.id === "inc-tool-errors"
           ? { label: "Integrations", page: "integrations" }
           : { label: "View history", page: "history" }
@@ -105,9 +105,34 @@ export async function getDashboardOutcomes() {
   return get<ReturnType<typeof generateOutcomesData>>(appendOrgQuery("/analytics/outcomes"))
 }
 
-export async function getDashboardCalls(): Promise<CallRecord[]> {
+export async function getDashboardOutcomesByRange(params: {
+  from: Date
+  to: Date
+  granularity: "hour" | "day" | "week"
+}) {
+  if (useMocks) return generateOutcomesData()
+  const qs = new URLSearchParams({
+    from: params.from.toISOString(),
+    to: params.to.toISOString(),
+    granularity: params.granularity,
+  })
+  return get<ReturnType<typeof generateOutcomesData>>(appendOrgQuery(`/analytics/outcomes?${qs.toString()}`))
+}
+
+export async function getDashboardCalls(params?: {
+  from?: Date
+  to?: Date
+  limit?: number
+}): Promise<CallRecord[]> {
   if (useMocks) return generateCallsData()
-  return get<CallRecord[]>(appendOrgQuery("/calls"))
+  const qs = new URLSearchParams()
+  if (params?.from) qs.set("from", params.from.toISOString())
+  if (params?.to) qs.set("to", params.to.toISOString())
+  if (typeof params?.limit === "number" && params.limit > 0) {
+    qs.set("limit", String(params.limit))
+  }
+  const path = qs.size > 0 ? `/calls?${qs.toString()}` : "/calls"
+  return get<CallRecord[]>(appendOrgQuery(path))
 }
 
 export async function getDashboardActivity() {

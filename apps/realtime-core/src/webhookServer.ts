@@ -1,11 +1,12 @@
 import http from "http";
 import { createLogger } from "@rezovo/logging";
 import { CallController, InboundCallArgs } from "./telephony/callController";
+import { env } from "./env";
 
 const logger = createLogger({ service: "realtime-core", module: "webhookServer" });
 
 /** Fixed port for /health and /inbound-call — must match platform-api REALTIME_CORE_URL. */
-export const WEBHOOK_LISTEN_PORT = 3002;
+export const WEBHOOK_LISTEN_PORT = env.WEBHOOK_LISTEN_PORT;
 
 export function startWebhookServer(
   callController: CallController,

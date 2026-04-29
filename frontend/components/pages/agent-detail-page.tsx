@@ -1,15 +1,13 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useMemo } from "react"
 import {
   ArrowLeft,
   Play,
   Pause,
   Settings,
-  TestTube,
   History,
   BookOpen,
-  Wrench,
   BarChart3,
   Activity,
   Save,
@@ -21,19 +19,13 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Textarea } from "@/components/ui/textarea"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
-import { Switch } from "@/components/ui/switch"
-import { ScrollArea } from "@/components/ui/scroll-area"
-import { Separator } from "@/components/ui/separator"
 import { KpiTile } from "@/components/dashboard/kpi-tile"
 import { TableSkeleton, KpiRowSkeleton } from "@/components/loading-skeleton"
 import { ConfirmDialog } from "@/components/confirm-dialog"
 import { toast } from "@/hooks/use-toast"
 import { Phone, CheckCircle, Clock, Users } from "lucide-react"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { getAgentDetail, updateAgentDetail } from "@/lib/data/agents"
+import { type AgentDetailApi, getAgentDetail, updateAgentDetail } from "@/lib/data/agents"
 import { getAgentPerformance } from "@/lib/data/analytics"
 import { getKnowledgeWorkspace } from "@/lib/data/knowledge"
 
@@ -48,15 +40,6 @@ interface AgentConfig {
   interruptionSensitivity: number
   kbNamespace: string
   version?: number
-}
-
-interface Tool {
-  id: string
-  name: string
-  description: string
-  enabled: boolean
-  lastUsed?: string
-  successRate?: number
 }
 
 interface KBCollection {
@@ -97,7 +80,8 @@ export function AgentDetailPage({ agentId, onBack }: AgentDetailPageProps) {
   const [activeTab, setActiveTab] = useState("overview")
   const [config, setConfig] = useState<AgentConfig>(emptyConfig)
   const [originalConfig, setOriginalConfig] = useState<AgentConfig>(emptyConfig)
-  const [tools, setTools] = useState<Tool[]>([])
+  const [toolAccess, setToolAccess] = useState<string[]>([])
+  const [agentDetail, setAgentDetail] = useState<AgentDetailApi | null>(null)
   const [collections, setCollections] = useState<KBCollection[]>([])
   const [availableCollections, setAvailableCollections] = useState<KBCollection[]>([])
   const [activityLog, setActivityLog] = useState<ActivityLog[]>([])
@@ -112,9 +96,6 @@ export function AgentDetailPage({ agentId, onBack }: AgentDetailPageProps) {
   } | null>(null)
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false)
   const [isPaused, setIsPaused] = useState(false)
-  const [testInput, setTestInput] = useState("")
-  const [testOutput, setTestOutput] = useState<string[]>([])
-  const [isTesting, setIsTesting] = useState(false)
   const [discardConfirmOpen, setDiscardConfirmOpen] = useState(false)
 
   useEffect(() => {
@@ -137,14 +118,8 @@ export function AgentDetailPage({ agentId, onBack }: AgentDetailPageProps) {
         }
         setConfig(next)
         setOriginalConfig(next)
-        setTools(
-          detail.toolAccess.map((name, i) => ({
-            id: `tool-${i}`,
-            name,
-            description: `Tool: ${name}`,
-            enabled: true,
-          })),
-        )
+        setToolAccess(detail.toolAccess)
+        setAgentDetail(detail)
         const available = (knowledge?.collections ?? []).map((c) => ({
           id: c.id,
           name: c.name,
@@ -190,6 +165,28 @@ export function AgentDetailPage({ agentId, onBack }: AgentDetailPageProps) {
     setHasUnsavedChanges(JSON.stringify(config) !== JSON.stringify(originalConfig))
   }, [config, originalConfig])
 
+  const configurationJson = useMemo<AgentDetailApi>(
+    () => ({
+      id: agentDetail?.id ?? agentId,
+      name: config.name,
+      description: config.description,
+      systemPrompt: config.systemPrompt,
+      temperature: config.temperature,
+      maxTokens: config.maxTokens,
+      voice: config.voice,
+      silenceTimeout: config.silenceTimeout,
+      interruptionSensitivity: config.interruptionSensitivity,
+      version: config.version ?? 1,
+      persona: agentDetail?.persona ?? "support",
+      toolAccess,
+      phoneNumbers: agentDetail?.phoneNumbers ?? [],
+      kbNamespace: config.kbNamespace,
+      status: agentDetail?.status ?? "draft",
+      agentType: agentDetail?.agentType ?? "custom",
+    }),
+    [agentDetail, agentId, config, toolAccess],
+  )
+
   const handleSave = async () => {
     try {
       const updated = await updateAgentDetail(agentId, {
@@ -202,7 +199,7 @@ export function AgentDetailPage({ agentId, onBack }: AgentDetailPageProps) {
         silenceTimeout: config.silenceTimeout,
         interruptionSensitivity: config.interruptionSensitivity,
         kbNamespace: config.kbNamespace,
-        toolAccess: tools.filter((t) => t.enabled).map((t) => t.name),
+        toolAccess,
       })
 
       const next: AgentConfig = {
@@ -219,6 +216,8 @@ export function AgentDetailPage({ agentId, onBack }: AgentDetailPageProps) {
       }
       setConfig(next)
       setOriginalConfig(next)
+      setToolAccess(updated.toolAccess)
+      setAgentDetail(updated)
       setCollections(
         updated.kbNamespace
           ? [{
@@ -250,34 +249,6 @@ export function AgentDetailPage({ agentId, onBack }: AgentDetailPageProps) {
     )
     setHasUnsavedChanges(false)
     setDiscardConfirmOpen(false)
-  }
-
-  const handleToggleTool = (toolId: string) => {
-    setTools((prev) => prev.map((t) => (t.id === toolId ? { ...t, enabled: !t.enabled } : t)))
-    toast({ title: "Tool Updated", description: "Tool settings have been saved" })
-  }
-
-  const handleTestTool = (toolName: string) => {
-    toast({ title: "Testing Tool", description: `Sending test request to ${toolName}...` })
-    setTimeout(() => {
-      toast({ title: "Tool Test Complete", description: `${toolName} responded successfully` })
-    }, 1500)
-  }
-
-  const handleTestChat = () => {
-    if (!testInput.trim()) return
-    setIsTesting(true)
-    setTestOutput((prev) => [...prev, `You: ${testInput}`])
-    const input = testInput
-    setTestInput("")
-
-    setTimeout(() => {
-      setTestOutput((prev) => [
-        ...prev,
-        `Agent: I understand you're asking about "${input}". Let me help you with that. Based on our documentation, I can provide the following information...`,
-      ])
-      setIsTesting(false)
-    }, 1500)
   }
 
   const handleToggleStatus = () => {
@@ -372,14 +343,6 @@ export function AgentDetailPage({ agentId, onBack }: AgentDetailPageProps) {
             <BookOpen className="h-4 w-4 mr-2" />
             Knowledge
           </TabsTrigger>
-          <TabsTrigger value="tools">
-            <Wrench className="h-4 w-4 mr-2" />
-            Tools
-          </TabsTrigger>
-          <TabsTrigger value="testing">
-            <TestTube className="h-4 w-4 mr-2" />
-            Testing
-          </TabsTrigger>
           <TabsTrigger value="activity">
             <Activity className="h-4 w-4 mr-2" />
             Activity
@@ -455,100 +418,19 @@ export function AgentDetailPage({ agentId, onBack }: AgentDetailPageProps) {
 
         {/* Configuration Tab */}
         <TabsContent value="configuration" className="space-y-6 mt-6">
-          <Card>
-            <CardHeader>
-              <CardTitle>Agent Configuration</CardTitle>
-              <CardDescription>Edit the agent&apos;s core settings and behavior</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-6">
-              <div className="grid gap-4 md:grid-cols-2">
-                <div className="space-y-2">
-                  <Label htmlFor="name">Agent Name</Label>
-                  <Input
-                    id="name"
-                    value={config.name}
-                    onChange={(e) => setConfig({ ...config, name: e.target.value })}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="voice">Voice</Label>
-                  <select
-                    id="voice"
-                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                    value={config.voice}
-                    onChange={(e) => setConfig({ ...config, voice: e.target.value })}
-                  >
-                    <option value="alloy">Alloy</option>
-                    <option value="echo">Echo</option>
-                    <option value="fable">Fable</option>
-                    <option value="onyx">Onyx</option>
-                    <option value="nova">Nova</option>
-                    <option value="shimmer">Shimmer</option>
-                  </select>
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="description">Description</Label>
-                <Input
-                  id="description"
-                  value={config.description}
-                  onChange={(e) => setConfig({ ...config, description: e.target.value })}
-                />
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="systemPrompt">System Prompt</Label>
-                <Textarea
-                  id="systemPrompt"
-                  value={config.systemPrompt}
-                  onChange={(e) => setConfig({ ...config, systemPrompt: e.target.value })}
-                  rows={8}
-                  className="font-mono text-sm"
-                />
-              </div>
-
-              <Separator />
-
-              <div className="grid gap-4 md:grid-cols-2">
-                <div className="space-y-2">
-                  <Label>Temperature: {config.temperature}</Label>
-                  <input
-                    type="range"
-                    min="0"
-                    max="1"
-                    step="0.1"
-                    value={config.temperature}
-                    onChange={(e) => setConfig({ ...config, temperature: Number.parseFloat(e.target.value) })}
-                    className="w-full"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label>Silence Timeout: {config.silenceTimeout}s</Label>
-                  <input
-                    type="range"
-                    min="1"
-                    max="15"
-                    step="1"
-                    value={config.silenceTimeout}
-                    onChange={(e) => setConfig({ ...config, silenceTimeout: Number.parseInt(e.target.value) })}
-                    className="w-full"
-                  />
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
           {/* JSON Preview */}
           <Card>
             <CardHeader>
-              <div className="flex items-center justify-between">
-                <CardTitle className="text-base">Configuration JSON</CardTitle>
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <CardTitle className="text-base">Configuration JSON</CardTitle>
+                  <CardDescription>Reflects the current agent payload shape from `/agents/:id`.</CardDescription>
+                </div>
                 <Button
                   variant="ghost"
                   size="sm"
                   onClick={() => {
-                    navigator.clipboard.writeText(JSON.stringify(config, null, 2))
+                    navigator.clipboard.writeText(JSON.stringify(configurationJson, null, 2))
                     toast({ title: "Copied", description: "Configuration copied to clipboard" })
                   }}
                 >
@@ -559,7 +441,7 @@ export function AgentDetailPage({ agentId, onBack }: AgentDetailPageProps) {
             </CardHeader>
             <CardContent>
               <pre className="p-4 bg-muted rounded-lg text-xs font-mono overflow-auto max-h-[200px]">
-                {JSON.stringify(config, null, 2)}
+                {JSON.stringify(configurationJson, null, 2)}
               </pre>
             </CardContent>
           </Card>
@@ -639,80 +521,6 @@ export function AgentDetailPage({ agentId, onBack }: AgentDetailPageProps) {
                     </option>
                   ))}
                 </select>
-              </div>
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        {/* Tools Tab */}
-        <TabsContent value="tools" className="space-y-6 mt-6">
-          <Card>
-            <CardHeader>
-              <CardTitle>Available Tools</CardTitle>
-              <CardDescription>Enable or disable tools for this agent</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-4">
-                {tools.map((tool) => (
-                  <div key={tool.id} className="flex items-center justify-between p-4 rounded-lg border">
-                    <div className="flex items-center gap-4">
-                      <Switch checked={tool.enabled} onCheckedChange={() => handleToggleTool(tool.id)} />
-                      <div>
-                        <p className="font-medium font-mono">{tool.name}</p>
-                        <p className="text-sm text-muted-foreground">{tool.description}</p>
-                        {tool.lastUsed && (
-                          <p className="text-xs text-muted-foreground mt-1">
-                            Last used: {tool.lastUsed} • Success rate: {tool.successRate}%
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                    <Button variant="outline" size="sm" onClick={() => handleTestTool(tool.name)}>
-                      <TestTube className="h-4 w-4 mr-2" />
-                      Test
-                    </Button>
-                  </div>
-                ))}
-              </div>
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        {/* Testing Tab */}
-        <TabsContent value="testing" className="space-y-6 mt-6">
-          <Card>
-            <CardHeader>
-              <CardTitle>Test Conversation</CardTitle>
-              <CardDescription>Send test messages to the agent</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <ScrollArea className="h-[300px] rounded-lg border p-4">
-                {testOutput.length === 0 ? (
-                  <p className="text-muted-foreground text-center py-12">Send a message to start testing</p>
-                ) : (
-                  <div className="space-y-3">
-                    {testOutput.map((msg, i) => (
-                      <div
-                        key={i}
-                        className={`p-3 rounded-lg ${msg.startsWith("You:") ? "bg-primary/10 ml-8" : "bg-muted mr-8"}`}
-                      >
-                        {msg}
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </ScrollArea>
-              <div className="flex gap-2">
-                <Input
-                  placeholder="Type a message..."
-                  value={testInput}
-                  onChange={(e) => setTestInput(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && handleTestChat()}
-                  disabled={isTesting}
-                />
-                <Button onClick={handleTestChat} disabled={isTesting || !testInput.trim()}>
-                  {isTesting ? "Sending..." : "Send"}
-                </Button>
               </div>
             </CardContent>
           </Card>

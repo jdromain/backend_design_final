@@ -56,6 +56,36 @@ vi.mock("./health/checks", () => ({
   runHealthChecks: vi.fn(),
 }));
 
+vi.mock("./persistence/store", async () => {
+  const actual = await vi.importActual<typeof import("./persistence/store")>("./persistence/store");
+  return {
+    ...actual,
+    PersistenceStore: class extends actual.PersistenceStore {
+      async deleteDocument(orgId: string, docId: string) {
+        if (docId === "doc-not-found") {
+          return {
+            ok: false as const,
+            docId,
+            orgId,
+            rowsDeletedDocs: 0,
+            rowsDeletedChunks: 0,
+            durationMs: 1,
+            failureCategory: "not_found" as const,
+          };
+        }
+        return {
+          ok: true as const,
+          docId,
+          orgId,
+          rowsDeletedDocs: 1,
+          rowsDeletedChunks: 2,
+          durationMs: 1,
+        };
+      }
+    },
+  };
+});
+
 import { query } from "./persistence/dbClient";
 import { buildServer } from "./server";
 import {
@@ -153,7 +183,7 @@ function wireDbMocks() {
     if (s.includes("select call_id, payload") && s.includes("tool_called")) {
       return { rows: [] };
     }
-    if (s.includes("in ('initiated'") && s.includes("from calls")) {
+    if (s.includes("from calls") && s.includes("status = any") && s.includes("ended_at is null")) {
       if (p0 === TEST_ORG_ID) {
         return { rows: [testOrganizationLiveRow] };
       }
@@ -177,7 +207,7 @@ function wireDbMocks() {
     if (s.includes("tool_invocations") && s.includes("tool_called")) {
       return { rows: [{ tool_invocations: 5 }] };
     }
-    if (s.includes("from calls") && s.includes("limit 100")) {
+    if (s.includes("from calls c") && s.includes("order by c.started_at desc")) {
       if (p0 === TEST_ORG_ID) {
         return { rows: [testOrganizationCallRow, testOrganizationFailedStatusOnlyRow] };
       }
@@ -261,6 +291,19 @@ describe("platform-api HTTP contract (inject)", () => {
     expect(Value.Check(AnalyticsSummaryEnvelopeSchema, body)).toBe(true);
     expect(body.data.totalCalls).toBe(4);
     expect(body.data.toolInvocations).toBe(5);
+  });
+
+  it("POST /knowledge/documents/:docId/delete deletes knowledge document via compatibility route", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/knowledge/documents/doc-123/delete",
+      headers: { authorization: `Bearer ${bearerForOrg()}` },
+      payload: {},
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body?.data?.ok).toBe(true);
+    expect(body?.data?.diagnostics?.docId).toBe("doc-123");
   });
 
   it("POST /auth/login is removed in Clerk-first mode", async () => {

@@ -33,6 +33,7 @@ import {
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import type { CallRecord } from "@/types/api"
+import { getUiCapabilities } from "@/lib/data/capabilities"
 
 export type QuickFilter = "completed" | "handoff" | "dropped" | "failed" | "long" | "toolErrors" | null
 
@@ -76,6 +77,11 @@ export function CallsTable({
     failureType: true,
   })
   const [currentPage, setCurrentPage] = useState(0)
+  const [canDownloadTranscript, setCanDownloadTranscript] = useState(false)
+
+  useEffect(() => {
+    void getUiCapabilities().then((caps) => setCanDownloadTranscript(caps.calls.transcriptDownload))
+  }, [])
 
   // Reset to first page when filters or sort change
   useEffect(() => {
@@ -338,15 +344,17 @@ export function CallsTable({
                             <Eye className="mr-2 h-4 w-4" />
                             View details
                           </DropdownMenuItem>
-                          <DropdownMenuItem
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              toast({ title: "Coming soon", description: "Download transcript is not yet available." })
-                            }}
-                          >
-                            <Download className="mr-2 h-4 w-4" />
-                            Download transcript
-                          </DropdownMenuItem>
+                          {canDownloadTranscript && (
+                            <DropdownMenuItem
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                toast({ title: "Coming soon", description: "Download transcript is not yet available." })
+                              }}
+                            >
+                              <Download className="mr-2 h-4 w-4" />
+                              Download transcript
+                            </DropdownMenuItem>
+                          )}
                         </DropdownMenuContent>
                       </DropdownMenu>
                     </TableCell>

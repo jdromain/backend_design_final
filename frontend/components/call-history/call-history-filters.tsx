@@ -33,9 +33,26 @@ interface CallHistoryFiltersProps {
   onFiltersChange: (filters: Filters) => void
   phoneLines: { id: string; number: string }[]
   tools: string[]
+  intents?: string[]
+  endReasons?: string[]
+  directions?: string[]
 }
 
-export function CallHistoryFilters({ filters, onFiltersChange, phoneLines, tools }: CallHistoryFiltersProps) {
+export function CallHistoryFilters({
+  filters,
+  onFiltersChange,
+  phoneLines,
+  tools,
+  intents = ["Billing", "Support", "Sales", "Booking", "Unknown"],
+  endReasons = [
+    "Normal completion",
+    "Customer requested human",
+    "Caller hung up",
+    "Tool timeout",
+    "API error",
+  ],
+  directions = ["inbound", "outbound"],
+}: CallHistoryFiltersProps) {
   const [moreFiltersOpen, setMoreFiltersOpen] = useState(false)
 
   const results = [
@@ -43,15 +60,6 @@ export function CallHistoryFilters({ filters, onFiltersChange, phoneLines, tools
     { value: "handoff", label: "Handoff" },
     { value: "dropped", label: "Dropped" },
     { value: "systemFailed", label: "System Failed" },
-  ]
-  const intents = ["Billing", "Support", "Sales", "Booking", "Unknown"]
-  const directions = ["inbound", "outbound"]
-  const endReasons = [
-    { value: "Goal achieved", label: "Goal achieved" },
-    { value: "Customer requested human", label: "Customer requested human" },
-    { value: "Caller hung up", label: "Caller hung up" },
-    { value: "Tool timeout", label: "Tool timeout" },
-    { value: "API error", label: "API error" },
   ]
 
   const updateFilter = <K extends keyof Filters>(key: K, value: Filters[K]) => {
@@ -207,8 +215,22 @@ export function CallHistoryFilters({ filters, onFiltersChange, phoneLines, tools
               <SelectContent>
                 <SelectItem value="all">All</SelectItem>
                 {endReasons.map((reason) => (
-                  <SelectItem key={reason.value} value={reason.value}>
-                    {reason.label}
+                  <SelectItem key={reason} value={reason}>
+                    {reason}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+
+            <Select value={filters.toolUsed} onValueChange={(v) => updateFilter("toolUsed", v)}>
+              <SelectTrigger className="w-[180px]">
+                <SelectValue placeholder="Tool Used" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Tools</SelectItem>
+                {tools.map((tool) => (
+                  <SelectItem key={tool} value={tool}>
+                    {tool}
                   </SelectItem>
                 ))}
               </SelectContent>

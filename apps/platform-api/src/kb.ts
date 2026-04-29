@@ -65,6 +65,21 @@ function asNonEmptyString(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+function isDocumentActive(metadata?: Record<string, unknown>): boolean {
+  if (!metadata) return true;
+  return metadata.active !== false;
+}
+
+function resolvePassageDocId(passage: { id?: string; metadata?: Record<string, unknown> }): string | null {
+  const metaDocId = asNonEmptyString(passage.metadata?.doc_id);
+  if (metaDocId) return metaDocId;
+
+  const id = asNonEmptyString(passage.id);
+  if (!id) return null;
+  const [docId] = id.split("::");
+  return asNonEmptyString(docId);
+}
+
 function resolveOrgIdForKbRequest(
   request: FastifyRequest,
   reply: FastifyReply,
@@ -173,14 +188,33 @@ export async function kbRetrieveHandler(
   logger.info("kb retrieve", { org_id: resolvedOrgId, business_id: effectiveBusinessId, namespace, topK: topK ?? 5 });
 
   try {
+    const docs = await persistence.loadDocuments({ orgId: resolvedOrgId, namespace });
+    const activeDocIds = new Set(
+      docs
+        .filter((doc) => isDocumentActive(doc.metadata))
+        .map((doc) => doc.docId)
+    );
+    if (activeDocIds.size === 0) {
+      logger.info("kb retrieve results", { org_id: resolvedOrgId, namespace, matchCount: 0, reason: "no_active_docs" });
+      return { passages: [] };
+    }
+
+    const requestedTopK = Math.max(1, topK ?? 5);
+    const retrievalTopK = Math.max(requestedTopK * 4, requestedTopK);
     const store = getVectorStore();
-    const passages = await store.query({
+    const rawPassages = await store.query({
       orgId: resolvedOrgId,
       namespace,
       queryText: query,
-      topK: topK ?? 5,
+      topK: retrievalTopK,
       threshold: 0.3, // Generous threshold — let the model decide relevance
     });
+    const passages = rawPassages
+      .filter((passage) => {
+        const docId = resolvePassageDocId(passage);
+        return !!docId && activeDocIds.has(docId);
+      })
+      .slice(0, requestedTopK);
 
     logger.info("kb retrieve results", { org_id: resolvedOrgId, namespace, matchCount: passages.length });
     return { passages };
@@ -209,13 +243,18 @@ export async function kbIngestHandler(
   const effectiveBusinessId = asNonEmptyString(business_id) ?? (await resolveBusinessIdForOrg(resolvedOrgId));
 
   const id = doc_id ?? uuidv4();
+  const normalizedMetadata = { ...(metadata ?? {}) };
+  if (typeof normalizedMetadata.active !== "boolean") {
+    normalizedMetadata.active = true;
+  }
+
   const docRecord = {
     orgId: resolvedOrgId,
     businessId: effectiveBusinessId,
     namespace,
     docId: id,
     text,
-    metadata,
+    metadata: normalizedMetadata,
     ingestedAt: new Date().toISOString(),
   };
 
@@ -242,7 +281,7 @@ export async function kbIngestHandler(
         chunks: chunks.map(c => ({
           index: c.index,
           text: c.text,
-          metadata: { business_id: effectiveBusinessId, doc_id: id, ...metadata },
+          metadata: { business_id: effectiveBusinessId, doc_id: id, ...normalizedMetadata },
         })),
       });
 

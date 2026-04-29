@@ -111,7 +111,13 @@ export type CallSessionContext = {
   startedAt: Date;
 };
 
-export type CallEndReason = "caller_hangup" | "agent_end" | "transfer" | "timeout" | "error";
+export type CallEndReason =
+  | "caller_hangup"
+  | "agent_end"
+  | "normal_completion"
+  | "transfer"
+  | "timeout"
+  | "error";
 
 export type UsageBreakdown = {
   callDurationSec: number;
@@ -201,4 +207,3 @@ export type EventPayloadByType = {
 };
 
 export type TypedEventEnvelope<E extends EventType> = EventEnvelope<EventPayloadByType[E]>;
-

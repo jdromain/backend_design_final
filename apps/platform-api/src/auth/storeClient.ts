@@ -85,6 +85,42 @@ export class AuthStoreClient {
     };
   }
 
+  async listByClerkId(clerkId: string): Promise<AuthUser[]> {
+    try {
+      const result = await query(
+        "SELECT id, org_id, email, roles FROM users WHERE clerk_id = $1 AND status = 'active'",
+        [clerkId],
+      );
+      return result.rows.map((row: any) => ({
+        userId: row.id,
+        orgId: row.org_id,
+        email: row.email,
+        roles: row.roles ?? ["viewer"],
+      }));
+    } catch (err) {
+      logger.warn("listByClerkId failed", { error: (err as Error).message, clerkId });
+      return [];
+    }
+  }
+
+  async listByEmail(email: string): Promise<AuthUser[]> {
+    try {
+      const result = await query(
+        "SELECT id, org_id, email, roles FROM users WHERE LOWER(email) = LOWER($1) AND status = 'active'",
+        [email],
+      );
+      return result.rows.map((row: any) => ({
+        userId: row.id,
+        orgId: row.org_id,
+        email: row.email,
+        roles: row.roles ?? ["viewer"],
+      }));
+    } catch (err) {
+      logger.warn("listByEmail failed", { error: (err as Error).message, email });
+      return [];
+    }
+  }
+
   async listByOrg(orgId: string): Promise<AuthUser[]> {
     try {
       const result = await query(

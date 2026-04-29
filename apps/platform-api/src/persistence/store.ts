@@ -7,7 +7,7 @@
 
 import { AgentConfigSnapshot, PhoneNumberConfig, PlanSnapshot } from "@rezovo/core-types";
 import { createLogger } from "@rezovo/logging";
-import { query } from "./dbClient";
+import { query, withTransaction } from "./dbClient";
 import { getRedisClient, isRedisEnabled } from "../redis/client";
 
 type StoredConfig = {
@@ -56,6 +56,26 @@ export type StoredDocument = {
   ingestedAt: string;
   embeddedChunks?: number;
 };
+
+export type DeleteDocumentResult =
+  | {
+      ok: true;
+      docId: string;
+      orgId: string;
+      rowsDeletedDocs: number;
+      rowsDeletedChunks: number;
+      durationMs: number;
+    }
+  | {
+      ok: false;
+      docId: string;
+      orgId: string;
+      rowsDeletedDocs: number;
+      rowsDeletedChunks: number;
+      durationMs: number;
+      failureCategory: "not_found" | "org_mismatch" | "db_error";
+      errorMessage?: string;
+    };
 
 const logger = createLogger({ service: "platform-api", module: "persistence" });
 
@@ -229,6 +249,142 @@ export class PersistenceStore {
     } catch (err) {
       logger.warn("failed to load documents", { error: (err as Error).message });
       return [];
+    }
+  }
+
+  async updateDocument(params: {
+    orgId: string;
+    docId: string;
+    namespace?: string;
+    metadataPatch?: Record<string, unknown>;
+  }): Promise<boolean> {
+    const hasNamespace = typeof params.namespace === "string" && params.namespace.trim().length > 0;
+    const hasMetadataPatch =
+      !!params.metadataPatch && Object.keys(params.metadataPatch).length > 0;
+
+    if (!hasNamespace && !hasMetadataPatch) {
+      return false;
+    }
+
+    try {
+      const result = await query(
+        `UPDATE kb_documents
+         SET namespace = COALESCE($3, namespace),
+             metadata = CASE
+               WHEN $4::jsonb IS NULL THEN metadata
+               ELSE COALESCE(metadata, '{}'::jsonb) || $4::jsonb
+             END,
+             updated_at = now()
+         WHERE org_id = $1 AND doc_id = $2
+         RETURNING doc_id`,
+        [
+          params.orgId,
+          params.docId,
+          hasNamespace ? params.namespace!.trim() : null,
+          hasMetadataPatch ? JSON.stringify(params.metadataPatch ?? {}) : null,
+        ],
+      );
+      return (result.rowCount ?? 0) > 0;
+    } catch (err) {
+      logger.warn("failed to update document", {
+        error: (err as Error).message,
+        orgId: params.orgId,
+        docId: params.docId,
+      });
+      return false;
+    }
+  }
+
+  async deleteDocument(orgId: string, docId: string): Promise<DeleteDocumentResult> {
+    const startedAt = Date.now();
+    try {
+      const result = await withTransaction(async (client) => {
+        // Defensive delete order for environments whose FK may not be ON DELETE CASCADE.
+        const chunkResult = await client.query(
+          `DELETE FROM kb_chunks
+           WHERE org_id = $1 AND doc_id = $2`,
+          [orgId, docId],
+        );
+        const docResult = await client.query(
+          `DELETE FROM kb_documents
+           WHERE org_id = $1 AND doc_id = $2
+           RETURNING doc_id`,
+          [orgId, docId],
+        );
+        return {
+          chunkRows: chunkResult.rowCount ?? 0,
+          docRows: docResult.rowCount ?? 0,
+        };
+      });
+
+      const durationMs = Date.now() - startedAt;
+      if (result.docRows <= 0) {
+        const crossOrgResult = await query(
+          `SELECT org_id
+           FROM kb_documents
+           WHERE doc_id = $1
+           LIMIT 1`,
+          [docId],
+        );
+        const failureCategory =
+          crossOrgResult.rowCount && crossOrgResult.rows[0]?.org_id !== orgId
+            ? "org_mismatch"
+            : "not_found";
+        logger.info("kb delete miss", {
+          orgId,
+          docId,
+          rows_deleted_docs: result.docRows,
+          rows_deleted_chunks: result.chunkRows,
+          durationMs,
+          failure_category: failureCategory,
+        });
+        return {
+          ok: false,
+          orgId,
+          docId,
+          rowsDeletedDocs: result.docRows,
+          rowsDeletedChunks: result.chunkRows,
+          durationMs,
+          failureCategory,
+        };
+      }
+
+      logger.info("kb delete success", {
+        orgId,
+        docId,
+        rows_deleted_docs: result.docRows,
+        rows_deleted_chunks: result.chunkRows,
+        durationMs,
+      });
+      return {
+        ok: true,
+        orgId,
+        docId,
+        rowsDeletedDocs: result.docRows,
+        rowsDeletedChunks: result.chunkRows,
+        durationMs,
+      };
+    } catch (err) {
+      const durationMs = Date.now() - startedAt;
+      logger.warn("failed to delete document", {
+        error: (err as Error).message,
+        orgId,
+        docId,
+        rows_deleted_docs: 0,
+        rows_deleted_chunks: 0,
+        durationMs,
+        failure_category: "db_error",
+      });
+      return {
+        ok: false,
+        orgId,
+        docId,
+        rowsDeletedDocs: 0,
+        rowsDeletedChunks: 0,
+        durationMs,
+        failureCategory: "db_error",
+        errorMessage: (err as Error).message,
+      };
     }
   }
 

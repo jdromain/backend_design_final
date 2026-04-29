@@ -19,10 +19,9 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { Download, Trash2, Tag, ChevronDown, Save, History } from "lucide-react"
+import { Download, Trash2, Tag } from "lucide-react"
 import { Separator } from "@/components/ui/separator"
 import {
   Dialog,
@@ -38,8 +37,15 @@ import { CreateFollowUpModal } from "@/components/actions/create-follow-up-modal
 import type { Contact } from "@/lib/actions-store"
 import { subDays } from "date-fns"
 
-import { getCallHistory, getPhoneLines, getTools } from "@/lib/data/call-history"
+import {
+  getCallHistory,
+  getCallHistoryFacets,
+  bulkDeleteCalls,
+  bulkTagCalls,
+  createFollowUpFromCall,
+} from "@/lib/data/call-history"
 import { ApiError, waitForAuthReady } from "@/lib/api-client"
+import { getUiCapabilities } from "@/lib/data/capabilities"
 
 interface SavedView {
   id: string
@@ -134,41 +140,32 @@ function mapInitialFilterToResults(filter: string): string[] {
   return []
 }
 
+function buildInitialFilters(initialFilter?: string, initialIntent?: string, initialReason?: string): Filters {
+  return {
+    ...defaultFilters,
+    ...(initialFilter ? { results: mapInitialFilterToResults(initialFilter) } : {}),
+    ...(initialIntent !== undefined && initialIntent !== "" ? { intent: initialIntent } : {}),
+    ...(initialReason !== undefined && initialReason !== "" ? { endReason: initialReason } : {}),
+  }
+}
+
 export function HistoryPage({ initialFilter, initialIntent, initialReason }: HistoryPageProps = {}) {
   const [calls, setCalls] = useState<CallRecord[]>([])
   const [phoneLines, setPhoneLines] = useState<{ id: string; number: string; name: string }[]>([])
   const [tools, setTools] = useState<string[]>([])
+  const [intentFacets, setIntentFacets] = useState<string[]>([])
+  const [endReasonFacets, setEndReasonFacets] = useState<string[]>([])
+  const [directionFacets, setDirectionFacets] = useState<string[]>(["inbound", "outbound"])
   const [loading, setLoading] = useState(true)
 
-  const [dateRange, setDateRange] = useState({
-    from: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
-    to: new Date(),
+  const [dateRange, setDateRange] = useState(() => {
+    const to = new Date()
+    return { from: subDays(to, 7), to }
   })
 
-  const [filters, setFilters] = useState<Filters>({
-    search: "",
-    results: [],
-    intent: "",
-    phoneLine: "",
-    direction: "",
-    endReason: "",
-    durationBucket: "",
-    toolUsed: "",
-    toolErrorsOnly: false,
-    tags: [],
-  })
-
-  // Apply initial filter/intent/reason from dashboard deep links (e.g. Needs Attention, Insights)
-  useEffect(() => {
-    if (initialFilter || initialIntent || initialReason) {
-      setFilters((prev) => ({
-        ...prev,
-        ...(initialFilter ? { results: mapInitialFilterToResults(initialFilter) } : {}),
-        ...(initialIntent !== undefined && initialIntent !== "" ? { intent: initialIntent } : {}),
-        ...(initialReason !== undefined && initialReason !== "" ? { endReason: initialReason } : {}),
-      }))
-    }
-  }, [initialFilter, initialIntent, initialReason])
+  const [filters, setFilters] = useState<Filters>(() =>
+    buildInitialFilters(initialFilter, initialIntent, initialReason),
+  )
 
   const [selectedCall, setSelectedCall] = useState<CallRecord | null>(null)
   const [drawerOpen, setDrawerOpen] = useState(false)
@@ -177,6 +174,7 @@ export function HistoryPage({ initialFilter, initialIntent, initialReason }: His
 
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
+  const [canBulkMutateHistory, setCanBulkMutateHistory] = useState(false)
 
   const [savedViews, setSavedViews] = useState<SavedView[]>(() => {
     if (typeof window !== "undefined") {
@@ -191,23 +189,48 @@ export function HistoryPage({ initialFilter, initialIntent, initialReason }: His
 
   // Load data on mount
   useEffect(() => {
+    void getUiCapabilities().then((caps) => setCanBulkMutateHistory(caps.calls.historyBulkMutations))
+  }, [])
+
+  useEffect(() => {
     let cancelled = false
+    let timer: ReturnType<typeof setTimeout> | null = null
 
     const loadData = async () => {
+      setLoading(true)
       await waitForAuthReady()
 
       let loadError: unknown = null
       for (let attempt = 0; attempt < 3; attempt += 1) {
         try {
-          const [callsData, phoneLinesData, toolsData] = await Promise.all([
-            getCallHistory(),
-            getPhoneLines(),
-            getTools(),
+          const [callsData, facets] = await Promise.all([
+            getCallHistory({
+              from: dateRange.from,
+              to: dateRange.to,
+              result: filters.results,
+              intent: filters.intent,
+              endReason: filters.endReason,
+              phoneLine: filters.phoneLine,
+              toolUsed: filters.toolUsed,
+              toolErrorsOnly: filters.toolErrorsOnly,
+              direction: filters.direction,
+              search: filters.search,
+              limit: 500,
+              page: 1,
+            }),
+            getCallHistoryFacets({
+              from: dateRange.from,
+              to: dateRange.to,
+            }),
           ])
           if (cancelled) return
           setCalls(callsData)
-          setPhoneLines(phoneLinesData)
-          setTools(toolsData)
+          setSelectedIds((prev) => prev.filter((id) => callsData.some((call) => call.callId === id)))
+          setPhoneLines(facets.phoneLines)
+          setTools(facets.tools)
+          setIntentFacets(facets.intents)
+          setEndReasonFacets(facets.endReasons)
+          setDirectionFacets(facets.directions.length > 0 ? facets.directions : ["inbound", "outbound"])
           setLoading(false)
           return
         } catch (error) {
@@ -234,11 +257,27 @@ export function HistoryPage({ initialFilter, initialIntent, initialReason }: His
       setLoading(false)
     }
 
-    loadData()
+    const debounceMs = filters.search.trim().length > 0 ? 250 : 0
+    timer = setTimeout(() => {
+      void loadData()
+    }, debounceMs)
+
     return () => {
       cancelled = true
+      if (timer) clearTimeout(timer)
     }
-  }, [])
+  }, [
+    dateRange.from,
+    dateRange.to,
+    filters.search,
+    filters.results,
+    filters.intent,
+    filters.phoneLine,
+    filters.toolUsed,
+    filters.toolErrorsOnly,
+    filters.direction,
+    filters.endReason,
+  ])
 
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -248,24 +287,6 @@ export function HistoryPage({ initialFilter, initialIntent, initialReason }: His
 
   const filteredCalls = useMemo(() => {
     return calls.filter((call) => {
-      const callDate = new Date(call.startedAt)
-      if (callDate < dateRange.from || callDate > dateRange.to) return false
-
-      if (filters.search) {
-        const searchLower = filters.search.toLowerCase()
-        const matchesSearch =
-          call.callerNumber.toLowerCase().includes(searchLower) ||
-          call.callId.toLowerCase().includes(searchLower) ||
-          (call.callerName?.toLowerCase().includes(searchLower) ?? false)
-        if (!matchesSearch) return false
-      }
-
-      if (filters.results.length > 0 && !filters.results.includes(call.result)) return false
-      if (filters.intent && filters.intent !== "all" && call.intent !== filters.intent) return false
-      if (filters.phoneLine && filters.phoneLine !== "all" && call.phoneLineId !== filters.phoneLine) return false
-      if (filters.direction && filters.direction !== "all" && call.direction !== filters.direction) return false
-      if (filters.endReason && filters.endReason !== "all" && call.endReason !== filters.endReason) return false
-
       if (filters.toolUsed && filters.toolUsed !== "all") {
         if (!call.toolsUsed.some((t) => t.name === filters.toolUsed)) return false
       }
@@ -280,7 +301,7 @@ export function HistoryPage({ initialFilter, initialIntent, initialReason }: His
 
       return true
     })
-  }, [calls, dateRange, filters])
+  }, [calls, filters.toolUsed, filters.toolErrorsOnly, filters.durationBucket])
 
   const handleRemoveFilter = (key: keyof Filters, value?: string) => {
     if (key === "results" && value) {
@@ -368,7 +389,7 @@ export function HistoryPage({ initialFilter, initialIntent, initialReason }: His
   }, [calls])
 
   const handleActionSubmit = useCallback(
-    (data: {
+    async (data: {
       contactId: string
       type: string
       priority: number
@@ -376,7 +397,16 @@ export function HistoryPage({ initialFilter, initialIntent, initialReason }: His
       notes: string
       ownerId?: string
     }) => {
-      // In a real app, this would create the follow-up action via API
+      if (!callForAction) return
+      await createFollowUpFromCall({
+        callId: callForAction.callId,
+        contactId: data.contactId,
+        type: data.type,
+        priority: data.priority,
+        dueAt: data.dueAt,
+        notes: data.notes,
+        ownerId: data.ownerId,
+      })
       toast({
         title: "Action Created",
         description: `Follow-up action created for call ${callForAction?.callId}. ${data.type} follow-up scheduled.`,
@@ -386,7 +416,7 @@ export function HistoryPage({ initialFilter, initialIntent, initialReason }: His
       setCreateActionModalOpen(false)
       setCallForAction(null)
     },
-    [callForAction, toast],
+    [callForAction],
   )
 
   // Create contacts list for modal (convert call to contact if available)
@@ -409,15 +439,42 @@ export function HistoryPage({ initialFilter, initialIntent, initialReason }: His
     setSelectedIds((prev) => (checked ? [...prev, callId] : prev.filter((id) => id !== callId)))
   }, [])
 
-  const handleBulkDelete = useCallback(() => {
+  const handleBulkDelete = useCallback(async () => {
+    if (!canBulkMutateHistory) {
+      toast({
+        title: "Bulk delete unavailable",
+        description: "Backend capability for history bulk mutations is disabled in this environment.",
+      })
+      setDeleteConfirmOpen(false)
+      return
+    }
+    const res = await bulkDeleteCalls(selectedIds)
     setCalls((prev) => prev.filter((c) => !selectedIds.includes(c.callId)))
     setSelectedIds([])
     setDeleteConfirmOpen(false)
     toast({
       title: "Calls Deleted",
-      description: `${selectedIds.length} calls removed from history`,
+      description: `${res.deletedCount} calls removed from history`,
     })
-  }, [selectedIds])
+  }, [canBulkMutateHistory, selectedIds])
+
+  const handleBulkTag = useCallback(async () => {
+    if (!canBulkMutateHistory) {
+      toast({
+        title: "Tagging unavailable",
+        description: "Backend capability for history bulk mutations is disabled in this environment.",
+      })
+      return
+    }
+    const raw = window.prompt("Enter a tag for selected calls")
+    const tag = raw?.trim() ?? ""
+    if (!tag) return
+    const res = await bulkTagCalls(selectedIds, tag)
+    toast({
+      title: "Calls Tagged",
+      description: `${res.taggedCount} calls tagged as "${tag}".`,
+    })
+  }, [canBulkMutateHistory, selectedIds])
 
   const handleSaveView = useCallback(() => {
     if (!newViewName.trim()) return
@@ -453,15 +510,6 @@ export function HistoryPage({ initialFilter, initialIntent, initialReason }: His
     }
   }, [])
 
-  const handleDeleteView = useCallback(
-    (viewId: string) => {
-      setSavedViews((prev) => prev.filter((v) => v.id !== viewId))
-      if (currentViewId === viewId) setCurrentViewId(null)
-      toast({ title: "View Deleted" })
-    },
-    [currentViewId],
-  )
-
   return (
     <ErrorBoundary>
       <div className="space-y-6">
@@ -487,6 +535,9 @@ export function HistoryPage({ initialFilter, initialIntent, initialReason }: His
             }}
             phoneLines={phoneLines}
             tools={tools}
+            intents={intentFacets}
+            endReasons={endReasonFacets}
+            directions={directionFacets}
           />
 
           <ActiveFilterChips
@@ -523,9 +574,8 @@ export function HistoryPage({ initialFilter, initialIntent, initialReason }: His
           <Button
             variant="outline"
             size="sm"
-            onClick={() =>
-              toast({ title: "Coming Soon", description: "Tagging will be available in a future update." })
-            }
+            onClick={() => void handleBulkTag()}
+            disabled={!canBulkMutateHistory}
           >
             <Tag className="h-4 w-4 mr-2" />
             Tag
@@ -534,7 +584,17 @@ export function HistoryPage({ initialFilter, initialIntent, initialReason }: His
             variant="outline"
             size="sm"
             className="text-destructive bg-transparent"
-            onClick={() => setDeleteConfirmOpen(true)}
+            onClick={() => {
+              if (!canBulkMutateHistory) {
+                toast({
+                  title: "Bulk delete unavailable",
+                  description: "Backend capability for history bulk mutations is disabled in this environment.",
+                })
+                return
+              }
+              setDeleteConfirmOpen(true)
+            }}
+            disabled={!canBulkMutateHistory}
           >
             <Trash2 className="h-4 w-4 mr-2" />
             Delete

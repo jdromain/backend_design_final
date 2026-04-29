@@ -46,6 +46,8 @@ import { registerTeamRoutes } from "./routes/team";
 import { registerDeveloperRoutes } from "./routes/developer";
 import { registerKnowledgeRoutes } from "./routes/knowledge";
 import { registerSearchRoutes } from "./routes/search";
+import { registerUiCapabilitiesRoutes } from "./routes/uiCapabilities";
+import { registerIntegrationsRoutes } from "./routes/integrations";
 import { clerkSyncHandler } from "./webhooks/clerkSync";
 import { calendlyWebhookHandler } from "./webhooks/calendly";
 import { registerHttpAccessLogging, registerHttpErrorLogging } from "./logging/httpAccessLog";
@@ -56,6 +58,21 @@ export function buildServer(eventBus: EventBusClient): FastifyInstance<any, any,
   const app = fastify().withTypeProvider<TypeBoxTypeProvider>();
 
   registerHttpAccessLogging(app);
+
+  // Accept empty JSON bodies for compatibility with stale browser bundles
+  // that send DELETE + Content-Type: application/json but no payload.
+  app.addContentTypeParser(/^application\/(.+\+)?json($|;)/i, { parseAs: "string" }, (request, body, done) => {
+    const raw = typeof body === "string" ? body.trim() : "";
+    if (raw.length === 0) {
+      done(null, {});
+      return;
+    }
+    try {
+      done(null, JSON.parse(raw));
+    } catch (error) {
+      done(error as Error, undefined);
+    }
+  });
 
   // CORS -- env-driven origins + localhost defaults
   const corsOrigins: string[] = [
@@ -342,6 +359,8 @@ export function buildServer(eventBus: EventBusClient): FastifyInstance<any, any,
   registerDeveloperRoutes(app as any);
   registerKnowledgeRoutes(app as any);
   registerSearchRoutes(app as any);
+  registerUiCapabilitiesRoutes(app as any);
+  registerIntegrationsRoutes(app as any);
 
   registerHttpErrorLogging(app);
 

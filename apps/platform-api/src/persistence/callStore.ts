@@ -75,56 +75,82 @@ export interface PhoneNumberRecord {
 export class CallStore {
   // ─── Calls ───
 
-  async upsertCall(call: CallRecord): Promise<void> {
+  private async runUpsertCall(call: CallRecord): Promise<boolean> {
+    const result = await query(
+      `INSERT INTO calls (
+        call_id, org_id, phone_number, caller_number, twilio_call_sid,
+        direction, classified_intent, intent_confidence, final_intent,
+        agent_config_id, agent_config_ver, status, started_at, answered_at,
+        ended_at, duration_sec, end_reason, outcome, failure_type, slots_collected,
+        summary, turn_count, llm_tokens_in, llm_tokens_out, tts_chars, stt_seconds
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)
+      ON CONFLICT (call_id) DO UPDATE SET
+        status = EXCLUDED.status,
+        classified_intent = COALESCE(EXCLUDED.classified_intent, calls.classified_intent),
+        intent_confidence = COALESCE(EXCLUDED.intent_confidence, calls.intent_confidence),
+        final_intent = COALESCE(EXCLUDED.final_intent, calls.final_intent),
+        agent_config_id = COALESCE(EXCLUDED.agent_config_id, calls.agent_config_id),
+        agent_config_ver = COALESCE(EXCLUDED.agent_config_ver, calls.agent_config_ver),
+        answered_at = COALESCE(EXCLUDED.answered_at, calls.answered_at),
+        ended_at = COALESCE(EXCLUDED.ended_at, calls.ended_at),
+        duration_sec = COALESCE(EXCLUDED.duration_sec, calls.duration_sec),
+        end_reason = COALESCE(EXCLUDED.end_reason, calls.end_reason),
+        outcome = COALESCE(EXCLUDED.outcome, calls.outcome),
+        failure_type = COALESCE(EXCLUDED.failure_type, calls.failure_type),
+        slots_collected = COALESCE(EXCLUDED.slots_collected, calls.slots_collected),
+        summary = COALESCE(EXCLUDED.summary, calls.summary),
+        turn_count = COALESCE(EXCLUDED.turn_count, calls.turn_count),
+        llm_tokens_in = COALESCE(EXCLUDED.llm_tokens_in, calls.llm_tokens_in),
+        llm_tokens_out = COALESCE(EXCLUDED.llm_tokens_out, calls.llm_tokens_out),
+        tts_chars = COALESCE(EXCLUDED.tts_chars, calls.tts_chars),
+        stt_seconds = COALESCE(EXCLUDED.stt_seconds, calls.stt_seconds)
+      RETURNING call_id`,
+      [
+        call.callId, call.orgId, call.phoneNumber, call.callerNumber,
+        call.twilioCallSid ?? null, call.direction ?? "inbound",
+        call.classifiedIntent ?? null, call.intentConfidence ?? null,
+        call.finalIntent ?? null, call.agentConfigId ?? null,
+        call.agentConfigVer ?? null, call.status,
+        call.startedAt, call.answeredAt ?? null,
+        call.endedAt ?? null, call.durationSec ?? null,
+        call.endReason ?? null, call.outcome ?? null,
+        call.failureType ?? null,
+        JSON.stringify(call.slotsCollected ?? {}),
+        call.summary ?? null, call.turnCount ?? 0,
+        call.llmTokensIn ?? 0, call.llmTokensOut ?? 0, call.ttsChars ?? 0, call.sttSeconds ?? 0,
+      ]
+    );
+    return (result.rowCount ?? 0) > 0;
+  }
+
+  async upsertCall(call: CallRecord): Promise<boolean> {
     try {
-      await query(
-        `INSERT INTO calls (
-          call_id, org_id, phone_number, caller_number, twilio_call_sid,
-          direction, classified_intent, intent_confidence, final_intent,
-          agent_config_id, agent_config_ver, status, started_at, answered_at,
-          ended_at, duration_sec, end_reason, outcome, failure_type, slots_collected,
-          summary, turn_count, llm_tokens_in, llm_tokens_out, tts_chars, stt_seconds
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)
-        ON CONFLICT (call_id) DO UPDATE SET
-          status = EXCLUDED.status,
-          classified_intent = COALESCE(EXCLUDED.classified_intent, calls.classified_intent),
-          intent_confidence = COALESCE(EXCLUDED.intent_confidence, calls.intent_confidence),
-          final_intent = COALESCE(EXCLUDED.final_intent, calls.final_intent),
-          agent_config_id = COALESCE(EXCLUDED.agent_config_id, calls.agent_config_id),
-          agent_config_ver = COALESCE(EXCLUDED.agent_config_ver, calls.agent_config_ver),
-          answered_at = COALESCE(EXCLUDED.answered_at, calls.answered_at),
-          ended_at = COALESCE(EXCLUDED.ended_at, calls.ended_at),
-          duration_sec = COALESCE(EXCLUDED.duration_sec, calls.duration_sec),
-          end_reason = COALESCE(EXCLUDED.end_reason, calls.end_reason),
-          outcome = COALESCE(EXCLUDED.outcome, calls.outcome),
-          failure_type = COALESCE(EXCLUDED.failure_type, calls.failure_type),
-          slots_collected = COALESCE(EXCLUDED.slots_collected, calls.slots_collected),
-          summary = COALESCE(EXCLUDED.summary, calls.summary),
-          turn_count = COALESCE(EXCLUDED.turn_count, calls.turn_count),
-          llm_tokens_in = COALESCE(EXCLUDED.llm_tokens_in, calls.llm_tokens_in),
-          llm_tokens_out = COALESCE(EXCLUDED.llm_tokens_out, calls.llm_tokens_out),
-          tts_chars = COALESCE(EXCLUDED.tts_chars, calls.tts_chars),
-          stt_seconds = COALESCE(EXCLUDED.stt_seconds, calls.stt_seconds)`,
-        [
-          call.callId, call.orgId, call.phoneNumber, call.callerNumber,
-          call.twilioCallSid ?? null, call.direction ?? "inbound",
-          call.classifiedIntent ?? null, call.intentConfidence ?? null,
-          call.finalIntent ?? null, call.agentConfigId ?? null,
-          call.agentConfigVer ?? null, call.status,
-          call.startedAt, call.answeredAt ?? null,
-          call.endedAt ?? null, call.durationSec ?? null,
-          call.endReason ?? null, call.outcome ?? null,
-          call.failureType ?? null,
-          JSON.stringify(call.slotsCollected ?? {}),
-          call.summary ?? null, call.turnCount ?? 0,
-          call.llmTokensIn ?? 0, call.llmTokensOut ?? 0, call.ttsChars ?? 0, call.sttSeconds ?? 0,
-        ]
-      );
+      return await this.runUpsertCall(call);
     } catch (err) {
+      const pgError = err as { code?: string; message?: string };
+      if (pgError.code === "23514" && call.endReason === "normal_completion") {
+        logger.warn("calls.end_reason constraint missing normal_completion; falling back to agent_end", {
+          callId: call.callId,
+          orgId: call.orgId,
+        });
+        try {
+          return await this.runUpsertCall({ ...call, endReason: "agent_end" });
+        } catch (fallbackErr) {
+          logger.warn("fallback call upsert failed", {
+            error: (fallbackErr as Error).message,
+            callId: call.callId,
+            orgId: call.orgId,
+          });
+          return false;
+        }
+      }
+
       logger.warn("failed to upsert call record", {
         error: (err as Error).message,
         callId: call.callId,
+        orgId: call.orgId,
       });
+      return false;
     }
   }
 

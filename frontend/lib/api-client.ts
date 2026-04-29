@@ -164,47 +164,64 @@ async function request<T>(
   path: string,
   body?: unknown
 ): Promise<T> {
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-  };
-
-  const token = await resolveAuthToken();
-  if (token) {
-    headers["Authorization"] = `Bearer ${token}`;
+  const clerkMode = isBrowserClerkApiMode();
+  if (clerkMode) {
+    await waitForAuthReady();
   }
+  const bodyJson = body !== undefined ? JSON.stringify(body) : undefined;
 
-  const res = await fetch(`${BASE_URL}${path}`, {
-    method,
-    headers,
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
-
-  const contentType = res.headers.get("content-type") ?? "";
-  const isJson = contentType.includes("application/json");
-  const parsed = isJson ? await res.json() : await res.text();
-
-  if (res.status === 401) {
-    clearAuthToken();
-    if (typeof window !== "undefined") {
-      window.dispatchEvent(new CustomEvent("rezovo:unauthorized"));
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const headers: Record<string, string> = {};
+    if (body !== undefined) {
+      headers["Content-Type"] = "application/json";
     }
-    throw new ApiError(401, parsed);
+
+    const token = await resolveAuthToken();
+    if (token) {
+      headers["Authorization"] = `Bearer ${token}`;
+    }
+
+    const res = await fetch(`${BASE_URL}${path}`, {
+      method,
+      headers,
+      body: bodyJson,
+    });
+
+    const contentType = res.headers.get("content-type") ?? "";
+    const isJson = contentType.includes("application/json");
+    const parsed = isJson ? await res.json() : await res.text();
+
+    if (res.status === 401 && clerkMode && attempt === 0) {
+      await waitForAuthReady();
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      continue;
+    }
+
+    if (res.status === 401) {
+      clearAuthToken();
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent("rezovo:unauthorized"));
+      }
+      throw new ApiError(401, parsed);
+    }
+
+    if (!res.ok) {
+      throw new ApiError(res.status, parsed);
+    }
+
+    if (
+      isJson &&
+      parsed !== null &&
+      typeof parsed === "object" &&
+      "data" in parsed
+    ) {
+      return (parsed as ApiResponse<T>).data;
+    }
+
+    return parsed as T;
   }
 
-  if (!res.ok) {
-    throw new ApiError(res.status, parsed);
-  }
-
-  if (
-    isJson &&
-    parsed !== null &&
-    typeof parsed === "object" &&
-    "data" in parsed
-  ) {
-    return (parsed as ApiResponse<T>).data;
-  }
-
-  return parsed as T;
+  throw new ApiError(401, { error: "unauthorized" });
 }
 
 // ============================================================================

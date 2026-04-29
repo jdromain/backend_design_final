@@ -13,6 +13,8 @@ import {
   Loader2,
   AlertTriangle,
   Bot,
+  ToggleLeft,
+  ToggleRight,
 } from "lucide-react"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
@@ -42,6 +44,7 @@ export interface KbDocument {
   processingProgress: number
   chunks: number
   tokenEstimate: number
+  isActive: boolean
   errorMessage?: string
   usedByAgents: string[]
   uploadedAt: Date
@@ -56,8 +59,10 @@ interface DocumentsTableProps {
   onPreview: (doc: KbDocument) => void
   onAssign: (doc: KbDocument) => void
   onReprocess: (doc: KbDocument) => void
+  onToggleActive: (doc: KbDocument, active: boolean) => void
   onDelete: (doc: KbDocument) => void
   onViewLogs: (doc: KbDocument) => void
+  allowReprocess?: boolean
 }
 
 export function DocumentsTable({
@@ -68,8 +73,10 @@ export function DocumentsTable({
   onPreview,
   onAssign,
   onReprocess,
+  onToggleActive,
   onDelete,
   onViewLogs,
+  allowReprocess = true,
 }: DocumentsTableProps) {
   const allSelected = documents.length > 0 && selectedIds.length === documents.length
   const someSelected = selectedIds.length > 0 && selectedIds.length < documents.length
@@ -161,6 +168,7 @@ export function DocumentsTable({
               <TableHead>Type / Size</TableHead>
               <TableHead>Collection</TableHead>
               <TableHead>Status</TableHead>
+              <TableHead>In KB</TableHead>
               <TableHead className="text-right">Chunks</TableHead>
               <TableHead>Updated</TableHead>
               <TableHead>Used By</TableHead>
@@ -204,6 +212,14 @@ export function DocumentsTable({
                 </TableCell>
 
                 <TableCell>{getStatusBadge(doc.status, doc.processingProgress, doc.errorMessage)}</TableCell>
+
+                <TableCell>
+                  {doc.isActive ? (
+                    <Badge className="bg-emerald-500/10 text-emerald-600 border-emerald-500/20">Enabled</Badge>
+                  ) : (
+                    <Badge variant="secondary">Disabled</Badge>
+                  )}
+                </TableCell>
 
                 <TableCell className="text-right font-mono text-sm">
                   {doc.status === "ready" ? doc.chunks.toLocaleString() : "-"}
@@ -259,9 +275,24 @@ export function DocumentsTable({
                           </DropdownMenuItem>
                         </>
                       )}
-                      <DropdownMenuItem onClick={() => onReprocess(doc)}>
-                        <RefreshCw className="mr-2 h-4 w-4" />
-                        Reprocess
+                      {allowReprocess && (
+                        <DropdownMenuItem onClick={() => onReprocess(doc)}>
+                          <RefreshCw className="mr-2 h-4 w-4" />
+                          Reprocess
+                        </DropdownMenuItem>
+                      )}
+                      <DropdownMenuItem onClick={() => onToggleActive(doc, !doc.isActive)}>
+                        {doc.isActive ? (
+                          <>
+                            <ToggleLeft className="mr-2 h-4 w-4" />
+                            Disable in KB
+                          </>
+                        ) : (
+                          <>
+                            <ToggleRight className="mr-2 h-4 w-4" />
+                            Enable in KB
+                          </>
+                        )}
                       </DropdownMenuItem>
                       <DropdownMenuSeparator />
                       <DropdownMenuItem

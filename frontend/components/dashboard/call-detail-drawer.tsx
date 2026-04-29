@@ -24,6 +24,7 @@ import { format } from "date-fns"
 import { cn } from "@/lib/utils"
 import type { CallRecord, TimelineEvent, TranscriptLine } from "@/types/api"
 import { getTimelineForCall, getTranscriptLines } from "@/lib/data/call-details"
+import { getUiCapabilities } from "@/lib/data/capabilities"
 
 interface CallDetailDrawerProps {
   call: CallRecord | null
@@ -63,6 +64,7 @@ export function CallDetailDrawer({ call, open, onOpenChange }: CallDetailDrawerP
   const [timeline, setTimeline] = useState<TimelineEvent[]>([])
   const [transcript, setTranscript] = useState<TranscriptLine[]>([])
   const [loading, setLoading] = useState(true)
+  const [caps, setCaps] = useState({ recordingPlayback: false, transcriptDownload: false })
 
   const handlePlayRecording = () => {
     toast({ title: "Coming soon", description: "Play recording is not yet available." })
@@ -79,6 +81,15 @@ export function CallDetailDrawer({ call, open, onOpenChange }: CallDetailDrawerP
     const remainingSeconds = seconds % 60
     return minutes > 0 ? `${minutes}m ${remainingSeconds}s` : `${remainingSeconds}s`
   }
+
+  useEffect(() => {
+    void getUiCapabilities().then((c) =>
+      setCaps({
+        recordingPlayback: c.calls.recordingPlayback,
+        transcriptDownload: c.calls.transcriptDownload,
+      }),
+    )
+  }, [])
 
   useEffect(() => {
     if (!call) {
@@ -173,16 +184,22 @@ export function CallDetailDrawer({ call, open, onOpenChange }: CallDetailDrawerP
                     </div>
                   </div>
 
-                  <div className="flex gap-2">
-                    <Button variant="outline" size="sm" className="flex-1 bg-transparent" onClick={handlePlayRecording}>
-                      <Play className="mr-2 h-4 w-4" />
-                      Play Recording
-                    </Button>
-                    <Button variant="outline" size="sm" className="flex-1 bg-transparent" onClick={handleDownloadTranscript}>
-                      <Download className="mr-2 h-4 w-4" />
-                      Transcript
-                    </Button>
-                  </div>
+                  {(caps.recordingPlayback || caps.transcriptDownload) && (
+                    <div className="flex gap-2">
+                      {caps.recordingPlayback && (
+                        <Button variant="outline" size="sm" className="flex-1 bg-transparent" onClick={handlePlayRecording}>
+                          <Play className="mr-2 h-4 w-4" />
+                          Play Recording
+                        </Button>
+                      )}
+                      {caps.transcriptDownload && (
+                        <Button variant="outline" size="sm" className="flex-1 bg-transparent" onClick={handleDownloadTranscript}>
+                          <Download className="mr-2 h-4 w-4" />
+                          Transcript
+                        </Button>
+                      )}
+                    </div>
+                  )}
                 </CardContent>
               </Card>
 

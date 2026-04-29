@@ -46,6 +46,7 @@ interface LiveCallsTableProps {
   onCreateAction?: (callId: string) => void
   onEndCall?: (callId: string) => void
   onFlagForReview?: (callId: string) => void
+  onTagCall?: (callId: string, tag: string) => void
   onViewHistory?: () => void
   loadingActions?: Record<string, boolean>
 }
@@ -74,7 +75,7 @@ function LiveDuration({ startedAt }: { startedAt: string | Date }) {
   )
 }
 
-export function LiveCallsTable({ calls, isLoading, onCallClick, selectedCallId, pauseReorder, onTransfer, onCreateAction, onEndCall, onFlagForReview, onViewHistory, loadingActions = {} }: LiveCallsTableProps) {
+export function LiveCallsTable({ calls, isLoading, onCallClick, selectedCallId, pauseReorder, onTransfer, onCreateAction, onEndCall, onFlagForReview, onTagCall, onViewHistory, loadingActions = {} }: LiveCallsTableProps) {
   const [hoveredRow, setHoveredRow] = useState<string | null>(null)
   const [endCallDialogOpen, setEndCallDialogOpen] = useState(false)
   const [callToEnd, setCallToEnd] = useState<LiveCall | null>(null)
@@ -333,8 +334,10 @@ export function LiveCallsTable({ calls, isLoading, onCallClick, selectedCallId, 
                         <DropdownMenuItem
                           onClick={(e) => {
                             e.stopPropagation()
-                            // In a real app, this would open a tag selection modal
-                            navigator.clipboard.writeText(call.callId)
+                            const raw = window.prompt("Enter a tag for this call")
+                            const tag = raw?.trim() ?? ""
+                            if (!tag) return
+                            onTagCall?.(call.callId, tag)
                           }}
                         >
                           <Tag className="h-4 w-4 mr-2" />
@@ -343,7 +346,7 @@ export function LiveCallsTable({ calls, isLoading, onCallClick, selectedCallId, 
                         <DropdownMenuItem
                           onClick={(e) => {
                             e.stopPropagation()
-                            // In a real app, this would open a notification modal
+                            onCreateAction?.(call.callId)
                           }}
                         >
                           <Bell className="h-4 w-4 mr-2" />

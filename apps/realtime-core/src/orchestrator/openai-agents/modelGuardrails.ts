@@ -9,15 +9,18 @@ import {
   type StreamRunOptions,
 } from "@openai/agents";
 import { createLogger } from "@rezovo/logging";
+import { env } from "../../env";
 
 const logger = createLogger({ service: "realtime-core", module: "model-guardrails" });
 
 const REASONING_MODEL_RE = /^(gpt-5|o1|o3|o4)/i;
 const UNSUPPORTED_PARAM_RE = /Unsupported parameter:\s*'([^']+)'/i;
 
-const MAX_HISTORY_ITEMS = 240;
-const MAX_TOTAL_TEXT_CHARS = 60_000;
-const MAX_ITEM_TEXT_CHARS = 4_000;
+const MAX_HISTORY_ITEMS = Math.max(20, env.MODEL_GUARDRAILS_MAX_HISTORY_ITEMS);
+const MAX_TOTAL_TEXT_CHARS = Math.max(5_000, env.MODEL_GUARDRAILS_MAX_TOTAL_TEXT_CHARS);
+const MAX_ITEM_TEXT_CHARS = Math.max(400, env.MODEL_GUARDRAILS_MAX_ITEM_TEXT_CHARS);
+const SLOW_RUN_LOG_THRESHOLD_MS = 1_200;
+const warnedReasoningOnNanoModels = new Set<string>();
 
 export type RunInputValidationIssue = {
   index: number;
@@ -35,6 +38,11 @@ type GuardrailedRunMeta = {
   modelProfile: string;
   retryReason?: string;
   inputValidation: RunInputValidationResult;
+  reasoningEnabled: boolean;
+  reasoningEffort?: string;
+  runDurationMs: number;
+  runMode: "stream" | "non_stream";
+  removedSettings: string[];
 };
 
 type GuardrailedNonStreamResult<TContext> = {
@@ -52,6 +60,13 @@ function cloneSettings(settings?: ModelSettings): ModelSettings {
     text: settings?.text ? { ...settings.text } : undefined,
     providerData: settings?.providerData ? { ...settings.providerData } : undefined,
   };
+}
+
+function extractReasoningEffort(settings?: ModelSettings): string | undefined {
+  const reasoning = settings?.reasoning;
+  if (!reasoning || typeof reasoning !== "object") return undefined;
+  const effort = (reasoning as Record<string, unknown>).effort;
+  return typeof effort === "string" && effort.length > 0 ? effort : undefined;
 }
 
 export function sanitizeModelSettingsForModel(
@@ -654,6 +669,7 @@ export async function runWithModelGuardrails<TContext>(opts: {
   const { agent, input, runOptions, trustInputHistory } = opts;
 
   const modelProfile = typeof agent.model === "string" ? agent.model : "custom-model";
+  const runMode: "stream" | "non_stream" = runOptions?.stream ? "stream" : "non_stream";
   const inputValidation =
     trustInputHistory && Array.isArray(input)
       ? ({
@@ -680,6 +696,51 @@ export async function runWithModelGuardrails<TContext>(opts: {
   const preSanitized = sanitizeModelSettingsForModel(modelName, baseSettings);
   const firstAgent =
     preSanitized.removed.length > 0 ? agent.clone({ modelSettings: preSanitized.sanitized }) : agent;
+  const reasoningEnabled = preSanitized.sanitized.reasoning !== undefined;
+  const reasoningEffort = extractReasoningEffort(preSanitized.sanitized);
+  const runStartedAt = Date.now();
+
+  if (reasoningEnabled && /nano/i.test(modelProfile) && !warnedReasoningOnNanoModels.has(modelProfile)) {
+    warnedReasoningOnNanoModels.add(modelProfile);
+    logger.warn("reasoning enabled on nano profile", {
+      agent: agent.name,
+      modelProfile,
+      reasoningEffort: reasoningEffort ?? "default",
+    });
+  }
+
+  const emitRunTimingLog = (params: {
+    durationMs: number;
+    retryReason?: string;
+    removedSettings: string[];
+    unsupportedParam?: string;
+  }) => {
+    if (
+      params.durationMs < SLOW_RUN_LOG_THRESHOLD_MS &&
+      !params.retryReason &&
+      !params.unsupportedParam &&
+      preSanitized.removed.length === 0 &&
+      inputValidation.issues.length === 0 &&
+      !inputValidation.truncated &&
+      !reasoningEnabled
+    ) {
+      return;
+    }
+
+    logger.info("llm run latency", {
+      agent: agent.name,
+      modelProfile,
+      runMode,
+      runDurationMs: params.durationMs,
+      retryReason: params.retryReason,
+      unsupportedParam: params.unsupportedParam,
+      removedSettings: params.removedSettings,
+      inputIssueCount: inputValidation.issues.length,
+      inputTruncated: inputValidation.truncated,
+      reasoningEnabled,
+      reasoningEffort,
+    });
+  };
 
   try {
     if (runOptions?.stream) {
@@ -687,29 +748,63 @@ export async function runWithModelGuardrails<TContext>(opts: {
         ...runOptions,
         stream: true,
       });
+      const runDurationMs = Date.now() - runStartedAt;
+      const retryReason =
+        preSanitized.removed.length > 0
+          ? `pre_sanitized:${preSanitized.removed.join(",")}`
+          : undefined;
+      emitRunTimingLog({
+        durationMs: runDurationMs,
+        retryReason,
+        removedSettings: preSanitized.removed,
+      });
       return {
         result: streamed,
         modelProfile,
-        retryReason:
-          preSanitized.removed.length > 0
-            ? `pre_sanitized:${preSanitized.removed.join(",")}`
-            : undefined,
+        retryReason,
         inputValidation,
+        reasoningEnabled,
+        reasoningEffort,
+        runDurationMs,
+        runMode,
+        removedSettings: preSanitized.removed,
       };
     }
 
     const nonStreamed = await run(firstAgent, inputValidation.history, runOptions);
+    const runDurationMs = Date.now() - runStartedAt;
+    const retryReason =
+      preSanitized.removed.length > 0 ? `pre_sanitized:${preSanitized.removed.join(",")}` : undefined;
+    emitRunTimingLog({
+      durationMs: runDurationMs,
+      retryReason,
+      removedSettings: preSanitized.removed,
+    });
     return {
       result: nonStreamed,
       modelProfile,
-      retryReason:
-        preSanitized.removed.length > 0 ? `pre_sanitized:${preSanitized.removed.join(",")}` : undefined,
+      retryReason,
       inputValidation,
+      reasoningEnabled,
+      reasoningEffort,
+      runDurationMs,
+      runMode,
+      removedSettings: preSanitized.removed,
     };
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     const unsupportedParam = extractUnsupportedParam(msg);
     if (!unsupportedParam) {
+      const runDurationMs = Date.now() - runStartedAt;
+      logger.warn("llm run failed", {
+        agent: agent.name,
+        modelProfile,
+        runMode,
+        runDurationMs,
+        error: msg,
+        reasoningEnabled,
+        reasoningEffort,
+      });
       throw error;
     }
 
@@ -731,20 +826,46 @@ export async function runWithModelGuardrails<TContext>(opts: {
         ...runOptions,
         stream: true,
       });
+      const runDurationMs = Date.now() - runStartedAt;
+      const retryReason = `unsupported_param:${unsupportedParam}`;
+      emitRunTimingLog({
+        durationMs: runDurationMs,
+        retryReason,
+        removedSettings: [...preSanitized.removed, ...stripped.removed],
+        unsupportedParam,
+      });
       return {
         result: streamed,
         modelProfile,
-        retryReason: `unsupported_param:${unsupportedParam}`,
+        retryReason,
         inputValidation,
+        reasoningEnabled,
+        reasoningEffort,
+        runDurationMs,
+        runMode,
+        removedSettings: [...preSanitized.removed, ...stripped.removed],
       };
     }
 
     const nonStreamed = await run(retryAgent, inputValidation.history, runOptions);
+    const runDurationMs = Date.now() - runStartedAt;
+    const retryReason = `unsupported_param:${unsupportedParam}`;
+    emitRunTimingLog({
+      durationMs: runDurationMs,
+      retryReason,
+      removedSettings: [...preSanitized.removed, ...stripped.removed],
+      unsupportedParam,
+    });
     return {
       result: nonStreamed,
       modelProfile,
-      retryReason: `unsupported_param:${unsupportedParam}`,
+      retryReason,
       inputValidation,
+      reasoningEnabled,
+      reasoningEffort,
+      runDurationMs,
+      runMode,
+      removedSettings: [...preSanitized.removed, ...stripped.removed],
     };
   }
 }

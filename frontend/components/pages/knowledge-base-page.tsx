@@ -16,7 +16,15 @@ import { TestRetrievalCard, type RetrievalResult } from "@/components/knowledge/
 import { ErrorBoundary } from "@/components/error-boundary"
 import { OnboardingEmptyState } from "@/components/empty-state"
 import { TableSkeleton } from "@/components/loading-skeleton"
-import { getKnowledgeWorkspace, ingestKnowledgeDocument, retrieveKnowledgePassages } from "@/lib/data/knowledge"
+import {
+  deleteKnowledgeDocument,
+  getKnowledgeWorkspace,
+  ingestKnowledgeDocument,
+  retrieveKnowledgePassages,
+  updateKnowledgeDocument,
+} from "@/lib/data/knowledge"
+import { ApiError, waitForAuthReady } from "@/lib/api-client"
+import { getUiCapabilities } from "@/lib/data/capabilities"
 
 const useMocks = process.env.NEXT_PUBLIC_USE_MOCKS === "true"
 const FALLBACK_NAMESPACE = "general"
@@ -46,20 +54,45 @@ export function KnowledgeBasePage() {
   const [assignModalOpen, setAssignModalOpen] = useState(false)
   const [assigningDocs, setAssigningDocs] = useState<KbDocument[]>([])
   const [uploading, setUploading] = useState(false)
+  const [canReprocess, setCanReprocess] = useState(useMocks)
 
   const loadWorkspace = async (opts?: { silent?: boolean }) => {
     const silent = opts?.silent ?? false
     if (!silent) setKbLoading(true)
 
     try {
-      const w = await getKnowledgeWorkspace()
-      setDocuments(w.documents)
-      setCollections(w.collections)
+      await waitForAuthReady()
+
+      let workspace: Awaited<ReturnType<typeof getKnowledgeWorkspace>> | null = null
+      let lastError: unknown = null
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+          workspace = await getKnowledgeWorkspace()
+          break
+        } catch (error) {
+          lastError = error
+          if (error instanceof ApiError && error.status === 401 && attempt < 2) {
+            await new Promise((resolve) => setTimeout(resolve, (attempt + 1) * 1000))
+            continue
+          }
+          throw error
+        }
+      }
+
+      if (!workspace) {
+        throw lastError ?? new Error("Failed to load knowledge workspace")
+      }
+
+      setDocuments(workspace.documents)
+      setCollections(workspace.collections)
     } catch (e) {
       console.error(e)
       toast({
         title: "Could not load knowledge base",
-        description: "Check API connection and auth token.",
+        description:
+          e instanceof ApiError && e.status === 401
+            ? "Auth token is not ready. Confirm Clerk JWT template and organization membership."
+            : "Check API connection and auth token.",
         variant: "destructive",
       })
       setDocuments([])
@@ -73,6 +106,26 @@ export function KnowledgeBasePage() {
     void loadWorkspace()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [toast])
+
+  useEffect(() => {
+    const onTemplateMissing = (event: Event) => {
+      const custom = event as CustomEvent<{ template?: string }>
+      const template = custom.detail?.template ?? "platform-api"
+      toast({
+        title: "Clerk JWT template missing",
+        description: `Create Clerk JWT template "${template}" so knowledge API calls stay stable.`,
+        variant: "destructive",
+      })
+    }
+    window.addEventListener("rezovo:clerk-template-missing", onTemplateMissing)
+    return () => window.removeEventListener("rezovo:clerk-template-missing", onTemplateMissing)
+  }, [toast])
+
+  useEffect(() => {
+    void getUiCapabilities().then((caps) => {
+      setCanReprocess(caps.knowledge.reprocess)
+    })
+  }, [])
 
   // Computed values
   const filteredDocuments = useMemo(() => {
@@ -128,6 +181,7 @@ export function KnowledgeBasePage() {
         processingProgress: 0,
         chunks: 0,
         tokenEstimate: 0,
+        isActive: true,
         usedByAgents: [],
         uploadedAt: new Date(),
         updatedAt: new Date(),
@@ -262,19 +316,40 @@ export function KnowledgeBasePage() {
     setAssignModalOpen(true)
   }
 
-  const handleAssignConfirm = (collectionId: string | null) => {
+  const handleAssignConfirm = async (collectionId: string | null) => {
     const collection = collections.find((c) => c.id === collectionId)
-    setDocuments((prev) =>
-      prev.map((d) =>
-        assigningDocs.some((ad) => ad.id === d.id)
-          ? { ...d, collectionId, collectionName: collection?.name || null }
-          : d,
-      ),
+    if (useMocks) {
+      setDocuments((prev) =>
+        prev.map((d) =>
+          assigningDocs.some((ad) => ad.id === d.id)
+            ? { ...d, collectionId, collectionName: collection?.name || null }
+            : d,
+        ),
+      )
+      setSelectedIds([])
+      toast({
+        title: "Documents assigned",
+        description: `${assigningDocs.length} document(s) assigned to ${collection?.name || "Unassigned"}`,
+      })
+      return
+    }
+
+    const targetNamespace =
+      collectionId === null ? FALLBACK_NAMESPACE : (collection?.name ?? collectionId).trim() || FALLBACK_NAMESPACE
+    const docs = assigningDocs.slice()
+    const updateResults = await Promise.all(
+      docs.map((doc) => updateKnowledgeDocument(doc.id, { namespace: targetNamespace }).catch(() => ({ ok: false }))),
     )
+    const updatedCount = updateResults.filter((result) => result.ok).length
+    await loadWorkspace({ silent: true })
     setSelectedIds([])
     toast({
-      title: "Documents assigned",
-      description: `${assigningDocs.length} document(s) assigned to ${collection?.name || "Unassigned"}`,
+      title: updatedCount > 0 ? "Documents assigned" : "Assignment failed",
+      description:
+        updatedCount > 0
+          ? `${updatedCount} document(s) assigned to ${targetNamespace}.`
+          : "No documents were updated.",
+      variant: updatedCount > 0 ? "default" : "destructive",
     })
   }
 
@@ -319,16 +394,120 @@ export function KnowledgeBasePage() {
     setSelectedIds([])
   }
 
-  const handleDelete = (doc: KbDocument) => {
-    setDocuments((prev) => prev.filter((d) => d.id !== doc.id))
+  const handleDelete = async (doc: KbDocument) => {
+    if (useMocks) {
+      setDocuments((prev) => prev.filter((d) => d.id !== doc.id))
+      setDrawerOpen(false)
+      toast({ title: "Deleted", description: `"${doc.name}" has been deleted` })
+      return
+    }
+
+    const result = await deleteKnowledgeDocument(doc.id).catch(() => ({
+      ok: false,
+      errorMessage: "Delete failed",
+      requestId: undefined as string | undefined,
+    }))
+    if (!result.ok) {
+      const reason = result.errorMessage ?? `Could not delete "${doc.name}".`
+      const detail = result.requestId ? `${reason} (request: ${result.requestId})` : reason
+      toast({ title: "Delete failed", description: detail, variant: "destructive" })
+      return
+    }
+
+    await loadWorkspace({ silent: true })
     setDrawerOpen(false)
+    setSelectedDocument(null)
     toast({ title: "Deleted", description: `"${doc.name}" has been deleted` })
   }
 
-  const handleBulkDelete = () => {
-    setDocuments((prev) => prev.filter((d) => !selectedIds.includes(d.id)))
-    toast({ title: "Deleted", description: `${selectedIds.length} document(s) deleted` })
+  const handleBulkDelete = async () => {
+    if (selectedIds.length === 0) return
+
+    if (useMocks) {
+      setDocuments((prev) => prev.filter((d) => !selectedIds.includes(d.id)))
+      toast({ title: "Deleted", description: `${selectedIds.length} document(s) deleted` })
+      setSelectedIds([])
+      return
+    }
+
+    const ids = selectedIds.slice()
+    const results = await Promise.all(
+      ids.map((id) =>
+        deleteKnowledgeDocument(id).catch(() => ({
+          ok: false,
+          errorMessage: "Delete failed",
+          requestId: undefined as string | undefined,
+        })),
+      ),
+    )
+    const deletedCount = results.filter((result) => result.ok).length
+    const firstFailure = results.find((result) => !result.ok)
+    await loadWorkspace({ silent: true })
     setSelectedIds([])
+    toast({
+      title: deletedCount > 0 ? "Deleted" : "Delete failed",
+      description:
+        deletedCount > 0
+          ? `${deletedCount} document(s) deleted`
+          : firstFailure?.requestId
+            ? `${firstFailure.errorMessage ?? "No documents were deleted."} (request: ${firstFailure.requestId})`
+            : firstFailure?.errorMessage ?? "No documents were deleted.",
+      variant: deletedCount > 0 ? "default" : "destructive",
+    })
+  }
+
+  const handleToggleActive = async (doc: KbDocument, active: boolean) => {
+    if (useMocks) {
+      setDocuments((prev) => prev.map((d) => (d.id === doc.id ? { ...d, isActive: active } : d)))
+      toast({
+        title: active ? "Document enabled" : "Document disabled",
+        description: `"${doc.name}" is now ${active ? "active" : "inactive"} in retrieval.`,
+      })
+      return
+    }
+
+    const result = await updateKnowledgeDocument(doc.id, { active }).catch(() => ({ ok: false }))
+    if (!result.ok) {
+      toast({
+        title: "Update failed",
+        description: `Could not ${active ? "enable" : "disable"} "${doc.name}".`,
+        variant: "destructive",
+      })
+      return
+    }
+
+    await loadWorkspace({ silent: true })
+    toast({
+      title: active ? "Document enabled" : "Document disabled",
+      description: `"${doc.name}" is now ${active ? "active" : "inactive"} in retrieval.`,
+    })
+  }
+
+  const handleBulkSetActive = async (active: boolean) => {
+    if (selectedIds.length === 0) return
+
+    if (useMocks) {
+      setDocuments((prev) => prev.map((d) => (selectedIds.includes(d.id) ? { ...d, isActive: active } : d)))
+      toast({
+        title: active ? "Documents enabled" : "Documents disabled",
+        description: `${selectedIds.length} document(s) updated.`,
+      })
+      setSelectedIds([])
+      return
+    }
+
+    const ids = selectedIds.slice()
+    const results = await Promise.all(
+      ids.map((id) => updateKnowledgeDocument(id, { active }).catch(() => ({ ok: false }))),
+    )
+    const updatedCount = results.filter((result) => result.ok).length
+    await loadWorkspace({ silent: true })
+    setSelectedIds([])
+    toast({
+      title: active ? "Documents enabled" : "Documents disabled",
+      description: updatedCount > 0 ? `${updatedCount} document(s) updated.` : "No documents were updated.",
+      variant: updatedCount > 0 ? "default" : "destructive",
+    })
   }
 
   const handleDownload = (doc: KbDocument) => {
@@ -374,7 +553,7 @@ export function KnowledgeBasePage() {
     const namespaces = [
       ...new Set(
         documents
-          .filter((d) => d.status === "ready")
+          .filter((d) => d.status === "ready" && d.isActive)
           .map((d) => (d.collectionName ?? d.collectionId ?? FALLBACK_NAMESPACE).trim())
           .filter((n) => n.length > 0),
       ),
@@ -469,14 +648,22 @@ export function KnowledgeBasePage() {
             <FolderInput className="mr-2 h-4 w-4" />
             Assign
           </Button>
-          <Button variant="outline" size="sm" onClick={handleBulkReprocess}>
-            <RefreshCw className="mr-2 h-4 w-4" />
-            Reprocess
+          <Button variant="outline" size="sm" onClick={() => void handleBulkSetActive(true)}>
+            Enable in KB
           </Button>
+          <Button variant="outline" size="sm" onClick={() => void handleBulkSetActive(false)}>
+            Disable in KB
+          </Button>
+          {canReprocess && (
+            <Button variant="outline" size="sm" onClick={handleBulkReprocess}>
+              <RefreshCw className="mr-2 h-4 w-4" />
+              Reprocess
+            </Button>
+          )}
           <Button
             variant="outline"
             size="sm"
-            onClick={handleBulkDelete}
+            onClick={() => void handleBulkDelete()}
             className="text-destructive hover:text-destructive bg-transparent"
           >
             <Trash2 className="mr-2 h-4 w-4" />
@@ -495,7 +682,9 @@ export function KnowledgeBasePage() {
           onPreview={handlePreview}
           onAssign={handleAssign}
           onReprocess={handleReprocess}
-          onDelete={handleDelete}
+          allowReprocess={canReprocess}
+          onToggleActive={(doc, active) => void handleToggleActive(doc, active)}
+          onDelete={(doc) => void handleDelete(doc)}
           onViewLogs={handleViewLogs}
         />
       ) : documents.length > 0 ? (
@@ -521,7 +710,7 @@ export function KnowledgeBasePage() {
       ) : null}
 
       {/* Test Retrieval */}
-      {documents.some((d) => d.status === "ready") && (
+      {documents.some((d) => d.status === "ready" && d.isActive) && (
         <TestRetrievalCard
           onResultClick={handleRetrievalResultClick}
           onSearch={useMocks ? undefined : handleLiveRetrievalSearch}
@@ -537,7 +726,8 @@ export function KnowledgeBasePage() {
         onOpenChange={setDrawerOpen}
         onReprocess={handleReprocess}
         onDownload={handleDownload}
-        onDelete={handleDelete}
+        onDelete={(doc) => void handleDelete(doc)}
+        allowReprocess={canReprocess}
       />
 
       {/* Collections Modal */}

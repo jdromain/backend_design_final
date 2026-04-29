@@ -48,15 +48,26 @@ export type OnSentenceCallback = (sentence: string) => void | Promise<void>;
 const logger = createLogger({ service: "realtime-core", module: "callSession" });
 
 const FALLBACK_STREAM_REPLY = "I can help with that. Could you share one more detail?";
-const LOG_TEXT_PREVIEW = 220;
-const MAX_KB_PASSAGES = 4;
-const MAX_KB_PASSAGE_CHARS = 360;
+const LOG_TEXT_PREVIEW = Math.max(80, env.LEGACY_LOG_TEXT_PREVIEW_CHARS);
+const MAX_KB_PASSAGES = Math.max(1, env.LEGACY_MAX_KB_PASSAGES);
+const MAX_KB_PASSAGE_CHARS = Math.max(120, env.LEGACY_MAX_KB_PASSAGE_CHARS);
+const MAX_RECENT_USER_TURNS_FOR_RUN = Math.max(1, env.LEGACY_MAX_RECENT_USER_TURNS_FOR_RUN);
+const MAX_RUN_WINDOW_ITEMS = Math.max(6, env.LEGACY_MAX_RUN_WINDOW_ITEMS);
 
 type LegacyTurnState = "transcript_finalized" | "run_requested" | "streaming" | "finalized";
 type TurnOutputGuardrailCache = {
   moderationPromise: Promise<{ blocked: boolean; message?: string }> | null;
   moderationText: string;
 };
+
+const HIGH_RISK_INPUT_PATTERNS = [
+  /\b(kill|suicide|self-harm|hurt myself)\b/i,
+  /\b(fuck|shit|bitch|asshole|idiot|stupid)\b/i,
+  /\b(speak to (a )?(person|human|agent|manager)|transfer me|real person|operator)\b/i,
+];
+
+const QUICK_CONFIRMATION_PATTERN =
+  /^\s*(yes|yeah|yep|yup|no|nope|cancel|stop|do not|don't|not now|never mind)\b/i;
 
 function textPreview(text: string, maxLen = LOG_TEXT_PREVIEW): string {
   if (text.length <= maxLen) return text;
@@ -203,6 +214,43 @@ function summarizeHistoryTail(history: AgentInputItem[], maxItems = 4): Array<Re
   });
 }
 
+function shouldRunInputGuardrailCheck(
+  utterance: string,
+  hasPendingAction: boolean,
+): { run: boolean; reason: string } {
+  const text = utterance.trim();
+  if (!text) return { run: false, reason: "empty" };
+  if (text.length > Math.max(80, env.LEGACY_INPUT_GUARDRAIL_LONG_INPUT_CHARS)) {
+    return { run: true, reason: "long_input" };
+  }
+  if (hasPendingAction && QUICK_CONFIRMATION_PATTERN.test(text)) {
+    return { run: false, reason: "pending_action_confirmation" };
+  }
+  if (HIGH_RISK_INPUT_PATTERNS.some((pattern) => pattern.test(text))) {
+    return { run: true, reason: "risk_pattern" };
+  }
+  return { run: false, reason: "benign_fast_path" };
+}
+
+function buildRunHistoryWindow(history: AgentInputItem[]): AgentInputItem[] {
+  if (history.length <= 1) return history;
+
+  let startIndex = 0;
+  let userTurns = 0;
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (historyRole(history[i]) !== "user") continue;
+    userTurns += 1;
+    if (userTurns >= MAX_RECENT_USER_TURNS_FOR_RUN) {
+      startIndex = i;
+      break;
+    }
+  }
+
+  const tail = history.slice(startIndex);
+  if (tail.length <= MAX_RUN_WINDOW_ITEMS) return tail;
+  return tail.slice(tail.length - MAX_RUN_WINDOW_ITEMS);
+}
+
 function errorName(error: unknown): string {
   if (error instanceof Error && error.name) return error.name;
   const name = (error as { name?: unknown } | null)?.name;
@@ -212,6 +260,14 @@ function errorName(error: unknown): string {
 function errorStackPreview(error: unknown): string | undefined {
   if (!(error instanceof Error) || typeof error.stack !== "string") return undefined;
   return error.stack.split("\n").slice(0, 4).join("\n");
+}
+
+function isGreetingOnlyUtterance(text: string): boolean {
+  const normalized = text.trim().toLowerCase();
+  if (!normalized) return false;
+  const greetingOnly =
+    /^(hi|hello|hey|hey there|hi there|hello there|good morning|good afternoon|good evening|yo|sup|can you hear me|you there|are you there)[.!?]*$/i;
+  return greetingOnly.test(normalized);
 }
 
 export class CallSession {
@@ -229,7 +285,7 @@ export class CallSession {
 
   private history: AgentInputItem[] = [];
   private currentAgent: Agent<CallContext, any>;
-  private lastAgentName = "Receptionist";
+  private lastAgentName = "Assistant";
 
   private kbPassages: string[] = [];
   private kbFetchPromise: Promise<string[]> | null = null;
@@ -396,9 +452,25 @@ export class CallSession {
     onSentence: OnSentenceCallback,
     timing?: { ingressStartedAt: number | null; sttFinalizedAt: number },
   ): Promise<OrchestratorResponse> {
-    if (this.processing) {
-      logger.warn("receiveUserStreaming called while already processing", { callId: this.id });
-      return { type: "speak", text: "One moment, I'm still working on your last request." };
+    if (this.processing && this.abortController) {
+      logger.info("aborting in-flight turn for new caller utterance", {
+        callId: this.id,
+        pendingTurn: this.turnCount,
+      });
+      try {
+        this.abortController.abort();
+      } catch {
+        // best effort
+      }
+      const waitStart = Date.now();
+      while (this.processing && Date.now() - waitStart < 1500) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      if (this.processing) {
+        logger.warn("previous turn did not abort in time, proceeding anyway", {
+          callId: this.id,
+        });
+      }
     }
 
     this.processing = true;
@@ -414,6 +486,7 @@ export class CallSession {
     let fullText = "";
     let ttftMs = 0;
     let llmTotalMs = 0;
+    let inputGuardrailMs = 0;
     const outputGuardrailCache: TurnOutputGuardrailCache = {
       moderationPromise: null,
       moderationText: "",
@@ -469,7 +542,8 @@ export class CallSession {
           .catch(() => undefined);
       }
 
-      void this.refreshKbForUtterance(cleanedUtterance, turnId);
+      // Kick off KB refresh in parallel with guardrail so both latencies overlap.
+      const kbRefreshPromise = this.refreshKbForUtterance(cleanedUtterance, turnId);
 
       this.addTranscriptEntry({
         from: "user",
@@ -477,11 +551,21 @@ export class CallSession {
         timestamp: new Date().toISOString(),
       });
 
-      if (env.NODE_ENV !== "development") {
-        const inputCheck = await guardrailsEngine.checkInput(cleanedUtterance, this.id);
+      const guardrailDecision = shouldRunInputGuardrailCheck(
+        cleanedUtterance,
+        !!this.callContext.pendingAction,
+      );
+      if (env.NODE_ENV !== "development" && guardrailDecision.run) {
+        const guardrailStartedAt = Date.now();
+        const [inputCheck] = await Promise.all([
+          guardrailsEngine.checkInput(cleanedUtterance, this.id),
+          kbRefreshPromise.catch(() => undefined),
+        ]);
+        inputGuardrailMs = Date.now() - guardrailStartedAt;
         logger.info("input guardrail evaluated", {
           callId: this.id,
           turnId,
+          reason: guardrailDecision.reason,
           action: inputCheck.action,
           blocked: inputCheck.blocked,
           messagePreview: inputCheck.message ? textPreview(inputCheck.message) : null,
@@ -579,7 +663,17 @@ export class CallSession {
           markTurnFinalized("guardrail_warn");
           return { type: "speak", text: warningText };
         }
+      } else if (env.NODE_ENV !== "development") {
+        logger.debug("input guardrail skipped", {
+          callId: this.id,
+          turnId,
+          reason: guardrailDecision.reason,
+          activeAgent: this.lastAgentName,
+        });
       }
+
+      // Make sure KB refresh completes (or times out) before we assemble the run prompt.
+      await kbRefreshPromise.catch(() => undefined);
 
       prepareApprovalStateForUserTurn(this.callContext, cleanedUtterance);
       this.callContext.currentDateTime = new Date().toISOString();
@@ -602,14 +696,66 @@ export class CallSession {
       }
 
       this.history = [...this.history, validatedUserInput.history[0]];
+      if (this.turnCount === 1 && isGreetingOnlyUtterance(cleanedUtterance)) {
+        const prompt = "I can help with a reservation, a cancellation, or a general question. What do you need today?";
+        outputGuardrailCache.moderationText = prompt.slice(0, 2000);
+        const safePrompt = await this.emitSentenceWithOutputGuardrail(
+          prompt,
+          onSentence,
+          outputGuardrailCache,
+        );
+        this.history = [...this.history, buildAssistantOutputItem(safePrompt)];
+        this.addTranscriptEntry({
+          from: "agent",
+          text: safePrompt,
+          timestamp: new Date().toISOString(),
+        });
+        this.lastTurnDiagnostics = {
+          intent: "other",
+          confidence: 0.66,
+          decisionMode: "direct_response",
+          pendingAction: this.callContext.pendingAction?.toolName ?? null,
+          modelProfile: env.LLM_MODEL,
+          turnLatencyMs: Date.now() - turnStart,
+          specialist: "general",
+          history_len: this.history.length,
+          active_agent: this.lastAgentName,
+          tool_calls: [],
+          approval_gate_state: this.callContext.approvalGateState,
+          ttft_ms: 0,
+          llm_total_ms: 0,
+          ingress_to_stt_final_ms:
+            timing?.ingressStartedAt !== null && typeof timing?.ingressStartedAt === "number"
+              ? Math.max(0, timing.sttFinalizedAt - timing.ingressStartedAt)
+              : undefined,
+          stt_final_to_run_request_ms: 0,
+          run_request_to_first_text_ms: 0,
+          duplicate_turn_finalize_blocked: duplicateFinalizeBlocked,
+          stream_recovery_used: false,
+          tts_chunks_per_turn: 0,
+          kb_cache_hit_rate:
+            this.kbCacheLookups === 0 ? 0 : Number((this.kbCacheHits / this.kbCacheLookups).toFixed(4)),
+        };
+        logger.info("first-turn greeting echo suppressed", {
+          callId: this.id,
+          turnId,
+          utterancePreview: textPreview(cleanedUtterance),
+          responsePreview: textPreview(safePrompt),
+        });
+        await this.persistConversationState();
+        markTurnFinalized("first_turn_greeting_echo_suppressed");
+        return { type: "speak", text: safePrompt };
+      }
       const agentBeforeRun = this.lastAgentName;
       const runRequestedAt = Date.now();
+      const runHistory = buildRunHistoryWindow(this.history);
       turnState = "run_requested";
       logger.info("llm run starting", {
         callId: this.id,
         turnId,
         agentBeforeRun,
         historyLen: this.history.length,
+        runHistoryLen: runHistory.length,
         approvalGateState: this.callContext.approvalGateState,
         pendingActionTool: this.callContext.pendingAction?.toolName ?? null,
       });
@@ -619,14 +765,20 @@ export class CallSession {
         turn: this.turnCount,
         activeAgent: this.lastAgentName,
       });
-      traceLog.runInput(this.id, turnId, this.lastAgentName, this.history.length, summarizeHistoryForTrace(this.history));
+      traceLog.runInput(
+        this.id,
+        turnId,
+        this.lastAgentName,
+        runHistory.length,
+        summarizeHistoryForTrace(runHistory),
+      );
 
       const runContext = new RunContext<CallContext>(this.callContext);
       const llmStart = Date.now();
 
       const runResponse = await runStreamWithModelGuardrails({
         agent: this.currentAgent,
-        input: this.history,
+        input: runHistory,
         runOptions: {
           context: runContext,
           signal: this.abortController.signal,
@@ -710,6 +862,14 @@ export class CallSession {
         agentAfterRun: this.lastAgentName,
         handoffOccurred: agentBeforeRun !== this.lastAgentName,
         newItemsCount: streamResult.newItems.length,
+        runMode: runResponse.runMode,
+        runDurationMs: runResponse.runDurationMs,
+        retryReason: runResponse.retryReason,
+        removedSettings: runResponse.removedSettings,
+        reasoningEnabled: runResponse.reasoningEnabled,
+        reasoningEffort: runResponse.reasoningEffort,
+        inputIssueCount: runResponse.inputValidation.issues.length,
+        inputTruncated: runResponse.inputValidation.truncated,
       });
 
       normalizeApprovalStateAfterTurn(this.callContext);
@@ -777,12 +937,16 @@ export class CallSession {
         duplicate_turn_finalize_blocked: duplicateFinalizeBlocked,
         stream_recovery_used: streamRecoveryUsed,
         tts_chunks_per_turn: 0,
+        llm_input_truncated: runResponse.inputValidation.truncated,
+        llm_input_issue_count: runResponse.inputValidation.issues.length,
+        llm_reasoning_enabled: runResponse.reasoningEnabled,
+        llm_reasoning_effort: runResponse.reasoningEffort,
         kb_cache_hit_rate:
           this.kbCacheLookups === 0 ? 0 : Number((this.kbCacheHits / this.kbCacheLookups).toFixed(4)),
       };
 
       traceLog.turnTimingSummary(this.id, turnId, {
-        guardrailsMs: 0,
+        guardrailsMs: inputGuardrailMs,
         llmTtftMs: ttftMs,
         llmTotalMs,
         totalTurnMs: Date.now() - turnStart,
@@ -812,6 +976,9 @@ export class CallSession {
         finalTextPreview: textPreview(finalText),
         ttftMs,
         llmTotalMs,
+        runDurationMs: runResponse.runDurationMs,
+        runMode: runResponse.runMode,
+        retryReason: runResponse.retryReason,
       });
 
       await this.persistConversationState();
@@ -1203,7 +1370,9 @@ export class CallSession {
           this.context.businessId,
           namespace,
         ).catch(() => [] as string[]),
-        new Promise<typeof timeoutResult>((resolve) => setTimeout(() => resolve(timeoutResult), 450)),
+        new Promise<typeof timeoutResult>((resolve) =>
+          setTimeout(() => resolve(timeoutResult), Math.max(100, env.LEGACY_KB_FETCH_TIMEOUT_MS)),
+        ),
       ]);
 
       if ("timeout" in result) return;
@@ -1239,42 +1408,33 @@ export class CallSession {
     if (!trimmed) return "";
     const localChecked = fastLocalChunkGuardrail(sanitizeTransferNarration(trimmed));
 
-    if (env.NODE_ENV === "development") {
-      await onSentence(localChecked);
-      return localChecked;
+    // Hot path: ship audio immediately. Local regex/policy check above already blocked
+    // obvious PII/leakage. Remote output moderation is logged asynchronously for
+    // compliance visibility but never blocks TTS dispatch.
+    if (cache) {
+      cache.moderationText = `${cache.moderationText}${cache.moderationText ? " " : ""}${localChecked}`.slice(
+        -2000,
+      );
     }
 
-    const seedText = cache?.moderationText?.trim() || localChecked;
-    if (cache && !cache.moderationPromise) {
-      cache.moderationPromise = Promise.race([
-        guardrailsEngine
-          .checkOutput(seedText.slice(0, 2000), this.id)
-          .then((result) => ({ blocked: result.blocked, message: result.message })),
-        new Promise<{ blocked: boolean; message?: string }>((resolve) =>
-          setTimeout(() => resolve({ blocked: false }), Math.max(50, env.LEGACY_OUTPUT_MODERATION_TIMEOUT_MS)),
-        ),
-      ]).catch((): { blocked: boolean; message?: string } => ({ blocked: false }));
+    if (env.NODE_ENV !== "development") {
+      void guardrailsEngine
+        .checkOutput(localChecked.slice(0, 2000), this.id)
+        .then((result) => {
+          if (result.blocked) {
+            logger.warn("output moderation flagged emitted sentence (post-dispatch)", {
+              callId: this.id,
+              messagePreview: result.message ? textPreview(result.message) : undefined,
+            });
+          }
+        })
+        .catch(() => {
+          // swallow: moderation must never impact the call
+        });
     }
 
-    const outputCheck: { blocked: boolean; message?: string } = cache?.moderationPromise
-      ? await cache.moderationPromise
-      : await Promise.race([
-          guardrailsEngine
-            .checkOutput(localChecked, this.id)
-            .then((result) => ({ blocked: result.blocked, message: result.message })),
-          new Promise<{ blocked: boolean; message?: string }>((resolve) =>
-            setTimeout(() => resolve({ blocked: false }), Math.max(50, env.LEGACY_OUTPUT_MODERATION_TIMEOUT_MS)),
-          ),
-        ]).catch((): { blocked: boolean; message?: string } => ({ blocked: false }));
-
-    if (!outputCheck.blocked) {
-      await onSentence(localChecked);
-      return localChecked;
-    }
-
-    const fallback = sanitizeTransferNarration(outputCheck.message || "I apologize, let me rephrase that.");
-    await onSentence(fallback);
-    return fallback;
+    await onSentence(localChecked);
+    return localChecked;
   }
 
   private determineDecisionMode(

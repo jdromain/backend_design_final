@@ -4,6 +4,7 @@ import type { FastifyError, FastifyReply, FastifyRequest } from "fastify";
 import { appendRezovoJsonlLine, createLogger } from "@rezovo/logging";
 
 import { env } from "../env";
+import { sendError } from "../lib/responses";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -136,8 +137,21 @@ export function registerHttpErrorLogging(app: {
 
     appendRezovoJsonlLine(JSON.stringify(payload));
 
-    errorLog.error("platform-api error", { error: error.message });
+    errorLog.error("platform-api error", {
+      error: error.message,
+      code: error.code,
+      statusCode,
+      path: safeUrlPath(request.url),
+      method: request.method,
+    });
 
-    reply.status(500).send({ error: "internal_error" });
+    const mappedCode =
+      error.code === "FST_ERR_CTP_EMPTY_JSON_BODY"
+        ? "empty_json_body"
+        : statusCode >= 500
+          ? "internal_error"
+          : "request_error";
+
+    sendError(reply, statusCode, mappedCode, error.message, requestId);
   });
 }

@@ -36,7 +36,7 @@ if [[ "$legacy_tenants" == "t" && "$canonical_orgs" != "t" ]]; then
   psql "$PGURL" -v ON_ERROR_STOP=1 -f "$ROOT/database/006_org_id_canonical_cutover.sql"
 fi
 
-for f in setup_complete.sql 002_ui_tables.sql 004_call_failure_type.sql 006_org_id_canonical_cutover.sql; do
+for f in setup_complete.sql 002_ui_tables.sql 004_call_failure_type.sql 006_org_id_canonical_cutover.sql 007_call_end_reason_normal_completion.sql 008_call_semantics_backfill.sql; do
   echo "==> Applying database/$f"
   psql "$PGURL" -v ON_ERROR_STOP=1 -f "$ROOT/database/$f"
 done

@@ -4,13 +4,14 @@ import { createLogger } from "@rezovo/logging";
 import { env } from "../env";
 import { callStore, PhoneNumberRecord } from "../persistence/callStore";
 import { randomUUID } from "crypto";
+import { isDefaultCompletionReason } from "../lib/callTaxonomy";
 
 const logger = createLogger({ service: "platform-api", module: "twilioRoutes" });
 
 type TerminalUpdate = {
   status: "completed" | "failed" | "abandoned";
   outcome: "handled" | "failed" | "abandoned";
-  endReason: "agent_end" | "error" | "timeout" | "caller_hangup";
+  endReason: "normal_completion" | "agent_end" | "error" | "timeout" | "caller_hangup";
   failureType?: string;
 };
 
@@ -38,7 +39,9 @@ export function mapTwilioTerminalStatus(
       return {
         status: "completed",
         outcome: "handled",
-        endReason: "agent_end",
+        // Twilio terminal callback is the strongest caller-side signal we get.
+        // Realtime-core explicit reasons still win via canTwilioEnrichTerminal().
+        endReason: "caller_hangup",
       };
     case "busy":
       return {
@@ -74,18 +77,53 @@ export function mapTwilioTerminalStatus(
   }
 }
 
-function isFinalizedByRealtime(call: {
+function hasTerminalLifecycleState(call: {
   status?: string;
   outcome?: string;
   endedAt?: string;
 }): boolean {
-  if (call.outcome === "handled" || call.outcome === "failed" || call.outcome === "transferred" || call.outcome === "abandoned") {
+  if (
+    call.outcome === "handled" ||
+    call.outcome === "failed" ||
+    call.outcome === "transferred" ||
+    call.outcome === "abandoned"
+  ) {
     return true;
   }
   if (call.endedAt && ["completed", "failed", "abandoned", "transferred"].includes(call.status ?? "")) {
     return true;
   }
   return false;
+}
+
+function hasExplicitRealtimeEndReason(call: { endReason?: string }): boolean {
+  if (!call.endReason) return false;
+  return !isDefaultCompletionReason(call.endReason);
+}
+
+function canTwilioEnrichTerminal(call: {
+  status?: string;
+  outcome?: string;
+  endedAt?: string;
+  endReason?: string;
+  failureType?: string;
+}): boolean {
+  // Not finalized yet: Twilio can finalize.
+  if (!hasTerminalLifecycleState(call) && !call.endReason) {
+    return true;
+  }
+
+  // Always preserve richer explicit realtime semantics.
+  if (hasExplicitRealtimeEndReason(call)) {
+    return false;
+  }
+  if (call.outcome === "failed" || call.outcome === "abandoned" || call.outcome === "transferred") {
+    return false;
+  }
+
+  // Gap-fill default completions and unset terminal reasons.
+  if (!call.endReason) return true;
+  return isDefaultCompletionReason(call.endReason);
 }
 
 export function registerTwilioRoutes(app: FastifyInstance): void {
@@ -112,7 +150,7 @@ export function registerTwilioRoutes(app: FastifyInstance): void {
 
       // Create call record
       const callId = randomUUID();
-      await callStore.upsertCall({
+      const inserted = await callStore.upsertCall({
         callId,
         orgId: voiceNumber.orgId,
         phoneNumber: To,
@@ -122,6 +160,9 @@ export function registerTwilioRoutes(app: FastifyInstance): void {
         status: "initiated",
         startedAt: new Date().toISOString(),
       });
+      if (!inserted) {
+        logger.error("failed to persist inbound call record", { callId, CallSid });
+      }
 
       // Log as call event
       await callStore.insertEvent({
@@ -220,8 +261,8 @@ export function registerTwilioRoutes(app: FastifyInstance): void {
       const terminal = mapTwilioTerminalStatus(CallStatus, body);
       if (!terminal) {
         // Non-terminal status updates.
-        if ((CallStatus === "ringing" || CallStatus === "in-progress") && !isFinalizedByRealtime(call)) {
-          await callStore.upsertCall({
+        if ((CallStatus === "ringing" || CallStatus === "in-progress") && !hasTerminalLifecycleState(call)) {
+          const updated = await callStore.upsertCall({
             callId: call.callId,
             orgId: call.orgId,
             phoneNumber: call.phoneNumber,
@@ -230,15 +271,22 @@ export function registerTwilioRoutes(app: FastifyInstance): void {
             startedAt: call.startedAt,
             twilioCallSid: call.twilioCallSid,
           });
+          if (!updated) {
+            logger.warn("failed to persist non-terminal Twilio status update", {
+              callId: call.callId,
+              callSid: CallSid,
+              callStatus: CallStatus,
+            });
+          }
         }
         reply.send({ ok: true });
         return;
       }
 
-      if (isFinalizedByRealtime(call)) {
+      if (!canTwilioEnrichTerminal(call)) {
         // Avoid overwriting richer realtime-core finalization (intent, transcript, outcomes).
         if (!call.failureType && terminal.failureType) {
-          await callStore.upsertCall({
+          const updatedFailureType = await callStore.upsertCall({
             callId: call.callId,
             orgId: call.orgId,
             phoneNumber: call.phoneNumber,
@@ -251,6 +299,13 @@ export function registerTwilioRoutes(app: FastifyInstance): void {
             failureType: terminal.failureType,
             twilioCallSid: call.twilioCallSid,
           });
+          if (!updatedFailureType) {
+            logger.warn("failed to persist Twilio failure-type enrichment", {
+              callId: call.callId,
+              callSid: CallSid,
+              callStatus: CallStatus,
+            });
+          }
         }
         logger.info("skipping Twilio terminal overwrite; call already finalized", {
           callId: call.callId,
@@ -258,12 +313,13 @@ export function registerTwilioRoutes(app: FastifyInstance): void {
           callStatus: CallStatus,
           existingStatus: call.status,
           existingOutcome: call.outcome,
+          existingEndReason: call.endReason,
         });
         reply.send({ ok: true });
         return;
       }
 
-      await callStore.upsertCall({
+      const terminalUpdated = await callStore.upsertCall({
         callId: call.callId,
         orgId: call.orgId,
         phoneNumber: call.phoneNumber,
@@ -276,6 +332,27 @@ export function registerTwilioRoutes(app: FastifyInstance): void {
         durationSec: CallDuration ? parseInt(CallDuration, 10) : undefined,
         startedAt: call.startedAt,
         twilioCallSid: call.twilioCallSid,
+      });
+      if (!terminalUpdated) {
+        logger.warn("failed to persist Twilio terminal update", {
+          callId: call.callId,
+          callSid: CallSid,
+          callStatus: CallStatus,
+        });
+        reply.status(500).send({ error: "persist_failed" });
+        return;
+      }
+      await callStore.insertEvent({
+        callId: call.callId,
+        orgId: call.orgId,
+        eventType: "call_ended",
+        payload: {
+          source: "twilio_status_webhook",
+          twilioStatus: CallStatus,
+          endReason: terminal.endReason,
+          outcome: terminal.outcome,
+          failureType: terminal.failureType,
+        },
       });
       logger.info("call ended", {
         callId: call.callId,

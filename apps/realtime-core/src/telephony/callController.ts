@@ -55,17 +55,16 @@ export function percentile(values: number[], p: number): number | undefined {
 }
 
 export function computeAdaptiveDebounceMs(text: string, confidence?: number): number {
-  const base = Math.max(160, Math.min(900, env.LEGACY_FINAL_DEBOUNCE_MS));
+  const base = Math.max(300, Math.min(1200, env.LEGACY_FINAL_DEBOUNCE_MS));
   const trimmed = text.trim();
 
-  if (/[.!?]$/.test(trimmed)) {
-    return Math.max(160, Math.min(320, Math.floor(base * 0.8)));
-  }
-  if (typeof confidence === "number" && confidence >= 0.9) {
-    return Math.max(160, Math.min(300, Math.floor(base * 0.85)));
-  }
+  // Short utterances: add headroom so callers aren't cut off mid-thought.
   if (trimmed.length < 24) {
-    return Math.max(220, Math.min(420, Math.floor(base * 1.2)));
+    return Math.max(400, Math.min(1200, Math.floor(base * 1.3)));
+  }
+  // High-confidence long utterances still need the full base; don't shorten aggressively.
+  if (typeof confidence === "number" && confidence >= 0.92 && trimmed.length >= 40) {
+    return Math.max(300, Math.min(900, Math.floor(base * 0.95)));
   }
 
   return base;
@@ -87,6 +86,27 @@ type ControllerDeps = {
   media: RtpBridgeClient;
   elevenApiKey?: string;
   elevenVoiceId?: string;
+};
+
+type LegacyTurnTiming = {
+  ingressStartedAt: number | null;
+  sttFinalizedAt: number;
+  sttFinalSegments?: number;
+  sttFinalAssemblyMs?: number;
+  sttFinalDebounceWaitMs?: number;
+  sttAssembledChars?: number;
+  sttFinalAvgConfidence?: number;
+  bufferedWhileProcessingMs?: number;
+};
+
+type TtsDispatchMetrics = {
+  synthesisMs: number;
+  firstByteMs?: number;
+  bytes: number;
+  chunkCount: number;
+  bridgeDispatchMs: number;
+  dispatchAborted: boolean;
+  attempt: number;
 };
 
 export class CallController {
@@ -149,7 +169,7 @@ export class CallController {
     let session: CallSession | null = null;
     let mediaSession: MediaSession | null = null;
     let callStarted = false;
-    let endReason: CallEndReason = "agent_end";
+    let endReason: CallEndReason = "normal_completion";
     let outcome: CallEndedPayload["outcome"] = "handled";
 
     try {
@@ -276,8 +296,24 @@ export class CallController {
         chunksDispatched: number;
         queueWaitSamples: number[];
         firstTtsAt: number | null;
+        firstByteSamples: number[];
+        synthesisSamples: number[];
+        bridgeDispatchSamples: number[];
+        bytesSynthesized: number;
       }
     >();
+    const callLatencyMetrics = {
+      ingressToSttFinalMs: [] as number[],
+      sttFinalToRunRequestMs: [] as number[],
+      runRequestToFirstTextMs: [] as number[],
+      firstTextToFirstTtsMs: [] as number[],
+      turnTotalMs: [] as number[],
+      ttsQueueWaitMs: [] as number[],
+      ttsFirstByteMs: [] as number[],
+      ttsSynthesisMs: [] as number[],
+      sttFinalSegments: [] as number[],
+      bufferedWhileProcessingMs: [] as number[],
+    };
 
     const clearAssemblerState = (turnKey: string): void => {
       const state = turnAssembler.get(turnKey);
@@ -289,7 +325,15 @@ export class CallController {
     const getTurnMetrics = (turnKey: string) => {
       const existing = turnTtsMetrics.get(turnKey);
       if (existing) return existing;
-      const created = { chunksDispatched: 0, queueWaitSamples: [], firstTtsAt: null };
+      const created = {
+        chunksDispatched: 0,
+        queueWaitSamples: [],
+        firstTtsAt: null,
+        firstByteSamples: [],
+        synthesisSamples: [],
+        bridgeDispatchSamples: [],
+        bytesSynthesized: 0,
+      };
       turnTtsMetrics.set(turnKey, created);
       return created;
     };
@@ -391,7 +435,7 @@ export class CallController {
     const interruptLegacyTts = (reason: string): void => {
       if (!tts) return;
       const now = Date.now();
-      if (now - lastBargeClearAt < 220) return;
+      if (now - lastBargeClearAt < 400) return;
       lastBargeClearAt = now;
 
       const dropped = ttsQueue.length;
@@ -413,6 +457,13 @@ export class CallController {
       });
     };
 
+    const hasTtsPlayingSince = (ms: number): boolean => {
+      for (const metrics of turnTtsMetrics.values()) {
+        if (metrics.firstTtsAt !== null && Date.now() - metrics.firstTtsAt >= ms) return true;
+      }
+      return false;
+    };
+
     const pumpTtsQueue = async (): Promise<void> => {
       if (!tts || ttsQueueBusy) return;
       ttsQueueBusy = true;
@@ -429,6 +480,10 @@ export class CallController {
           const queueWaitMs = Date.now() - next.enqueuedAt;
           metrics.queueWaitSamples.push(queueWaitMs);
 
+          // While the agent itself is speaking, reset the silence clock so the
+          // silence monitor does not trip mid-response with "Are you still there?".
+          lastActivityAt = Date.now();
+
           const synthesisMs = await this.synthesizeAndSend(
             tts,
             next.text,
@@ -437,7 +492,18 @@ export class CallController {
             (chars, seconds) => session.addTtsUsage(chars, seconds),
             signal,
             () => next.generation === ttsQueueGeneration && !callEnded,
+            (dispatchMetrics) => {
+              if (typeof dispatchMetrics.firstByteMs === "number") {
+                metrics.firstByteSamples.push(dispatchMetrics.firstByteMs);
+              }
+              metrics.synthesisSamples.push(dispatchMetrics.synthesisMs);
+              metrics.bridgeDispatchSamples.push(dispatchMetrics.bridgeDispatchMs);
+              metrics.bytesSynthesized += dispatchMetrics.bytes;
+            },
           );
+          // Bump again after the chunk finishes dispatching so the 8s grace
+          // window starts from the last agent audio, not the start of the turn.
+          lastActivityAt = Date.now();
           if (synthesisMs <= 0) continue;
 
           const sentenceIndex = metrics.chunksDispatched;
@@ -446,6 +512,8 @@ export class CallController {
         }
       } finally {
         ttsQueueBusy = false;
+        // Final bump when the queue drains completely.
+        lastActivityAt = Date.now();
       }
     };
 
@@ -455,31 +523,71 @@ export class CallController {
     let pendingUtterance: string | null = null;
     let pendingUtteranceIngressAt: number | null = null;
     let pendingUtteranceSttFinalAt: number | null = null;
+    let pendingTurnTiming: LegacyTurnTiming | null = null;
+    let pendingUtteranceBufferedAt: number | null = null;
 
     // Silence detection state
     let lastActivityAt = Date.now();
-    const SILENCE_PROMPT_MS = 8_000;
-    const MAX_SILENCE_PROMPTS = 2;
+    const SILENCE_PROMPT_MS = Math.max(1_000, env.LEGACY_SILENCE_PROMPT_MS);
+    const MAX_SILENCE_PROMPTS = Math.max(1, env.LEGACY_MAX_SILENCE_PROMPTS);
+    const silenceCheckIntervalMs = Math.max(250, env.LEGACY_SILENCE_CHECK_INTERVAL_MS);
     let silencePromptCount = 0;
     let pendingFinalUtterance = "";
     let pendingFinalTimer: ReturnType<typeof setTimeout> | null = null;
+    let pendingFinalFirstAt: number | null = null;
+    let pendingFinalLastAt: number | null = null;
+    let pendingFinalSegments = 0;
+    let pendingFinalConfidenceSum = 0;
+    let pendingFinalConfidenceCount = 0;
+
+    const mergeTurnTiming = (base: LegacyTurnTiming | null, next: LegacyTurnTiming): LegacyTurnTiming => {
+      if (!base) return { ...next };
+      return {
+        ingressStartedAt:
+          base.ingressStartedAt === null
+            ? next.ingressStartedAt
+            : next.ingressStartedAt === null
+              ? base.ingressStartedAt
+              : Math.min(base.ingressStartedAt, next.ingressStartedAt),
+        sttFinalizedAt: Math.max(base.sttFinalizedAt, next.sttFinalizedAt),
+        sttFinalSegments: (base.sttFinalSegments ?? 0) + (next.sttFinalSegments ?? 0),
+        sttFinalAssemblyMs: (base.sttFinalAssemblyMs ?? 0) + (next.sttFinalAssemblyMs ?? 0),
+        sttFinalDebounceWaitMs:
+          (base.sttFinalDebounceWaitMs ?? 0) + (next.sttFinalDebounceWaitMs ?? 0),
+        sttAssembledChars: (base.sttAssembledChars ?? 0) + (next.sttAssembledChars ?? 0),
+        sttFinalAvgConfidence:
+          base.sttFinalAvgConfidence ?? next.sttFinalAvgConfidence,
+        bufferedWhileProcessingMs: Math.max(
+          base.bufferedWhileProcessingMs ?? 0,
+          next.bufferedWhileProcessingMs ?? 0,
+        ),
+      };
+    };
 
     const processTurn = async (
       userText: string,
       sttStreamRef: { close: () => void },
-      timing?: { ingressStartedAt: number | null; sttFinalizedAt: number },
+      timing?: LegacyTurnTiming,
     ) => {
       isProcessing = true;
       lastActivityAt = Date.now();
       silencePromptCount = 0;
       const turnKey = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
-      traceLog.sttFinal(session.id, userText);
+      traceLog.sttFinal(session.id, userText, {
+        sttFinalSegments: timing?.sttFinalSegments,
+        sttFinalAssemblyMs: timing?.sttFinalAssemblyMs,
+        sttFinalDebounceWaitMs: timing?.sttFinalDebounceWaitMs,
+      });
       logger.info("processing user utterance", { callId: session.id, text: userText });
       logger.info("turn processing started", {
         callId: session.id,
         activeAgent: session.getCurrentAgentName(),
         utterancePreview: userText.slice(0, 220),
         turnKey,
+        sttFinalSegments: timing?.sttFinalSegments,
+        sttFinalAssemblyMs: timing?.sttFinalAssemblyMs,
+        sttFinalDebounceWaitMs: timing?.sttFinalDebounceWaitMs,
+        sttBufferedWhileProcessingMs: timing?.bufferedWhileProcessingMs,
       });
       try {
         const response = await session.receiveUserStreaming(
@@ -505,34 +613,154 @@ export class CallController {
         if (turnDiagnostics) {
           const ttsMetrics = getTurnMetrics(turnKey);
           const queueWaitP95 = percentile(ttsMetrics.queueWaitSamples, 95);
+          const firstByteP95 = percentile(ttsMetrics.firstByteSamples, 95);
+          const synthesisP95 = percentile(ttsMetrics.synthesisSamples, 95);
+          const bridgeDispatchP95 = percentile(ttsMetrics.bridgeDispatchSamples, 95);
+          const finalizedAt = Date.now();
+          const ingressToTranscriptMs =
+            typeof timing?.ingressStartedAt === "number"
+              ? Math.max(0, timing.sttFinalizedAt - timing.ingressStartedAt)
+              : undefined;
+          const sttFinalToRunMs =
+            typeof turnDiagnostics.stt_final_to_run_request_ms === "number"
+              ? turnDiagnostics.stt_final_to_run_request_ms
+              : undefined;
+          const runRequestToFirstTextMs =
+            typeof turnDiagnostics.run_request_to_first_text_ms === "number"
+              ? turnDiagnostics.run_request_to_first_text_ms
+              : undefined;
+          const responseRequestedAt =
+            typeof timing?.sttFinalizedAt === "number" && typeof sttFinalToRunMs === "number"
+              ? timing.sttFinalizedAt + sttFinalToRunMs
+              : undefined;
+          const firstTextAt =
+            typeof responseRequestedAt === "number" && typeof runRequestToFirstTextMs === "number"
+              ? responseRequestedAt + runRequestToFirstTextMs
+              : undefined;
+          const firstTextDeltaToFirstTtsMs =
+            typeof firstTextAt === "number" && ttsMetrics.firstTtsAt !== null
+              ? Math.max(0, ttsMetrics.firstTtsAt - firstTextAt)
+              : turnDiagnostics.first_text_delta_to_first_tts_ms;
+          const turnTotalMs =
+            typeof timing?.ingressStartedAt === "number"
+              ? Math.max(0, finalizedAt - timing.ingressStartedAt)
+              : turnDiagnostics.turnLatencyMs;
+          const timelineBase =
+            timing?.ingressStartedAt ?? timing?.sttFinalizedAt ?? finalizedAt;
           const enriched: TurnDiagnostics = {
             ...turnDiagnostics,
-            first_text_delta_to_first_tts_ms:
-              typeof turnDiagnostics.run_request_to_first_text_ms === "number" &&
-              typeof turnDiagnostics.stt_final_to_run_request_ms === "number" &&
-              timing?.sttFinalizedAt &&
-              ttsMetrics.firstTtsAt !== null
-                ? Math.max(
-                    0,
-                    ttsMetrics.firstTtsAt -
-                      (timing.sttFinalizedAt +
-                        turnDiagnostics.stt_final_to_run_request_ms +
-                        turnDiagnostics.run_request_to_first_text_ms),
-                  )
-                : turnDiagnostics.first_text_delta_to_first_tts_ms,
+            ingress_to_transcript_ms: ingressToTranscriptMs,
+            transcript_to_first_text_delta_ms:
+              typeof sttFinalToRunMs === "number" && typeof runRequestToFirstTextMs === "number"
+                ? sttFinalToRunMs + runRequestToFirstTextMs
+                : undefined,
+            first_text_delta_to_first_tts_ms: firstTextDeltaToFirstTtsMs,
+            turn_total_ms: turnTotalMs,
             chunks_synthesized: ttsMetrics.chunksDispatched,
             tts_chunks_per_turn: ttsMetrics.chunksDispatched,
             queue_wait_p95_ms: queueWaitP95,
+            tts_first_byte_p95_ms: firstByteP95,
+            tts_synthesis_p95_ms: synthesisP95,
+            tts_bridge_dispatch_p95_ms: bridgeDispatchP95,
+            tts_total_bytes: ttsMetrics.bytesSynthesized,
+            stt_final_segments: timing?.sttFinalSegments,
+            stt_final_assembly_ms: timing?.sttFinalAssemblyMs,
+            stt_final_debounce_wait_ms: timing?.sttFinalDebounceWaitMs,
+            stt_buffered_while_processing_ms: timing?.bufferedWhileProcessingMs,
+            stt_assembled_chars: timing?.sttAssembledChars,
+            stt_final_avg_confidence: timing?.sttFinalAvgConfidence,
+            timeline_ms: {
+              transcript:
+                typeof timing?.sttFinalizedAt === "number"
+                  ? Math.max(0, timing.sttFinalizedAt - timelineBase)
+                  : undefined,
+              response_requested:
+                typeof responseRequestedAt === "number"
+                  ? Math.max(0, responseRequestedAt - timelineBase)
+                  : undefined,
+              first_text_delta:
+                typeof firstTextAt === "number"
+                  ? Math.max(0, firstTextAt - timelineBase)
+                  : undefined,
+              first_tts:
+                ttsMetrics.firstTtsAt !== null
+                  ? Math.max(0, ttsMetrics.firstTtsAt - timelineBase)
+                  : undefined,
+              finalized: Math.max(0, finalizedAt - timelineBase),
+            },
           };
+          if (typeof ingressToTranscriptMs === "number") {
+            callLatencyMetrics.ingressToSttFinalMs.push(ingressToTranscriptMs);
+          }
+          if (typeof sttFinalToRunMs === "number") {
+            callLatencyMetrics.sttFinalToRunRequestMs.push(sttFinalToRunMs);
+          }
+          if (typeof runRequestToFirstTextMs === "number") {
+            callLatencyMetrics.runRequestToFirstTextMs.push(runRequestToFirstTextMs);
+          }
+          if (typeof firstTextDeltaToFirstTtsMs === "number") {
+            callLatencyMetrics.firstTextToFirstTtsMs.push(firstTextDeltaToFirstTtsMs);
+          }
+          if (typeof turnTotalMs === "number") {
+            callLatencyMetrics.turnTotalMs.push(turnTotalMs);
+          }
+          if (typeof queueWaitP95 === "number") {
+            callLatencyMetrics.ttsQueueWaitMs.push(queueWaitP95);
+          }
+          if (typeof firstByteP95 === "number") {
+            callLatencyMetrics.ttsFirstByteMs.push(firstByteP95);
+          }
+          if (typeof synthesisP95 === "number") {
+            callLatencyMetrics.ttsSynthesisMs.push(synthesisP95);
+          }
+          if (typeof timing?.sttFinalSegments === "number") {
+            callLatencyMetrics.sttFinalSegments.push(timing.sttFinalSegments);
+          }
+          if (typeof timing?.bufferedWhileProcessingMs === "number") {
+            callLatencyMetrics.bufferedWhileProcessingMs.push(timing.bufferedWhileProcessingMs);
+          }
+          logger.info("legacy turn timing", {
+            callId: session.id,
+            turnKey,
+            activeAgent: session.getCurrentAgentName(),
+            sttFinalSegments: timing?.sttFinalSegments,
+            sttFinalAssemblyMs: timing?.sttFinalAssemblyMs,
+            sttFinalDebounceWaitMs: timing?.sttFinalDebounceWaitMs,
+            sttBufferedWhileProcessingMs: timing?.bufferedWhileProcessingMs,
+            sttAssembledChars: timing?.sttAssembledChars,
+            ingressToTranscriptMs,
+            sttFinalToRunRequestMs: sttFinalToRunMs,
+            runRequestToFirstTextMs,
+            firstTextDeltaToFirstTtsMs,
+            ttsQueueWaitP95Ms: queueWaitP95,
+            ttsFirstByteP95Ms: firstByteP95,
+            ttsSynthesisP95Ms: synthesisP95,
+            ttsBridgeDispatchP95Ms: bridgeDispatchP95,
+            turnTotalMs,
+            modelProfile: turnDiagnostics.modelProfile,
+            retryReason: turnDiagnostics.retryReason,
+          });
+          const persistStartedAt = Date.now();
           persistCallEvent({
             callId: session.id,
             orgId: session.context.orgId,
             eventType: "turn_diagnostic",
             payload: enriched,
-          }).catch((err) => logger.warn("turn diagnostics persistence failed", {
-            callId: session.id,
-            error: err instanceof Error ? err.message : String(err),
-          }));
+          })
+            .then(() => {
+              const durationMs = Date.now() - persistStartedAt;
+              if (durationMs > 350) {
+                logger.info("turn diagnostics persistence latency", {
+                  callId: session.id,
+                  turnKey,
+                  durationMs,
+                });
+              }
+            })
+            .catch((err) => logger.warn("turn diagnostics persistence failed", {
+              callId: session.id,
+              error: err instanceof Error ? err.message : String(err),
+            }));
         }
 
         if (response.type === "end") {
@@ -550,15 +778,22 @@ export class CallController {
         // Drain buffered utterance that arrived while we were busy
         if (pendingUtterance && !callEnded) {
           const next = pendingUtterance;
-          const nextIngressAt = pendingUtteranceIngressAt;
-          const nextSttFinalAt = pendingUtteranceSttFinalAt;
+          const nextTiming = pendingTurnTiming ?? {
+            ingressStartedAt: pendingUtteranceIngressAt,
+            sttFinalizedAt: pendingUtteranceSttFinalAt ?? Date.now(),
+          };
+          if (pendingUtteranceBufferedAt !== null) {
+            nextTiming.bufferedWhileProcessingMs = Math.max(
+              nextTiming.bufferedWhileProcessingMs ?? 0,
+              Date.now() - pendingUtteranceBufferedAt,
+            );
+          }
           pendingUtterance = null;
           pendingUtteranceIngressAt = null;
           pendingUtteranceSttFinalAt = null;
-          await processTurn(next, sttStreamRef, {
-            ingressStartedAt: nextIngressAt,
-            sttFinalizedAt: nextSttFinalAt ?? Date.now(),
-          });
+          pendingTurnTiming = null;
+          pendingUtteranceBufferedAt = null;
+          await processTurn(next, sttStreamRef, nextTiming);
         }
       }
     };
@@ -569,25 +804,64 @@ export class CallController {
       pendingFinalTimer = null;
     };
 
-    const flushPendingFinalUtterance = async (sttStreamRef: { close: () => void }) => {
+    const flushPendingFinalUtterance = async (
+      sttStreamRef: { close: () => void },
+      flushReason: "debounce_timeout" | "manual_flush" = "manual_flush",
+    ) => {
       const userText = pendingFinalUtterance.trim();
+      const finalizedAt = pendingFinalLastAt ?? Date.now();
+      const firstFinalAt = pendingFinalFirstAt ?? finalizedAt;
+      const sttFinalSegments = pendingFinalSegments;
+      const sttFinalAssemblyMs = Math.max(0, finalizedAt - firstFinalAt);
+      const sttFinalDebounceWaitMs = Math.max(0, Date.now() - finalizedAt);
+      const sttFinalAvgConfidence =
+        pendingFinalConfidenceCount > 0
+          ? Number((pendingFinalConfidenceSum / pendingFinalConfidenceCount).toFixed(4))
+          : undefined;
       pendingFinalUtterance = "";
+      pendingFinalFirstAt = null;
+      pendingFinalLastAt = null;
+      pendingFinalSegments = 0;
+      pendingFinalConfidenceSum = 0;
+      pendingFinalConfidenceCount = 0;
       if (!userText || callEnded) return;
-      const timing = {
+      const timing: LegacyTurnTiming = {
         ingressStartedAt: pendingUtteranceIngressAt,
-        sttFinalizedAt: Date.now(),
+        sttFinalizedAt: finalizedAt,
+        sttFinalSegments,
+        sttFinalAssemblyMs,
+        sttFinalDebounceWaitMs,
+        sttAssembledChars: userText.length,
+        sttFinalAvgConfidence,
       };
+      logger.info("stt final utterance assembled", {
+        callId: session.id,
+        flushReason,
+        sttFinalSegments,
+        sttFinalAssemblyMs,
+        sttFinalDebounceWaitMs,
+        sttFinalAvgConfidence,
+        chars: userText.length,
+      });
 
       if (isProcessing) {
         pendingUtterance = pendingUtterance ? `${pendingUtterance} ${userText}` : userText;
-        pendingUtteranceIngressAt = timing.ingressStartedAt;
-        pendingUtteranceSttFinalAt = timing.sttFinalizedAt;
-        logger.debug("turn in progress, buffering utterance", { callId: session.id, text: userText });
+        pendingTurnTiming = mergeTurnTiming(pendingTurnTiming, timing);
+        pendingUtteranceIngressAt = pendingTurnTiming.ingressStartedAt;
+        pendingUtteranceSttFinalAt = pendingTurnTiming.sttFinalizedAt;
+        pendingUtteranceBufferedAt = pendingUtteranceBufferedAt ?? Date.now();
+        logger.debug("turn in progress, buffering utterance", {
+          callId: session.id,
+          chars: userText.length,
+          sttFinalSegments,
+        });
         return;
       }
 
       pendingUtteranceIngressAt = null;
       pendingUtteranceSttFinalAt = null;
+      pendingTurnTiming = null;
+      pendingUtteranceBufferedAt = null;
       await processTurn(userText, sttStreamRef, timing);
     };
 
@@ -623,13 +897,21 @@ export class CallController {
         async (segment: TranscriptSegment) => {
           if (callEnded) return;
 
-          if (segment.text.trim().length > 0) {
-            // Any speech activity (partial or final) should reset silence timeout.
+          const trimmedSegmentText = segment.text.trim();
+          if (trimmedSegmentText.length > 0) {
+            // Any speech activity (partial or final) resets the silence timeout.
             lastActivityAt = Date.now();
             if (pendingUtteranceIngressAt === null) {
-              pendingUtteranceIngressAt = Date.now();
+              pendingUtteranceIngressAt = segment.timestamp || Date.now();
             }
-            interruptLegacyTts("caller_speaking");
+            // Only interrupt TTS when we are confident the caller is really speaking:
+            // on a final, or on a substantial partial once TTS has been playing long
+            // enough that it's unlikely to be tts echo / throat-clearing.
+            const isSubstantialPartial =
+              !segment.isFinal && trimmedSegmentText.length > 8 && hasTtsPlayingSince(400);
+            if (segment.isFinal || isSubstantialPartial) {
+              interruptLegacyTts(segment.isFinal ? "caller_speaking_final" : "caller_speaking_partial");
+            }
           }
 
           // Accumulate partial transcripts (for future barge-in support)
@@ -647,17 +929,30 @@ export class CallController {
           pendingFinalUtterance = pendingFinalUtterance
             ? `${pendingFinalUtterance} ${userText}`
             : userText;
+          const finalAt = segment.timestamp || Date.now();
+          if (pendingFinalFirstAt === null) {
+            pendingFinalFirstAt = finalAt;
+          }
+          pendingFinalLastAt = finalAt;
+          pendingFinalSegments += 1;
+          if (typeof segment.confidence === "number") {
+            pendingFinalConfidenceSum += segment.confidence;
+            pendingFinalConfidenceCount += 1;
+          }
+          pendingUtteranceSttFinalAt = finalAt;
           clearPendingFinalTimer();
           const debounceMs = computeAdaptiveDebounceMs(userText, segment.confidence);
           pendingFinalTimer = setTimeout(() => {
-            void flushPendingFinalUtterance(sttStream);
+            void flushPendingFinalUtterance(sttStream, "debounce_timeout");
           }, debounceMs);
         }
       );
 
-      // Silence detection: prompt if no caller activity for SILENCE_PROMPT_MS
+      // Silence detection: prompt if no caller activity for SILENCE_PROMPT_MS.
+      // Also skip while the agent is still speaking (ttsQueue draining) or mid-turn.
       const silenceCheck = setInterval(async () => {
         if (callEnded || isProcessing) return;
+        if (ttsQueueBusy || ttsQueue.length > 0) return;
         if (Date.now() - lastActivityAt < SILENCE_PROMPT_MS) return;
         if (transcriptBuffer.trim().length > 0 || pendingFinalUtterance.trim().length > 0) return;
 
@@ -669,11 +964,19 @@ export class CallController {
         }
 
         silencePromptCount++;
+        const idleForMs = Date.now() - lastActivityAt;
         lastActivityAt = Date.now();
         const prompt = silencePromptCount === 1
           ? "Are you still there?"
           : "I'll let you go — have a great day, goodbye!";
-        logger.info("silence prompt", { callId: session.id, attempt: silencePromptCount, prompt });
+        logger.info("silence prompt", {
+          callId: session.id,
+          attempt: silencePromptCount,
+          prompt,
+          idleForMs,
+          ttsQueueDepth: ttsQueue.length,
+          ttsQueueBusy,
+        });
         logger.info("system prompt emitted", {
           callId: session.id,
           source: "silence_monitor",
@@ -694,7 +997,7 @@ export class CallController {
           callEnded = true;
           sttStream.close();
         }
-      }, 2_000);
+      }, silenceCheckIntervalMs);
 
       // Pipe audio from bridge → STT
       if (bridgeConnection) {
@@ -706,7 +1009,8 @@ export class CallController {
 
       // Keep loop alive until call ends, signal aborted, or timeout
       await new Promise<void>((resolve) => {
-        const maxCallDuration = (session.context.agentConfig.maxCallDurationSec ?? 1800) * 1000;
+        const maxCallDuration =
+          (session.context.agentConfig.maxCallDurationSec ?? env.LEGACY_DEFAULT_MAX_CALL_DURATION_SEC) * 1000;
         const timeout = setTimeout(() => {
           logger.warn("call timeout reached", { callId: session.id, maxCallDuration });
           callEnded = true;
@@ -737,7 +1041,7 @@ export class CallController {
             clearPendingFinalTimer();
             resolve();
           }
-        }, 200);
+        }, Math.max(50, env.LEGACY_CALL_END_POLL_INTERVAL_MS));
       });
     } catch (error) {
       logger.error("dialogue loop error", {
@@ -754,6 +1058,21 @@ export class CallController {
       turnAssembler.clear();
       turnTtsMetrics.clear();
       if (bridgeConnection) bridgeConnection.close();
+      logger.info("legacy call timing summary", {
+        callId: session.id,
+        turns: session.getTurnCount(),
+        p50_ingress_to_stt_final_ms: percentile(callLatencyMetrics.ingressToSttFinalMs, 50),
+        p95_ingress_to_stt_final_ms: percentile(callLatencyMetrics.ingressToSttFinalMs, 95),
+        p95_stt_final_to_run_request_ms: percentile(callLatencyMetrics.sttFinalToRunRequestMs, 95),
+        p95_run_request_to_first_text_ms: percentile(callLatencyMetrics.runRequestToFirstTextMs, 95),
+        p95_first_text_to_first_tts_ms: percentile(callLatencyMetrics.firstTextToFirstTtsMs, 95),
+        p95_turn_total_ms: percentile(callLatencyMetrics.turnTotalMs, 95),
+        p95_tts_queue_wait_ms: percentile(callLatencyMetrics.ttsQueueWaitMs, 95),
+        p95_tts_first_byte_ms: percentile(callLatencyMetrics.ttsFirstByteMs, 95),
+        p95_tts_synthesis_ms: percentile(callLatencyMetrics.ttsSynthesisMs, 95),
+        p95_stt_final_segments_per_turn: percentile(callLatencyMetrics.sttFinalSegments, 95),
+        p95_stt_buffered_while_processing_ms: percentile(callLatencyMetrics.bufferedWhileProcessingMs, 95),
+      });
       traceLog.callEnd(session.id, { turns: session.getTranscript().length });
       await session.cleanup();
       logger.info("dialogue loop ended", { callId: session.id, turns: session.getTranscript().length });
@@ -798,7 +1117,8 @@ export class CallController {
         bridgeConnection,
         initialUtterance,
         signal,
-        maxCallDurationMs: (session.context.agentConfig.maxCallDurationSec ?? 1800) * 1000,
+        maxCallDurationMs:
+          (session.context.agentConfig.maxCallDurationSec ?? env.LEGACY_DEFAULT_MAX_CALL_DURATION_SEC) * 1000,
         onCallerAudioBytes: (bytes) => mediaSession.markCallerFrame(bytes),
         onSentence: async (sentence) => {
           if (!tts) return;
@@ -895,7 +1215,7 @@ export class CallController {
       startedAt: stats.startedAt,
       endedAt: stats.endedAt,
       durationMs: stats.durationMs,
-      endReason: overrides?.endReason ?? "agent_end",
+      endReason: overrides?.endReason ?? "normal_completion",
       outcome: overrides?.outcome ?? "handled",
       usage
     });
@@ -914,7 +1234,7 @@ export class CallController {
     persistCallEnd({
       callId: session.id,
       orgId: session.context.orgId,
-      endReason: overrides?.endReason ?? "agent_end",
+      endReason: overrides?.endReason ?? "normal_completion",
       outcome: overrides?.outcome ?? "handled",
       durationSec: usage.callDurationSec,
       classifiedIntent: sm?.activeIntent ?? undefined,
@@ -969,30 +1289,91 @@ export class CallController {
     usageCb: (chars: number, seconds: number) => void,
     signal?: AbortSignal,
     dispatchGuard?: () => boolean,
+    onDispatchMetrics?: (metrics: TtsDispatchMetrics) => void,
   ): Promise<number> {
     for (let attempt = 1; attempt <= 2; attempt++) {
       this.throwIfAborted(signal);
+      const synthStart = Date.now();
+      let totalBytes = 0;
+      let firstChunkAt: number | null = null;
+      let dispatchAborted = false;
+      let chunkCount = 0;
+      let bridgeDispatchMs = 0;
       try {
-        const synthStart = Date.now();
-        const audio = await tts.synthesize(text, { outputFormat: "ulaw_8000" });
+        for await (const chunk of tts.synthesizeStream(
+          text,
+          { outputFormat: "ulaw_8000" },
+          { signal },
+        )) {
+          if (dispatchGuard && !dispatchGuard()) {
+            dispatchAborted = true;
+            break;
+          }
+          if (firstChunkAt === null) {
+            firstChunkAt = Date.now();
+          }
+          totalBytes += chunk.length;
+          chunkCount += 1;
+          const sendStartedAt = Date.now();
+          if (bridgeConnection) {
+            bridgeConnection.sendAudio({
+              payload: chunk,
+              timestamp: Date.now(),
+            });
+          }
+          bridgeDispatchMs += Date.now() - sendStartedAt;
+          mediaSession.markAgentFrame(chunk.length);
+        }
+
         const synthesisMs = Date.now() - synthStart;
-        if (dispatchGuard && !dispatchGuard()) {
+        const dispatchMetrics: TtsDispatchMetrics = {
+          synthesisMs,
+          firstByteMs: firstChunkAt !== null ? firstChunkAt - synthStart : undefined,
+          bytes: totalBytes,
+          chunkCount,
+          bridgeDispatchMs,
+          dispatchAborted,
+          attempt,
+        };
+        onDispatchMetrics?.(dispatchMetrics);
+        if (dispatchAborted || totalBytes === 0) {
           return synthesisMs;
         }
 
-        // Send audio back through bridge → Twilio → caller
-        if (bridgeConnection) {
-          bridgeConnection.sendAudio({
-            payload: audio.audio,
-            timestamp: Date.now(),
-          });
-        }
-        mediaSession.markAgentFrame(audio.audio.length);
-        usageCb(text.length, audio.audio.length / 32000);
+        usageCb(text.length, totalBytes / 8000);
+        logger.info("tts stream dispatched", {
+          textLen: text.length,
+          bytes: totalBytes,
+          chunks: chunkCount,
+          synthesisMs,
+          firstByteMs: firstChunkAt !== null ? firstChunkAt - synthStart : undefined,
+          bridgeDispatchMs,
+          dispatchAborted,
+          attempt,
+        });
         return synthesisMs;
       } catch (err) {
+        if (signal?.aborted) {
+          throw err;
+        }
+        const failureDurationMs = Date.now() - synthStart;
+        onDispatchMetrics?.({
+          synthesisMs: failureDurationMs,
+          firstByteMs: firstChunkAt !== null ? firstChunkAt - synthStart : undefined,
+          bytes: totalBytes,
+          chunkCount,
+          bridgeDispatchMs,
+          dispatchAborted,
+          attempt,
+        });
         if (attempt === 2) {
-          logger.warn("tts synthesis failed, falling back to text only", { error: (err as Error).message });
+          logger.warn("tts stream synthesis failed, falling back to text only", {
+            error: (err as Error).message,
+            bytesBeforeFailure: totalBytes,
+            chunkCount,
+            failureDurationMs,
+            firstByteMs: firstChunkAt !== null ? firstChunkAt - synthStart : undefined,
+          });
         }
       }
     }

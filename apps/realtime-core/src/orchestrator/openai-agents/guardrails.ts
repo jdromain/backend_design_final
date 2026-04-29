@@ -16,6 +16,7 @@
 import OpenAI from "openai";
 import { createLogger } from "@rezovo/logging";
 import { sessionStore } from "./sessionStore";
+import { env } from "../../env";
 
 const logger = createLogger({ service: "realtime-core", module: "guardrails" });
 
@@ -30,7 +31,7 @@ export interface GuardrailResult {
 
 // ─── Configuration ───
 
-const MAX_WARNINGS_BEFORE_TRANSFER = 2;
+const MAX_WARNINGS_BEFORE_TRANSFER = Math.max(1, env.GUARDRAILS_MAX_WARNINGS_BEFORE_TRANSFER);
 
 /**
  * Transfer detection patterns — these detect explicit requests
@@ -186,7 +187,7 @@ export class GuardrailsEngine {
 
     try {
       const response = await this.openai.moderations.create({
-        model: "omni-moderation-latest",
+        model: env.GUARDRAILS_MODERATION_MODEL,
         input: text,
       });
 
@@ -203,7 +204,7 @@ export class GuardrailsEngine {
       this.moderationAvailable = false;
       setTimeout(() => {
         this.moderationAvailable = true;
-      }, 5 * 60 * 1000);
+      }, Math.max(1_000, env.GUARDRAILS_MODERATION_COOLDOWN_MS));
       return null;
     }
   }

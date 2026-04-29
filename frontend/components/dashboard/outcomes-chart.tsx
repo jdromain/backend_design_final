@@ -21,10 +21,31 @@ interface OutcomesChartProps {
   data: OutcomeData[]
   onSegmentClick?: (time: string, outcome: string) => void
   compareEnabled?: boolean
+  granularity?: Granularity
+  onGranularityChange?: (value: Granularity) => void
 }
 
 type ViewMode = "count" | "rate"
 type Granularity = "hour" | "day" | "week"
+type OutcomeLabelKey = keyof typeof outcomeLabels
+
+interface OutcomeTooltipEntry {
+  color?: string
+  dataKey?: string | number
+  value?: number | string
+}
+
+interface OutcomesTooltipProps {
+  active?: boolean
+  payload?: OutcomeTooltipEntry[]
+  label?: string | number
+  viewMode: ViewMode
+}
+
+interface ChartClickState {
+  activeLabel?: string | number
+  activePayload?: Array<{ dataKey?: string | number }>
+}
 
 const outcomeColors = {
   completed: "#10b981", // Emerald green
@@ -40,9 +61,51 @@ const outcomeLabels = {
   systemFailed: "System Failed",
 }
 
-export function OutcomesChart({ data, onSegmentClick, compareEnabled = false }: OutcomesChartProps) {
+function OutcomesTooltip({ active, payload, label, viewMode }: OutcomesTooltipProps) {
+  if (!active || !payload || payload.length === 0) {
+    return null
+  }
+
+  return (
+    <div className="rounded-lg border bg-card p-3 shadow-lg">
+      <p className="mb-2 font-medium text-foreground">{String(label ?? "")}</p>
+      <div className="space-y-1">
+        {payload.map((entry, index) => {
+          const key = String(entry.dataKey ?? "")
+          const outcomeLabel = outcomeLabels[key as OutcomeLabelKey] ?? key
+          return (
+            <div key={`${key}-${index}`} className="flex items-center gap-2">
+              <div className="h-2 w-2 rounded-full" style={{ backgroundColor: entry.color }} />
+              <span className="text-sm text-muted-foreground">{outcomeLabel}:</span>
+              <span className="font-medium text-foreground">
+                {entry.value}
+                {viewMode === "rate" ? "%" : ""}
+              </span>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+export function OutcomesChart({
+  data,
+  onSegmentClick,
+  granularity: controlledGranularity,
+  onGranularityChange,
+}: OutcomesChartProps) {
   const [viewMode, setViewMode] = useState<ViewMode>("count")
-  const [granularity, setGranularity] = useState<Granularity>("hour")
+  const [uncontrolledGranularity, setUncontrolledGranularity] = useState<Granularity>("hour")
+  const granularity = controlledGranularity ?? uncontrolledGranularity
+
+  const handleGranularityChange = (value: Granularity) => {
+    if (onGranularityChange) {
+      onGranularityChange(value)
+      return
+    }
+    setUncontrolledGranularity(value)
+  }
 
   const processedData = data.map((item) => {
     if (viewMode === "rate") {
@@ -57,34 +120,29 @@ export function OutcomesChart({ data, onSegmentClick, compareEnabled = false }: 
     }
     return item
   })
+  const hasAnyData = processedData.some(
+    (item) => item.completed + item.handoff + item.dropped + item.systemFailed > 0,
+  )
 
-  const CustomTooltip = ({ active, payload, label }: any) => {
-    if (active && payload && payload.length) {
-      return (
-        <div className="rounded-lg border bg-card p-3 shadow-lg">
-          <p className="mb-2 font-medium text-foreground">{label}</p>
-          <div className="space-y-1">
-            {payload.map((entry: any, index: number) => (
-              <div key={index} className="flex items-center gap-2">
-                <div className="h-2 w-2 rounded-full" style={{ backgroundColor: entry.color }} />
-                <span className="text-sm text-muted-foreground capitalize">{entry.dataKey}:</span>
-                <span className="font-medium text-foreground">
-                  {entry.value}
-                  {viewMode === "rate" ? "%" : ""}
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )
+  const formatTimeLabel = (value: string): string => {
+    const date = new Date(value)
+    if (Number.isNaN(date.getTime())) return value
+    if (granularity === "hour") {
+      return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
     }
-    return null
+    if (granularity === "day") {
+      return date.toLocaleDateString([], { month: "short", day: "numeric" })
+    }
+    return date.toLocaleDateString([], { month: "short", day: "numeric" })
   }
 
-  const handleClick = (data: any) => {
-    if (onSegmentClick && data?.activePayload?.[0]) {
-      const time = data.activeLabel
-      const outcome = data.activePayload[0].dataKey
+  const handleClick = (state: ChartClickState) => {
+    if (onSegmentClick && state.activePayload?.[0] && state.activeLabel) {
+      const time = String(state.activeLabel)
+      const outcome = state.activePayload[0].dataKey
+      if (typeof outcome !== "string") {
+        return
+      }
       onSegmentClick(time, outcome)
     }
   }
@@ -107,7 +165,7 @@ export function OutcomesChart({ data, onSegmentClick, compareEnabled = false }: 
               </TabsTrigger>
             </TabsList>
           </Tabs>
-          <Tabs value={granularity} onValueChange={(v) => setGranularity(v as Granularity)}>
+          <Tabs value={granularity} onValueChange={(v) => handleGranularityChange(v as Granularity)}>
             <TabsList className="h-8">
               <TabsTrigger value="hour" className="text-xs px-2">
                 Hour
@@ -123,6 +181,11 @@ export function OutcomesChart({ data, onSegmentClick, compareEnabled = false }: 
         </div>
       </CardHeader>
       <CardContent>
+        {!hasAnyData ? (
+          <div className="flex h-[300px] items-center justify-center text-sm text-muted-foreground">
+            No data in selected window
+          </div>
+        ) : (
         <ResponsiveContainer width="100%" height={300}>
           <AreaChart data={processedData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }} onClick={handleClick}>
             <defs>
@@ -144,15 +207,22 @@ export function OutcomesChart({ data, onSegmentClick, compareEnabled = false }: 
               </linearGradient>
             </defs>
             <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" opacity={0.3} vertical={false} />
-            <XAxis dataKey="time" tick={{ fill: "#ffffff", fontSize: 12 }} tickLine={false} axisLine={false} dy={10} />
+            <XAxis
+              dataKey="time"
+              tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 12 }}
+              tickLine={false}
+              axisLine={false}
+              dy={10}
+              tickFormatter={formatTimeLabel}
+            />
             <YAxis
-              tick={{ fill: "#ffffff", fontSize: 12 }}
+              tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 12 }}
               tickLine={false}
               axisLine={false}
               dx={-10}
               tickFormatter={(value) => (viewMode === "rate" ? `${value}%` : value)}
             />
-            <Tooltip content={<CustomTooltip />} />
+            <Tooltip content={<OutcomesTooltip viewMode={viewMode} />} />
             <Legend
               verticalAlign="top"
               height={36}
@@ -197,6 +267,7 @@ export function OutcomesChart({ data, onSegmentClick, compareEnabled = false }: 
             />
           </AreaChart>
         </ResponsiveContainer>
+        )}
       </CardContent>
     </Card>
   )

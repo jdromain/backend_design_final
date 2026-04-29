@@ -215,7 +215,7 @@ CREATE TABLE IF NOT EXISTS public.calls (
   duration_sec      INT,
   end_reason        TEXT
                       CHECK (end_reason IS NULL OR end_reason IN (
-                        'caller_hangup', 'agent_end', 'transfer',
+                        'caller_hangup', 'agent_end', 'normal_completion', 'transfer',
                         'error', 'timeout', 'quota_denied'
                       )),
   outcome           TEXT

@@ -27,6 +27,7 @@ interface DocumentDrawerProps {
   onReprocess: (doc: KbDocument) => void
   onDownload: (doc: KbDocument) => void
   onDelete: (doc: KbDocument) => void
+  allowReprocess?: boolean
 }
 
 const PROCESSING_STEPS: { status: ProcessingStatus; label: string }[] = [
@@ -67,6 +68,7 @@ export function DocumentDrawer({
   onReprocess,
   onDownload,
   onDelete,
+  allowReprocess = true,
 }: DocumentDrawerProps) {
   if (!document) return null
 
@@ -262,10 +264,12 @@ export function DocumentDrawer({
 
             {/* Actions */}
             <div className="flex flex-col gap-2">
-              <Button onClick={() => onReprocess(document)} variant="outline">
-                <RefreshCw className="mr-2 h-4 w-4" />
-                Reprocess Document
-              </Button>
+              {allowReprocess && (
+                <Button onClick={() => onReprocess(document)} variant="outline">
+                  <RefreshCw className="mr-2 h-4 w-4" />
+                  Reprocess Document
+                </Button>
+              )}
               <Button onClick={() => onDownload(document)} variant="outline">
                 <Download className="mr-2 h-4 w-4" />
                 Download Original

@@ -33,7 +33,14 @@ import { ConfirmDialog } from "@/components/confirm-dialog"
 import { TableSkeleton } from "@/components/loading-skeleton"
 import { EmptyState } from "@/components/empty-state"
 import { toast } from "@/hooks/use-toast"
-import { getSearchData } from "@/lib/data/search"
+import { getUiCapabilities } from "@/lib/data/capabilities"
+import {
+  disconnectIntegration,
+  getIntegrationLogs,
+  getIntegrations,
+  saveIntegrationConfig,
+  testIntegration,
+} from "@/lib/data/integrations"
 
 interface Integration {
   id: string
@@ -54,26 +61,7 @@ interface LogEntry {
   details?: string
 }
 
-/** Sync logs are not exposed by the API yet; drawer stays empty until a `/integrations/:id/logs` exists. */
 const integrationLogsById: Record<string, LogEntry[]> = {}
-
-function mapSearchRowToIntegration(row: { id: string; name: string; status: string }): Integration {
-  const statusMap: Record<string, Integration["status"]> = {
-    ok: "connected",
-    connected: "connected",
-    degraded: "degraded",
-    error: "error",
-  }
-  const status = statusMap[row.status] ?? "disconnected"
-  return {
-    id: row.id,
-    name: row.name,
-    description: "Workspace integration (from search index).",
-    icon: "🔌",
-    status,
-    requiredFields: [],
-  }
-}
 
 export function IntegrationsPage() {
   const [integrations, setIntegrations] = useState<Integration[]>([])
@@ -88,15 +76,21 @@ export function IntegrationsPage() {
   const [showSecrets, setShowSecrets] = useState<Record<string, boolean>>({})
   const [isTesting, setIsTesting] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
+  const [caps, setCaps] = useState({
+    liveProbe: false,
+    logs: false,
+    disconnect: false,
+    configure: false,
+  })
 
   useEffect(() => {
     let cancelled = false
     ;(async () => {
       setIsLoading(true)
       try {
-        const data = await getSearchData()
+        const data = await getIntegrations()
         if (!cancelled) {
-          setIntegrations(data.integrations.map(mapSearchRowToIntegration))
+          setIntegrations(data)
         }
       } catch (e) {
         console.error(e)
@@ -115,6 +109,17 @@ export function IntegrationsPage() {
     return () => {
       cancelled = true
     }
+  }, [])
+
+  useEffect(() => {
+    void getUiCapabilities().then((c) =>
+      setCaps({
+        liveProbe: c.integrations.liveProbe,
+        logs: c.integrations.logs,
+        disconnect: c.integrations.disconnect,
+        configure: c.integrations.configure,
+      }),
+    )
   }, [])
 
   const statusConfig = {
@@ -140,10 +145,17 @@ export function IntegrationsPage() {
 
   const handleSaveConfig = useCallback(async () => {
     if (!selectedIntegration) return
+    if (!caps.configure) {
+      toast({
+        title: "Configuration unavailable",
+        description: "This environment has not enabled integration configuration endpoints yet.",
+        variant: "destructive",
+      })
+      return
+    }
     setIsSaving(true)
 
-    // Simulate API call
-    await new Promise((resolve) => setTimeout(resolve, 1000))
+    await saveIntegrationConfig(selectedIntegration.id, formValues)
 
     setIntegrations((prev) =>
       prev.map((i) =>
@@ -155,30 +167,43 @@ export function IntegrationsPage() {
     setIsSaving(false)
     setConfigModalOpen(false)
     toast({ title: "Integration Configured", description: `${selectedIntegration.name} has been connected.` })
-  }, [selectedIntegration, formValues])
+  }, [caps.configure, selectedIntegration, formValues])
 
   const handleTestConnection = useCallback(async () => {
     if (!selectedIntegration) return
+    if (!caps.liveProbe) {
+      toast({
+        title: "Live probe unavailable",
+        description: "Backend capability for integration connectivity checks is disabled.",
+      })
+      return
+    }
     setIsTesting(true)
 
-    // Simulate API call
-    await new Promise((resolve) => setTimeout(resolve, 1500))
+    const result = await testIntegration(selectedIntegration.id)
 
     setIsTesting(false)
     toast({
-      title: "Test not run against API",
-      description:
-        "Live connectivity checks are not wired here. Configure credentials only when your backend exposes a probe endpoint.",
+      title: result.valid ? "Connection healthy" : "Connection issue",
+      description: result.message,
     })
-  }, [selectedIntegration])
+  }, [caps.liveProbe, selectedIntegration])
 
   const handleDisconnect = useCallback((integration: Integration) => {
+    if (!caps.disconnect) {
+      toast({
+        title: "Disconnect unavailable",
+        description: "Backend capability for disconnect is disabled in this environment.",
+      })
+      return
+    }
     setDisconnectTarget(integration)
     setDisconnectConfirmOpen(true)
-  }, [])
+  }, [caps.disconnect])
 
   const handleConfirmDisconnect = useCallback(() => {
     if (!disconnectTarget) return
+    void disconnectIntegration(disconnectTarget.id)
     setIntegrations((prev) =>
       prev.map((i) =>
         i.id === disconnectTarget.id ? { ...i, status: "disconnected", config: undefined, lastSync: undefined } : i,
@@ -189,9 +214,27 @@ export function IntegrationsPage() {
   }, [disconnectTarget])
 
   const handleViewLogs = useCallback((integration: Integration) => {
-    setLogsIntegration(integration)
-    setLogsDrawerOpen(true)
-  }, [])
+    if (!caps.logs) {
+      toast({
+        title: "Logs unavailable",
+        description: "Integration sync logs are not available from the backend yet.",
+      })
+      return
+    }
+    void getIntegrationLogs(integration.id)
+      .then((logs) => {
+        integrationLogsById[integration.id] = logs
+        setLogsIntegration(integration)
+        setLogsDrawerOpen(true)
+      })
+      .catch(() => {
+        toast({
+          title: "Logs unavailable",
+          description: "Could not load integration logs.",
+          variant: "destructive",
+        })
+      })
+  }, [caps.logs])
 
   const handleCopyValue = useCallback((value: string) => {
     navigator.clipboard.writeText(value)
@@ -222,6 +265,13 @@ export function IntegrationsPage() {
   return (
     <div className="space-y-6">
       <h1 className="text-3xl font-bold">Integrations</h1>
+      {(!caps.configure || !caps.liveProbe || !caps.logs || !caps.disconnect) && (
+        <Card>
+          <CardContent className="pt-4 text-sm text-muted-foreground">
+            Some integration actions are disabled because backend capabilities are not enabled in this environment.
+          </CardContent>
+        </Card>
+      )}
 
       {!isLoading && integrations.length === 0 ? (
         <EmptyState
@@ -263,6 +313,7 @@ export function IntegrationsPage() {
                     size="sm"
                     className="flex-1"
                     onClick={() => handleConfigure(integration)}
+                    disabled={!caps.configure}
                   >
                     <Settings className="mr-2 h-4 w-4" />
                     {integration.status === "disconnected" ? "Connect" : "Configure"}
@@ -274,6 +325,7 @@ export function IntegrationsPage() {
                         size="icon"
                         className="h-9 w-9 bg-transparent"
                         onClick={() => handleViewLogs(integration)}
+                        disabled={!caps.logs}
                       >
                         <History className="h-4 w-4" />
                       </Button>
@@ -282,6 +334,7 @@ export function IntegrationsPage() {
                         size="icon"
                         className="h-9 w-9 text-destructive bg-transparent"
                         onClick={() => handleDisconnect(integration)}
+                        disabled={!caps.disconnect}
                       >
                         <Unplug className="h-4 w-4" />
                       </Button>
@@ -334,11 +387,11 @@ export function IntegrationsPage() {
             ))}
           </div>
           <DialogFooter className="flex-col sm:flex-row gap-2">
-            <Button variant="outline" onClick={handleTestConnection} disabled={isTesting}>
+            <Button variant="outline" onClick={handleTestConnection} disabled={isTesting || !caps.liveProbe}>
               {isTesting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <TestTube className="mr-2 h-4 w-4" />}
               Test Connection
             </Button>
-            <Button onClick={handleSaveConfig} disabled={isSaving}>
+            <Button onClick={handleSaveConfig} disabled={isSaving || !caps.configure}>
               {isSaving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <CheckCircle className="mr-2 h-4 w-4" />}
               Save & Connect
             </Button>

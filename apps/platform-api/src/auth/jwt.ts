@@ -27,8 +27,10 @@ function assertSessionOrgConsistency(
   session: VerifiedClerkSession,
   user: AuthUser,
 ): "missing_org" | "org_mismatch" | null {
+  // Fallback mode: when token has no org claim, allow scoped user resolution
+  // from local membership lookup (single-org user or explicit query org).
   if (!session.orgId) {
-    return "missing_org";
+    return null;
   }
 
   if (session.orgId !== user.orgId) {
@@ -38,8 +40,37 @@ function assertSessionOrgConsistency(
   return null;
 }
 
-async function resolveClerkUser(session: VerifiedClerkSession): Promise<AuthUser | undefined> {
+async function resolveClerkUser(
+  session: VerifiedClerkSession,
+  request: FastifyRequest,
+): Promise<AuthUser | undefined> {
+  const queryOrgRaw = (request.query as { orgId?: unknown } | undefined)?.orgId;
+  const queryOrgId = typeof queryOrgRaw === "string" && queryOrgRaw.trim().length > 0
+    ? queryOrgRaw.trim()
+    : undefined;
+
   if (!session.orgId) {
+    if (queryOrgId) {
+      const inQueryOrg =
+        (await authStore.findByClerkIdInOrg(session.sub, queryOrgId)) ??
+        (await authStore.findByEmailInOrg(session.email, queryOrgId));
+      if (inQueryOrg) {
+        return inQueryOrg;
+      }
+    }
+
+    const byClerk = await authStore.listByClerkId(session.sub);
+    if (byClerk.length === 1) {
+      return byClerk[0];
+    }
+    if (byClerk.length > 1) {
+      return undefined;
+    }
+
+    const byEmail = await authStore.listByEmail(session.email);
+    if (byEmail.length === 1) {
+      return byEmail[0];
+    }
     return undefined;
   }
 
@@ -63,13 +94,13 @@ export function authHook(allowedRoles?: AuthRole[]) {
 
     try {
       const session = await verifyClerkToken(token);
-      const user = await resolveClerkUser(session);
+      const user = await resolveClerkUser(session, request);
       if (!user) {
         sendError(
           reply,
           403,
           "org_not_provisioned",
-          "No Rezovo user membership exists for the active Clerk organization.",
+          "No Rezovo user membership exists for this account/org context.",
         );
         return;
       }
@@ -106,6 +137,7 @@ export function authHook(allowedRoles?: AuthRole[]) {
         const ok = allowedRoles.some((role) => roles.includes(role));
         if (!ok) {
           reply.status(403).send({ error: "forbidden" });
+          return;
         }
       }
     } catch (error) {

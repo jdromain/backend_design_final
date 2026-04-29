@@ -29,12 +29,12 @@ import { extractSentenceChunks } from "./sentenceChunker";
 
 const logger = createLogger({ service: "realtime-core", module: "realtimeConversation" });
 
-const KB_FETCH_TIMEOUT_MS = 350;
-const PERSIST_THROTTLE_MS = 250;
-const EMPTY_RESPONSE_GRACE_MS = 1200;
-const MIN_CHUNK_CHARS = 28;
-const MAX_CHUNK_CHARS = 180;
-const MAX_CHUNK_WAIT_MS = 300;
+const KB_FETCH_TIMEOUT_MS = Math.max(100, env.REALTIME_KB_FETCH_TIMEOUT_MS);
+const PERSIST_THROTTLE_MS = Math.max(50, env.REALTIME_PERSIST_THROTTLE_MS);
+const EMPTY_RESPONSE_GRACE_MS = Math.max(200, env.REALTIME_EMPTY_RESPONSE_GRACE_MS);
+const MIN_CHUNK_CHARS = Math.max(8, env.REALTIME_TTS_MIN_CHUNK_CHARS);
+const MAX_CHUNK_CHARS = Math.max(MIN_CHUNK_CHARS + 8, env.REALTIME_TTS_MAX_CHUNK_CHARS);
+const MAX_CHUNK_WAIT_MS = Math.max(80, env.REALTIME_TTS_MAX_CHUNK_WAIT_MS);
 
 const SHORT_LEAD_INS = new Set([
   "got it.",
@@ -271,7 +271,7 @@ async function applyOutputGuardrail(
         .checkOutput(fullTextForModeration.trim().slice(0, 2000), callId)
         .then((result) => ({ blocked: result.blocked, message: result.message })),
       new Promise<{ blocked: boolean; message?: string }>((resolve) =>
-        setTimeout(() => resolve({ blocked: false }), 250),
+        setTimeout(() => resolve({ blocked: false }), Math.max(50, env.REALTIME_OUTPUT_MODERATION_TIMEOUT_MS)),
       ),
     ]).catch(() => ({ blocked: false }));
   moderationCache.set(responseId, cached);

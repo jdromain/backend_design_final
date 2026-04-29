@@ -1,6 +1,8 @@
 "use client";
 
 import { useState, useEffect, useRef, useMemo } from "react";
+import Link from "next/link";
+import { subDays } from "date-fns";
 import { isClerkConfigured } from "@/lib/clerk-runtime";
 import {
   Phone,
@@ -29,7 +31,7 @@ import { KpiRowSkeleton, ChartSkeleton, TableSkeleton } from "@/components/loadi
 import { useToast } from "@/hooks/use-toast";
 import { useAppNavigate } from "@/hooks/use-app-navigate";
 import {
-  getDashboardOutcomes,
+  getDashboardOutcomesByRange,
   getDashboardCalls,
   getDashboardActivity,
   getSparklineData,
@@ -52,11 +54,11 @@ export function DashboardHomePage() {
   const { toast } = useToast();
 
   const [dateRange, setDateRange] = useState<DateRangeValue>(() => {
-    const now = new Date();
-    now.setHours(0, 0, 0, 0);
-    return { from: now, to: new Date() };
+    const to = new Date();
+    return { from: subDays(to, 7), to };
   });
   const [autoRefresh, setAutoRefresh] = useState(true);
+  const [outcomesGranularity, setOutcomesGranularity] = useState<"hour" | "day" | "week">("hour");
   const [lastUpdated, setLastUpdated] = useState(new Date());
   const [activeKpi, setActiveKpi] = useState<string | null>(null);
   const [quickFilter, setQuickFilter] = useState<QuickFilter>(null);
@@ -67,7 +69,7 @@ export function DashboardHomePage() {
   const [fetchKey, setFetchKey] = useState(0);
   const clerkRetryRef = useRef(0);
 
-  type OutcomesData = Awaited<ReturnType<typeof getDashboardOutcomes>>;
+  type OutcomesData = Awaited<ReturnType<typeof getDashboardOutcomesByRange>>;
   type CallsData = Awaited<ReturnType<typeof getDashboardCalls>>;
   type ActivityData = Awaited<ReturnType<typeof getDashboardActivity>>;
 
@@ -121,13 +123,35 @@ export function DashboardHomePage() {
   }, []);
 
   useEffect(() => {
+    const onTemplateMissing = (event: Event) => {
+      const custom = event as CustomEvent<{ template?: string }>;
+      const template = custom.detail?.template ?? "platform-api";
+      toast({
+        title: "Clerk JWT template missing",
+        description: `Create Clerk JWT template "${template}" so API calls can use a scoped token. Using fallback session token for now.`,
+        variant: "destructive",
+      });
+    };
+    window.addEventListener("rezovo:clerk-template-missing", onTemplateMissing);
+    return () => window.removeEventListener("rezovo:clerk-template-missing", onTemplateMissing);
+  }, [toast]);
+
+  useEffect(() => {
     let cancelled = false;
 
     waitForAuthReady().then(() => {
       if (cancelled) return;
       Promise.all([
-        getDashboardOutcomes(),
-        getDashboardCalls(),
+        getDashboardOutcomesByRange({
+          from: dateRange.from,
+          to: dateRange.to,
+          granularity: outcomesGranularity,
+        }),
+        getDashboardCalls({
+          from: dateRange.from,
+          to: dateRange.to,
+          limit: 500,
+        }),
         getDashboardActivity(),
         getSparklineData(),
         getSystemHealth(),
@@ -174,12 +198,13 @@ export function DashboardHomePage() {
     return () => {
       cancelled = true;
     };
-  }, [fetchKey]);
+  }, [fetchKey, dateRange.from, dateRange.to, outcomesGranularity]);
 
   useEffect(() => {
     if (autoRefresh) {
       const interval = setInterval(() => {
         setLastUpdated(new Date());
+        setFetchKey((k) => k + 1);
       }, 30000);
       return () => clearInterval(interval);
     }
@@ -266,9 +291,9 @@ export function DashboardHomePage() {
         <p className="text-destructive">{dashboardError}</p>
         <p className="text-sm text-muted-foreground">
           Confirm platform-api is running and you are signed in with Clerk (
-          <a href="/sign-in" className="underline">
+          <Link href="/sign-in" className="underline">
             sign in
-          </a>
+          </Link>
           ).
         </p>
       </div>
@@ -426,6 +451,8 @@ export function DashboardHomePage() {
               <div className="lg:col-span-2">
                 <OutcomesChart
                   data={outcomesChartData}
+                  granularity={outcomesGranularity}
+                  onGranularityChange={setOutcomesGranularity}
                   onSegmentClick={(_time, outcome) => {
                     if (outcome === "systemFailed") setQuickFilter("failed");
                     else if (outcome === "handoff") setQuickFilter("handoff");

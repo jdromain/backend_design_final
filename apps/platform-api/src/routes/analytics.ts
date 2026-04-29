@@ -5,16 +5,15 @@ import { authHook, resolvedAuthHook } from "../auth/jwt";
 import { requireOrgForRequest } from "../auth/orgScope";
 import { ConfigStore } from "../config/store";
 import { AnalyticsSummaryEnvelopeSchema } from "../contracts/httpSchemas";
+import { mapOutcomeToUiResult, normalizeEndReasonLabel } from "../lib/callTaxonomy";
 
 
-function mapOutcome(pg: string | null): string {
-  switch (pg) {
-    case "handled": return "completed";
-    case "transferred": return "handoff";
-    case "abandoned": return "dropped";
-    case "failed": return "systemFailed";
-    default: return "pending";
-  }
+function toIntentLabel(label: string | null): string {
+  const raw = (label ?? "").trim();
+  if (!raw) return "Unknown";
+  return raw
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (m) => m.toUpperCase());
 }
 
 export function registerAnalyticsRoutes(app: FastifyInstance, configStore: ConfigStore) {
@@ -23,21 +22,63 @@ export function registerAnalyticsRoutes(app: FastifyInstance, configStore: Confi
   app.get("/analytics/outcomes", { preHandler }, async (request: FastifyRequest, reply: FastifyReply) => {
     const orgId = requireOrgForRequest(request, reply, (request.query as any).orgId);
     if (!orgId) return;
+    const queryParams = (request.query as {
+      from?: string;
+      to?: string;
+      granularity?: "hour" | "day" | "week";
+    }) ?? {};
+
+    const granularity = queryParams.granularity === "day" || queryParams.granularity === "week"
+      ? queryParams.granularity
+      : "hour";
+    const truncateExpr = granularity === "day" ? "day" : granularity === "week" ? "week" : "hour";
+    const stepExpr = granularity === "day" ? "1 day" : granularity === "week" ? "1 week" : "1 hour";
+
+    const parsedFrom = queryParams.from ? new Date(queryParams.from) : null;
+    const parsedTo = queryParams.to ? new Date(queryParams.to) : null;
+    const hasValidFrom = !!parsedFrom && !Number.isNaN(parsedFrom.getTime());
+    const hasValidTo = !!parsedTo && !Number.isNaN(parsedTo.getTime());
+    const fallbackTo = new Date();
+    const fallbackFrom = new Date(fallbackTo.getTime() - 24 * 60 * 60 * 1000);
+    let fromTs = hasValidFrom ? parsedFrom! : fallbackFrom;
+    let toTs = hasValidTo ? parsedTo! : fallbackTo;
+    if (fromTs.getTime() > toTs.getTime()) {
+      const tmp = fromTs;
+      fromTs = toTs;
+      toTs = tmp;
+    }
 
     const result = await query(
-      `SELECT date_trunc('hour', started_at) AS time, outcome, COUNT(*)::int AS count
-       FROM calls
-       WHERE org_id = $1 AND started_at > now() - interval '24 hours'
-       GROUP BY time, outcome
-       ORDER BY time`,
-      [orgId]
+      `WITH buckets AS (
+         SELECT generate_series(
+           date_trunc('${truncateExpr}', $2::timestamptz),
+           date_trunc('${truncateExpr}', $3::timestamptz),
+           '${stepExpr}'::interval
+         ) AS bucket_time
+       ),
+       aggregated AS (
+         SELECT
+           date_trunc('${truncateExpr}', started_at) AS bucket_time,
+           outcome,
+           COUNT(*)::int AS count
+         FROM calls
+         WHERE org_id = $1
+           AND started_at >= $2::timestamptz
+           AND started_at <= $3::timestamptz
+         GROUP BY 1, 2
+       )
+       SELECT b.bucket_time AS time, a.outcome, COALESCE(a.count, 0)::int AS count
+       FROM buckets b
+       LEFT JOIN aggregated a ON a.bucket_time = b.bucket_time
+       ORDER BY b.bucket_time ASC`,
+      [orgId, fromTs.toISOString(), toTs.toISOString()]
     );
 
     const buckets = new Map<string, { time: string; pending: number; completed: number; handoff: number; dropped: number; systemFailed: number }>();
     for (const row of result.rows) {
       const t = new Date(row.time).toISOString();
       const bucket = buckets.get(t) ?? { time: t, pending: 0, completed: 0, handoff: 0, dropped: 0, systemFailed: 0 };
-      const key = mapOutcome(row.outcome) as keyof typeof bucket;
+      const key = mapOutcomeToUiResult(row.outcome) as keyof typeof bucket;
       if (typeof bucket[key] === "number") {
         (bucket as any)[key] += row.count;
       }
@@ -104,7 +145,7 @@ export function registerAnalyticsRoutes(app: FastifyInstance, configStore: Confi
       [orgId]
     );
 
-    sendData(reply, result.rows);
+    sendData(reply, result.rows.map((r: any) => ({ label: toIntentLabel(r.label), value: r.value })));
   });
 
   app.get("/analytics/handoffs", { preHandler }, async (request: FastifyRequest, reply: FastifyReply) => {
@@ -119,7 +160,10 @@ export function registerAnalyticsRoutes(app: FastifyInstance, configStore: Confi
       [orgId]
     );
 
-    sendData(reply, result.rows);
+    sendData(reply, result.rows.map((r: any) => ({
+      label: normalizeEndReasonLabel(r.label, "transferred") ?? "Unknown",
+      value: r.value,
+    })));
   });
 
   app.get("/analytics/failures", { preHandler }, async (request: FastifyRequest, reply: FastifyReply) => {

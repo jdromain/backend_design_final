@@ -71,7 +71,7 @@ export class RtpBridgeClient {
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         reject(new Error("RTP bridge connection timeout"));
-      }, 5000);
+      }, Math.max(500, env.RTP_BRIDGE_CONNECT_TIMEOUT_MS));
 
       ws.once("open", () => {
         clearTimeout(timeout);

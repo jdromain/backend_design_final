@@ -15,6 +15,7 @@ import { internalApiHeaders } from "./platformApiAuth";
 const logger = createLogger({ service: "realtime-core", module: "callPersistence" });
 
 const DEFAULT_PLATFORM_API = "http://localhost:3001";
+const SLOW_PERSISTENCE_REQUEST_MS = 350;
 
 function getBase(): string {
   return env.PLATFORM_API_URL || DEFAULT_PLATFORM_API;
@@ -72,18 +73,42 @@ export interface CallEventPayload {
  */
 async function safeFetch(path: string, body: unknown): Promise<void> {
   const url = `${getBase()}${path}`;
+  const startedAt = Date.now();
+  const bodyJson = JSON.stringify(body);
+  const payloadBytes = Buffer.byteLength(bodyJson, "utf8");
   try {
     const res = await fetch(url, {
       method: "POST",
       headers: internalApiHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify(body),
+      body: bodyJson,
     });
+    const durationMs = Date.now() - startedAt;
     if (!res.ok) {
       const text = await res.text().catch(() => "");
-      logger.warn("call persistence request failed", { url, status: res.status, body: text.slice(0, 200) });
+      logger.warn("call persistence request failed", {
+        url,
+        status: res.status,
+        body: text.slice(0, 200),
+        durationMs,
+        payloadBytes,
+      });
+      return;
+    }
+    if (durationMs >= SLOW_PERSISTENCE_REQUEST_MS) {
+      logger.info("call persistence slow request", {
+        url,
+        status: res.status,
+        durationMs,
+        payloadBytes,
+      });
     }
   } catch (err) {
-    logger.warn("call persistence request error", { url, error: (err as Error).message });
+    logger.warn("call persistence request error", {
+      url,
+      error: (err as Error).message,
+      durationMs: Date.now() - startedAt,
+      payloadBytes,
+    });
   }
 }
 
