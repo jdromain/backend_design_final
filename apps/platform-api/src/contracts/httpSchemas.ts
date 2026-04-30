@@ -48,12 +48,26 @@ export const CallsListEnvelopeSchema = Type.Object({
 
 export const AnalyticsSummarySchema = Type.Object({
   totalCalls: Type.Number(),
+  /** outcome = handled; same count as completedCalls */
   successfulCalls: Type.Number(),
+  completedCalls: Type.Number(),
+  handoffCalls: Type.Number(),
+  droppedCalls: Type.Number(),
   failedCalls: Type.Number(),
+  /** 0–100 integers for dashboard headline KPIs */
+  completionRate: Type.Number(),
+  handoffRate: Type.Number(),
+  dropRate: Type.Number(),
+  failureRate: Type.Number(),
   averageDurationMs: Type.Number(),
+  /** 0–1; prefer completionRate for display */
   successRate: Type.Number(),
   activeNow: Type.Number(),
   toolInvocations: Type.Number(),
+  /** Average ms from call start to first agent_spoke; null when no samples */
+  avgTimeToAgentSpeechMs: Type.Union([Type.Number(), Type.Null()]),
+  /** When false, UI must not show 0ms as a measured value */
+  avgTimeToAgentSpeechHasData: Type.Boolean(),
 });
 
 export const AnalyticsSummaryEnvelopeSchema = Type.Object({

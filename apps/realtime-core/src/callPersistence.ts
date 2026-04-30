@@ -9,8 +9,16 @@
  */
 
 import { createLogger } from "@rezovo/logging";
+import type {
+  CanonicalCallStatus,
+  CanonicalConfidenceBand,
+  CanonicalEndReason,
+  CanonicalIntentSource,
+  CanonicalOutcome,
+} from "@rezovo/core-types";
 import { env } from "./env";
 import { internalApiHeaders } from "./platformApiAuth";
+import { internalFetch } from "./http/internalFetch";
 
 const logger = createLogger({ service: "realtime-core", module: "callPersistence" });
 
@@ -36,12 +44,17 @@ export interface CallStartPayload {
 export interface CallEndPayload {
   callId: string;
   orgId: string;
-  endReason?: string;
-  outcome?: string;
+  status?: CanonicalCallStatus;
+  endReason?: CanonicalEndReason;
+  outcome?: CanonicalOutcome;
+  terminalStatusSource?: "realtime" | "carrier" | "system" | "unknown";
   failureType?: string;
   durationSec?: number;
   classifiedIntent?: string;
   intentConfidence?: number;
+  intentSource?: CanonicalIntentSource;
+  intentConfidenceBand?: CanonicalConfidenceBand;
+  labelVersion?: number;
   finalIntent?: string;
   slotsCollected?: Record<string, unknown>;
   turnCount?: number;
@@ -77,10 +90,11 @@ async function safeFetch(path: string, body: unknown): Promise<void> {
   const bodyJson = JSON.stringify(body);
   const payloadBytes = Buffer.byteLength(bodyJson, "utf8");
   try {
-    const res = await fetch(url, {
+    const res = await internalFetch(url, {
       method: "POST",
       headers: internalApiHeaders({ "Content-Type": "application/json" }),
       body: bodyJson,
+      timeoutMs: 3_000,
     });
     const durationMs = Date.now() - startedAt;
     if (!res.ok) {

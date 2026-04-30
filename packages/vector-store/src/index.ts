@@ -123,9 +123,22 @@ export class PgVectorStore {
     const { docId, orgId, namespace, chunks } = params;
     if (chunks.length === 0) return 0;
 
-    // Batch embed all chunk texts
-    const texts = chunks.map((c) => c.text);
-    const embeddings = await this.embedder.embed(texts);
+    const EMBED_BATCH = 32;
+
+    const rowsToInsert: Array<{ index: number; text: string; embeddingStr: string; metadata: Record<string, unknown> }> = [];
+    for (let offset = 0; offset < chunks.length; offset += EMBED_BATCH) {
+      const batch = chunks.slice(offset, offset + EMBED_BATCH);
+      const texts = batch.map((c) => c.text);
+      const embeddings = await this.embedder.embed(texts);
+      for (let i = 0; i < batch.length; i++) {
+        rowsToInsert.push({
+          index: batch[i]!.index,
+          text: batch[i]!.text,
+          embeddingStr: `[${embeddings[i]!.join(",")}]`,
+          metadata: batch[i]!.metadata ?? {},
+        });
+      }
+    }
 
     // Insert in a transaction
     const client = await this.pool.connect();
@@ -135,12 +148,11 @@ export class PgVectorStore {
       // Delete existing chunks for this doc to handle re-ingestion
       await client.query("DELETE FROM kb_chunks WHERE doc_id = $1", [docId]);
 
-      for (let i = 0; i < chunks.length; i++) {
-        const embeddingStr = `[${embeddings[i].join(",")}]`;
+      for (const row of rowsToInsert) {
         await client.query(
           `INSERT INTO kb_chunks (doc_id, org_id, namespace, chunk_index, text, embedding, metadata)
            VALUES ($1, $2, $3, $4, $5, $6::vector, $7)`,
-          [docId, orgId, namespace, chunks[i].index, chunks[i].text, embeddingStr, chunks[i].metadata ?? {}]
+          [docId, orgId, namespace, row.index, row.text, row.embeddingStr, row.metadata]
         );
       }
 
@@ -208,3 +220,10 @@ export class PgVectorStore {
 // ─── Legacy compatibility export (for code that still references InMemoryVectorStore) ───
 
 export { PgVectorStore as InMemoryVectorStore };
+
+export { chunkText } from "./chunkKbText";
+export {
+  kbIngestTransportMode,
+  markKbDocumentProcessing,
+  runKbIngestPipeline,
+} from "./kbIngestPipeline";

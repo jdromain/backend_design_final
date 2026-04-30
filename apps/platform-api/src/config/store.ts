@@ -54,7 +54,6 @@ export class ConfigStore {
     const k = key(orgId, lob);
     const existing = this.store.get(k);
     if (existing) return existing;
-    // Attempt load from persistence
     return this.loadOrInit(orgId, lob);
   }
 
@@ -78,8 +77,31 @@ export class ConfigStore {
     return stored;
   }
 
+  /**
+   * Runtime snapshot: **published** `agent_configs` from the DB, or org default. In-memory
+   * drafts are not used for this path (see Plan B).
+   */
   async getSnapshot(orgId: string, lob = "default") {
-    const cfg = this.ensure(orgId, lob);
+    const fromDb = await this.persistence.loadPublishedAgentConfig(orgId, lob);
+    const k = key(orgId, lob);
+
+    let cfg: StoredConfig;
+    if (fromDb) {
+      cfg = fromDb;
+      this.store.set(k, cfg);
+    } else {
+      const snapshot = createDefaultOrganizationConfig(orgId, lob);
+      cfg = {
+        version: snapshot.version,
+        status: snapshot.status,
+        agentConfig: snapshot.agentConfig,
+        phoneNumbers: snapshot.phoneNumbers,
+        plan: snapshot.plan,
+        lob,
+      };
+      this.store.set(k, cfg);
+    }
+
     const organizationBusinessId = await resolveOrganizationBusinessId(orgId);
 
     // Load actual phone numbers from the phone_numbers table (via callStore)

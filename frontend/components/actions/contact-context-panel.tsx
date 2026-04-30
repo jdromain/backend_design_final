@@ -433,7 +433,7 @@ export function ContactContextPanel({
                         <li className="flex items-start gap-2">
                           <span className="text-foreground/70">•</span>
                           <span>
-                            <strong className="text-foreground">Intent:</strong> {latestCall.intent}
+                            <strong className="text-foreground">Classified intent:</strong> {latestCall.intent}
                           </span>
                         </li>
                       )}

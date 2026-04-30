@@ -64,10 +64,69 @@ export interface CallContext {
   approvalGateState: ApprovalGateState;
 }
 
-const VOICE_DIRECTIVE =
-  "You are on a live phone call. Keep every reply to 1-2 short sentences. " +
-  "Be warm and natural. Reply with ONLY what you would say out loud to the caller. " +
-  "Never mention internal routing, handoffs, specialists, departments, or that you are transferring/connecting the caller.";
+export const BASE_VOICE_CONTRACT =
+  "You are on a live phone call. Sound like a calm, capable receptionist. " +
+  "By default, speak in one or two short sentences. Ask one question at a time, then wait. " +
+  "Answer simple questions directly first, then one follow-up if needed. " +
+  "Do not echo the whole caller statement, do not overuse I understand, and avoid call-center clichés. " +
+  "Do not tell the caller you are a bot or an automated system. Reply with ONLY what you would say out loud. No markdown, bullets, emojis, or URLs. " +
+  "Never describe internal roles, workflows, or systems to the caller (no job titles, APIs, or departments). " +
+  "Do not say transfer, route, or connect in a way that promises something unless a real transfer is actually happening. " +
+  "If the caller interrupts or corrects you, acknowledge briefly (e.g. Sure, Go ahead, No problem) and only address the new topic; " +
+  "do not say you were interrupted, as I was saying, or continue the old answer. " +
+  "If you need a moment to look something up, one brief line, then the answer. " +
+  "If a backend result has ok=false, say it in natural language using user_message; do not read error codes or technical failure details. " +
+  "If something cannot be looked up, be honest, offer a message or callback, and do not fake completion. " +
+  "For broad what-do-you-offer questions, give a short summary and one clarifying question; do not recite long KB text. " +
+  "If knowledge is missing, do not invent prices, hours, or policies. " +
+  "Examples: mosquito service: confirm in plain terms, ask for city. Quote: one natural question. Unknown price: " +
+  "do not guess; offer to take details for an accurate follow-up. Interruption: Sure, go ahead.";
+
+function voiceInstructionName(activeAgentName: string): string {
+  switch (activeAgentName) {
+    case "Receptionist":
+      return "the receptionist for this business";
+    case "Booking Specialist":
+      return "the assistant helping with scheduling on this call";
+    case "Cancellation Specialist":
+      return "the assistant helping with changes or cancellations on this call";
+    case "Customer Care Specialist":
+      return "the assistant helping with a concern on this call";
+    case "Information Specialist":
+      return "the assistant answering questions on this call";
+    default:
+      return "the assistant on this call";
+  }
+}
+
+export function buildResponseInstructions(c: CallContext, activeAgentName: string): string {
+  const parts = [
+    `You are ${voiceInstructionName(activeAgentName)}.`,
+    "Keep responses to one or two short spoken sentences unless you are reading back a booking confirmation.",
+  ];
+  if (c.kbPassages.length === 0) {
+    parts.push(
+      c.kbHealth?.status === "degraded"
+        ? "Knowledge lookup was limited; do not invent business facts."
+        : "No knowledge excerpts on this turn; use only the caller, your instructions, and business facts above.",
+    );
+  }
+  return parts.join(" ");
+}
+
+function toolError(
+  code: string,
+  user_message: string,
+  opts?: { retryable?: boolean; next_action?: string },
+): string {
+  return JSON.stringify({
+    ok: false,
+    code,
+    retryable: opts?.retryable ?? false,
+    user_message,
+    next_action: opts?.next_action ?? "offer_take_message",
+  });
+}
 
 const MAX_BASE_PROMPT_CHARS = Math.max(80, env.AGENT_MAX_BASE_PROMPT_CHARS);
 const MAX_OPENING_HOURS_CHARS = Math.max(80, env.AGENT_MAX_OPENING_HOURS_CHARS);
@@ -167,8 +226,7 @@ function enforceApprovalGate(
       status: "confirmation_required",
       tool: toolName,
       action_hash: actionHash,
-      message:
-        "I can do that once you explicitly confirm. Ask the caller for a clear yes/no before retrying this tool.",
+      message: "Requires explicit yes/no from the caller before running this action.",
       args_preview: normalizedArgs,
     }),
   };
@@ -266,7 +324,7 @@ export function clearPendingApproval(context: CallContext): void {
 function withContext(basePrompt: string) {
   return (ctx: RunContext<CallContext>): string => {
     const c = ctx.context;
-    const parts = [basePrompt, VOICE_DIRECTIVE];
+    const parts = [basePrompt, BASE_VOICE_CONTRACT];
 
     const compactBasePrompt = (c.agentBasePrompt || "").trim();
     if (compactBasePrompt) {
@@ -293,10 +351,12 @@ function withContext(basePrompt: string) {
       parts.push(`Known caller details: ${compactSlotMemory}`);
     }
     if (c.kbPassages.length > 0) {
-      parts.push("Relevant knowledge:");
+      parts.push("[KB_EXCERPTS]");
       c.kbPassages
         .slice(0, MAX_KB_PROMPT_PASSAGES)
         .forEach((p, i) => parts.push(`  [${i + 1}] ${String(p).slice(0, MAX_KB_PROMPT_CHARS)}`));
+    } else if (c.kbHealth?.status) {
+      parts.push(`[KB_EXCERPTS status=${c.kbHealth.status}] (empty) Do not invent business-specific facts.`);
     }
 
     if (c.pendingAction) {
@@ -321,7 +381,12 @@ const calendlySearchSchema = z.object({
 const calendlyCreateSchema = z.object({
   start_time: z.string().describe("UTC ISO 8601 start time from availability search"),
   invitee_name: z.string().describe("Full name of the caller"),
-  invitee_email: z.string().describe("Email address of the caller"),
+  invitee_email: z
+    .string()
+    .email()
+    .nullable()
+    .optional()
+    .describe("Email if the caller provided one; otherwise omit"),
 });
 
 const calendlyCancelSchema = z.object({
@@ -427,7 +492,10 @@ const calendlySearchAvailability = tool<typeof calendlySearchSchema, CallContext
         callId: cc.callId,
         error: (err as Error).message,
       });
-      return "Unable to check availability right now. Please try again in a moment.";
+      return toolError("calendly_search_failed", "I’m having trouble checking availability. I can take a message or have someone call you back.", {
+        retryable: true,
+        next_action: "offer_take_message",
+      });
     }
   },
 });
@@ -435,7 +503,7 @@ const calendlySearchAvailability = tool<typeof calendlySearchSchema, CallContext
 const calendlyCreateBooking = tool<typeof calendlyCreateSchema, CallContext>({
   name: "calendly_create_booking",
   description:
-    "Book an appointment on Calendly. Requires name, email, and a start_time from availability search.",
+    "Book an appointment on Calendly. Requires name and a start_time from availability search. Email is optional for phone callers.",
   parameters: calendlyCreateSchema,
   async execute(args, ctx) {
     const cc = ctx?.context;
@@ -457,11 +525,16 @@ const calendlyCreateBooking = tool<typeof calendlyCreateSchema, CallContext>({
     try {
       const eventTypeUri =
         cc.calendlyEventTypeUri || (await calendly.resolveEventTypeUri(cc.calendlyAccessToken));
+      const rawEmail = args.invitee_email?.trim();
+      const inviteeEmail =
+        rawEmail && rawEmail.length > 0
+          ? rawEmail
+          : `noreply+${cc.callId.replace(/[^a-z0-9]/gi, "").slice(0, 24)}@phone.rezovo.local`;
       const invitee = await calendly.createInvitee(cc.calendlyAccessToken, {
         eventTypeUri,
         startTime: args.start_time,
         inviteeName: args.invitee_name,
-        inviteeEmail: args.invitee_email,
+        inviteeEmail,
         inviteeTimezone: cc.calendlyTimezone || "America/New_York",
       });
 
@@ -478,7 +551,11 @@ const calendlyCreateBooking = tool<typeof calendlyCreateSchema, CallContext>({
         callId: cc.callId,
         error: (err as Error).message,
       });
-      return "Unable to complete the booking. Let me connect you with someone who can help.";
+      return toolError(
+        "calendly_create_failed",
+        "I’m having trouble completing the booking. I can take a message or have someone follow up with you.",
+        { retryable: false, next_action: "offer_take_message" },
+      );
     }
   },
 });
@@ -537,6 +614,7 @@ const otSearchAvailability = tool<typeof otSearchSchema, CallContext>({
     try {
       const result = await callTool({
         orgId: cc.orgId,
+        callId: cc.callId,
         toolName: "search_availability",
         args: { restaurant_id: cc.restaurantId, ...args },
       });
@@ -574,6 +652,7 @@ const otCreateReservation = tool<typeof otCreateSchema, CallContext>({
     try {
       const result = await callTool({
         orgId: cc.orgId,
+        callId: cc.callId,
         toolName: "create_reservation",
         args: { restaurant_id: cc.restaurantId, ...args },
       });
@@ -612,6 +691,7 @@ const otModifyReservation = tool<typeof otModifySchema, CallContext>({
     try {
       const result = await callTool({
         orgId: cc.orgId,
+        callId: cc.callId,
         toolName: "modify_reservation",
         args: { restaurant_id: cc.restaurantId, ...args },
       });
@@ -650,6 +730,7 @@ const otCancelReservation = tool<typeof otCancelSchema, CallContext>({
     try {
       const result = await callTool({
         orgId: cc.orgId,
+        callId: cc.callId,
         toolName: "cancel_reservation",
         args: { restaurant_id: cc.restaurantId, ...args },
       });
@@ -680,6 +761,7 @@ const otGetReservationDetails = tool<typeof otDetailsSchema, CallContext>({
     try {
       const result = await callTool({
         orgId: cc.orgId,
+        callId: cc.callId,
         toolName: "get_reservation_details",
         args: { restaurant_id: cc.restaurantId, ...args },
       });
@@ -717,6 +799,7 @@ const logComplaint = tool<typeof logComplaintSchema, CallContext>({
     try {
       await callTool({
         orgId: cc.orgId,
+        callId: cc.callId,
         toolName: "log_complaint",
         args: { ...args, callId: cc.callId },
       });
@@ -1342,7 +1425,6 @@ const assistantAgent: Agent<CallContext> = new Agent({
   ],
   modelSettings: agentModelSettings(),
 });
-
 export function getStartingAgent(): Agent<CallContext> {
   return assistantAgent;
 }

@@ -4,6 +4,7 @@ import { query } from "../persistence/dbClient";
 import { sendData, sendError } from "../lib/responses";
 import { resolvedAuthHook } from "../auth/jwt";
 import { requireOrgForRequest } from "../auth/orgScope";
+import { getVectorStore, chunkTextInline } from "../kb";
 import { PersistenceStore } from "../persistence/store";
 
 const logger = createLogger({ service: "platform-api", module: "knowledgeRoutes" });
@@ -98,18 +99,42 @@ export function registerKnowledgeRoutes(app: FastifyInstance) {
       const storedChunks = Number(r.embedded_chunks ?? 0);
       const resolvedChunks = Math.max(actualChunks, storedChunks);
       const resolvedStatus = resolvedChunks > 0 ? "embedded" : r.status;
+
+      if (actualChunks > 0 && !["embedded", "failed"].includes(r.status)) {
+        query(
+          `UPDATE kb_documents
+           SET embedded_chunks = $1, status = 'embedded', updated_at = now()
+           WHERE doc_id = $2 AND org_id = $3`,
+          [actualChunks, r.doc_id, orgId]
+        ).catch(() => {
+          // best-effort status healing only
+        });
+      }
+
+      const lastErrRaw = r.last_error;
+      const lastErr =
+        lastErrRaw != null && String(lastErrRaw).trim() !== ""
+          ? String(lastErrRaw).trim()
+          : undefined;
+
       return {
         id: r.doc_id,
         namespace: r.namespace,
         name: meta.name ?? meta.filename ?? r.doc_id,
         type: meta.type ?? "txt",
         sizeBytes: meta.sizeBytes ?? 0,
-        status: mapKbStatus(resolvedStatus) === "ready" ? "ready"
-              : mapKbStatus(resolvedStatus) === "failed" ? "failed" : "chunking",
+        status: mapKbStatus(resolvedStatus) === "ready"
+          ? "ready"
+          : mapKbStatus(resolvedStatus) === "failed"
+            ? "failed"
+            : r.status === "ingest_requested" || mapKbStatus(resolvedStatus) === "uploading"
+              ? "ingest_requested"
+              : "chunking",
         chunks: resolvedChunks,
         active: resolveActive(meta),
         ingestedAt: r.ingested_at ?? r.created_at,
         updatedAt: r.updated_at ?? r.created_at,
+        ...(lastErr ? { errorMessage: lastErr, last_error: lastErr } : {}),
       };
     });
     sendData(reply, { documents });
@@ -166,4 +191,91 @@ export function registerKnowledgeRoutes(app: FastifyInstance) {
   app.post("/knowledge/documents/:docId/delete", {
     preHandler: resolvedAuthHook(["admin", "editor"]),
   }, deleteDocumentHandler);
+
+  app.post<{
+    Params: { docId: string };
+  }>("/knowledge/documents/:docId/reingest", {
+    preHandler: resolvedAuthHook(["admin", "editor"]),
+  }, async (request, reply) => {
+    const orgId = requireOrgForRequest(request, reply, (request.query as { orgId?: string }).orgId);
+    if (!orgId) return;
+
+    const docId = (request.params as { docId: string }).docId?.trim();
+    if (!docId) {
+      return sendError(reply, 400, "bad_request", "docId required");
+    }
+
+    const docResult = await query(
+      "SELECT doc_id, namespace, text, metadata FROM kb_documents WHERE org_id = $1 AND doc_id = $2",
+      [orgId, docId]
+    );
+
+    if (docResult.rows.length === 0) {
+      return sendError(reply, 404, "not_found", "Document not found");
+    }
+
+    const doc = docResult.rows[0] as {
+      doc_id: string;
+      namespace: string;
+      text: string;
+      metadata: Record<string, unknown>;
+    };
+
+    if (!doc.text?.trim()) {
+      return sendError(
+        reply,
+        400,
+        "no_text",
+        "No text stored for this document. Please re-upload the file."
+      );
+    }
+
+    await query(
+      `UPDATE kb_documents
+       SET status = 'ingest_requested', embedded_chunks = 0, updated_at = now()
+       WHERE org_id = $1 AND doc_id = $2`,
+      [orgId, docId]
+    );
+
+    try {
+      const store = getVectorStore();
+      const chunks = chunkTextInline(doc.text);
+
+      if (chunks.length === 0) {
+        await query(
+          `UPDATE kb_documents
+           SET embedded_chunks = 0, status = 'embedded', updated_at = now()
+           WHERE org_id = $1 AND doc_id = $2`,
+          [orgId, docId]
+        );
+        return sendData(reply, { ok: true, docId: doc.doc_id, chunks: 0 });
+      }
+
+      await query("DELETE FROM kb_chunks WHERE doc_id = $1 AND org_id = $2", [docId, orgId]);
+
+      const insertedCount = await store.upsertChunks({
+        docId: doc.doc_id,
+        orgId,
+        namespace: doc.namespace,
+        chunks: chunks.map((c) => ({
+          index: c.index,
+          text: c.text,
+          metadata: { doc_id: doc.doc_id, ...doc.metadata },
+        })),
+      });
+
+      await query(
+        `UPDATE kb_documents
+         SET embedded_chunks = $1, status = 'embedded', updated_at = now()
+         WHERE org_id = $2 AND doc_id = $3`,
+        [insertedCount, orgId, docId]
+      );
+
+      sendData(reply, { ok: true, docId: doc.doc_id, chunks: insertedCount });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      await persistence.markDocumentFailed(orgId, docId, message).catch(() => {});
+      return sendError(reply, 500, "embed_failed", `Embedding failed: ${message}`);
+    }
+  });
 }

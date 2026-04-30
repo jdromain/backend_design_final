@@ -37,6 +37,8 @@ const outcomeBadgeStyles: Record<string, string> = {
   handoff: "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20",
   systemFailed: "bg-red-500/10 text-red-600 dark:text-red-400 border-red-500/20",
   dropped: "bg-muted text-muted-foreground border-muted",
+  pending: "bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/20",
+  unknown: "bg-zinc-500/10 text-zinc-600 dark:text-zinc-400 border-zinc-500/20",
 }
 
 const eventIcons = {
@@ -154,8 +156,19 @@ export function CallDetailDrawer({ call, open, onOpenChange }: CallDetailDrawerP
                       )}
                       <span className="font-mono text-sm font-medium truncate">{call.callerNumber}</span>
                     </div>
-                    <Badge variant="outline" className={cn("shrink-0", outcomeBadgeStyles[call.result] || outcomeBadgeStyles.dropped)}>
-                      {call.result === "systemFailed" ? "System Failed" : call.result === "handoff" ? "Handoff" : call.result === "completed" ? "Completed" : "Dropped"}
+                    <Badge variant="outline" className={cn("shrink-0", outcomeBadgeStyles[call.result] || outcomeBadgeStyles.unknown)}>
+                      {call.display?.result ??
+                        (call.result === "systemFailed"
+                          ? "System Failed"
+                          : call.result === "handoff"
+                            ? "Handoff"
+                            : call.result === "completed"
+                              ? "Handled"
+                              : call.result === "dropped"
+                                ? "Dropped"
+                                : call.result === "pending"
+                                  ? "Pending"
+                                  : "Unknown")}
                     </Badge>
                   </div>
 
@@ -180,7 +193,7 @@ export function CallDetailDrawer({ call, open, onOpenChange }: CallDetailDrawerP
                     </div>
                     <div className="space-y-1">
                       <p className="text-xs text-muted-foreground">End Reason</p>
-                      <p className="text-sm font-medium">{call.endReason || "Normal"}</p>
+                      <p className="text-sm font-medium">{call.display?.reason ?? call.endReason ?? "Unknown"}</p>
                     </div>
                   </div>
 
@@ -200,6 +213,26 @@ export function CallDetailDrawer({ call, open, onOpenChange }: CallDetailDrawerP
                       )}
                     </div>
                   )}
+                </CardContent>
+              </Card>
+
+              <Card className="rounded-lg shadow-sm">
+                <CardHeader>
+                  <CardTitle className="text-sm font-medium">Classification Summary</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="grid grid-cols-2 gap-2 text-xs text-muted-foreground">
+                    <div>Status: <span className="text-foreground">{call.classification?.status ?? call.canonical?.status ?? "unknown"}</span></div>
+                    <div>Outcome: <span className="text-foreground">{call.classification?.outcome ?? call.canonical?.outcome ?? "unknown"}</span></div>
+                    <div>End Reason: <span className="text-foreground">{call.classification?.endReason ?? call.canonical?.endReason ?? "unknown"}</span></div>
+                    <div>Failure Category: <span className="text-foreground">{call.classification?.failureCategory ?? "unknown"}</span></div>
+                    <div>Action Class: <span className="text-foreground">{call.classification?.actionClass ?? "no_action"}</span></div>
+                    <div>Intent: <span className="text-foreground">{call.classification?.intentCategory ?? call.intent ?? "Unknown"}</span></div>
+                    <div>Tools Used: <span className="text-foreground">{call.classification?.toolSummary?.toolsUsedCount ?? call.toolsUsed?.length ?? 0}</span></div>
+                    <div>Tool Errors: <span className="text-foreground">{call.classification?.toolSummary?.toolErrorsCount ?? call.toolErrors ?? 0}</span></div>
+                    <div>Source: <span className="text-foreground">{call.classification?.provenance?.terminalStatusSource ?? call.canonical?.terminalStatusSource ?? "unknown"}</span></div>
+                    <div>Label Version: <span className="text-foreground">{call.classification?.provenance?.labelVersion ?? 1}</span></div>
+                  </div>
                 </CardContent>
               </Card>
 

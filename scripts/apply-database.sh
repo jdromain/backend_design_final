@@ -36,9 +36,19 @@ if [[ "$legacy_tenants" == "t" && "$canonical_orgs" != "t" ]]; then
   psql "$PGURL" -v ON_ERROR_STOP=1 -f "$ROOT/database/006_org_id_canonical_cutover.sql"
 fi
 
-for f in setup_complete.sql 002_ui_tables.sql 004_call_failure_type.sql 006_org_id_canonical_cutover.sql 007_call_end_reason_normal_completion.sql 008_call_semantics_backfill.sql; do
+# 007_kb_documents_last_error.sql was referenced by tooling before it existed in-repo; keep it for
+# environments that created DBs from older setup_complete.sql without last_error.
+for f in setup_complete.sql 002_ui_tables.sql 004_call_failure_type.sql 006_org_id_canonical_cutover.sql 007_kb_documents_last_error.sql 007_plan_b_indexes.sql 008_canonical_call_labeling.sql; do
   echo "==> Applying database/$f"
   psql "$PGURL" -v ON_ERROR_STOP=1 -f "$ROOT/database/$f"
 done
 
-echo "Done. Verify with: bash scripts/verify-database-for-testing.sh"
+# Idempotent seed data (plans, etc.) — applied last, safe to rerun.
+for f in seed_plans.sql; do
+  if [[ -f "$ROOT/database/$f" ]]; then
+    echo "==> Applying database/$f (seed)"
+    psql "$PGURL" -v ON_ERROR_STOP=1 -f "$ROOT/database/$f"
+  fi
+done
+
+echo "Done. Next: bash scripts/verify-database-for-testing.sh (expected exit 0; confirms org_* pattern + seed user)."

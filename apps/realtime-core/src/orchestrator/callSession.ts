@@ -37,11 +37,10 @@ import {
 } from "./openai-agents/agents";
 import { runStreamWithModelGuardrails, runWithModelGuardrails, validateRunInputHistory } from "./openai-agents/modelGuardrails";
 import { sessionStore } from "./openai-agents/sessionStore";
+import { sanitizeTransferNarration } from "../voice/formatting";
+import { VOICE_SAFER_REPHRASE } from "../voice/callerPhrases";
 
-export type OrchestratorResponse =
-  | { type: "speak"; text: string }
-  | { type: "handoff"; reason: string; text?: string }
-  | { type: "end"; text: string };
+export type OrchestratorResponse = { type: "speak"; text: string } | { type: "end"; text: string };
 
 export type OnSentenceCallback = (sentence: string) => void | Promise<void>;
 
@@ -169,20 +168,6 @@ function extractAssistantTextFromHistory(history: AgentInputItem[]): string {
   return "";
 }
 
-function sanitizeTransferNarration(text: string): string {
-  let out = text;
-  out = out.replace(
-    /\b(i('|’)ll|let me|i can|we can)\s+(get|connect|transfer|route|put)\s+you(\s+(over|through|with|to))?\s+(to\s+)?(the\s+)?(right\s+)?(specialist|team|agent|department|person)(\s+now)?[.!]?/gi,
-    "I can help with that.",
-  );
-  out = out.replace(
-    /\b(i('|’)m|we('|’)re)\s+(transferring|connecting|routing)\s+you(\s+(now|over|through|to\s+the\s+(right\s+)?(specialist|team|agent|department|person)))?[.!]?/gi,
-    "I can help with that.",
-  );
-  out = out.replace(/\bone moment,\s*please[.!]?/gi, "");
-  const cleaned = out.replace(/\s{2,}/g, " ").trim();
-  return cleaned.length > 0 ? cleaned : "I can help with that.";
-}
 
 function fastLocalChunkGuardrail(text: string): string {
   const suspiciousPiiPatterns = [
@@ -190,7 +175,7 @@ function fastLocalChunkGuardrail(text: string): string {
     /\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b/,
   ];
   for (const pattern of suspiciousPiiPatterns) {
-    if (pattern.test(text)) return "I apologize, let me rephrase that.";
+    if (pattern.test(text)) return VOICE_SAFER_REPHRASE;
   }
   return text;
 }
@@ -311,7 +296,6 @@ export class CallSession {
       businessId: phoneConfig.businessId,
       phoneNumberConfig: phoneConfig,
       agentConfig,
-      stage: "greeting",
       slots: {},
       transcript: [],
       startedAt: new Date(),
@@ -419,7 +403,7 @@ export class CallSession {
 
     const greetingText =
       (this.context.agentConfig as unknown as { greetingMessage?: string }).greetingMessage ||
-      "Hello! Thanks for calling. How can I help you today?";
+      "Hi, thanks for calling. How can I help today?";
 
     this.addTranscriptEntry({
       from: "agent",
@@ -1244,6 +1228,10 @@ export class CallSession {
 
   addLlmUsage(inputTokens: number, outputTokens: number): void {
     this.usage.addLlmTokens(inputTokens, outputTokens);
+  }
+
+  addSttUsageFromAudioBytes(bytes: number): void {
+    this.usage.addSttFromAudioBytes(bytes);
   }
 
   getUsageSnapshot() {

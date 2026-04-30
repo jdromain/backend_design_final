@@ -1,7 +1,12 @@
 import { createLogger } from "@rezovo/logging";
 import { ConfigCache } from "../config-cache/cache";
 import { fetchConfigSnapshot } from "../config-cache/fetcher";
-import { CallEndReason, CallEndedPayload, PhoneNumberConfig } from "@rezovo/core-types";
+import {
+  type CallEndReason,
+  type CallEndedPayload,
+  type CanonicalTerminalTuple,
+  type PhoneNumberConfig,
+} from "@rezovo/core-types";
 import { EventPublisher } from "../events/eventPublisher";
 import { CallSession } from "../orchestrator/callSession";
 import { runRealtimeConversation } from "../orchestrator/realtime/realtimeConversation";
@@ -14,38 +19,17 @@ import { persistCallStart, persistCallEnd, persistCallEvent, TranscriptLine } fr
 import { env } from "../env";
 import { traceLog } from "../traceLog";
 import type { TurnDiagnostics } from "../orchestrator/openai-agents";
+import { sanitizeTransferNarration, isShortLeadIn } from "../voice/formatting";
+import {
+  pickFirstSilencePrompt,
+  pickSecondSilencePrompt,
+  SILENCE_FINAL_FAREWELL,
+} from "../voice/silencePrompts";
+import type { ConversationStopReason } from "../orchestrator/realtime/realtimeConversation";
+
+export { sanitizeTransferNarration, isShortLeadIn } from "../voice/formatting";
 
 const logger = createLogger({ service: "realtime-core", module: "callController" });
-
-const SHORT_LEAD_INS = new Set([
-  "got it.",
-  "got it!",
-  "thanks.",
-  "thank you.",
-  "thank you!",
-  "perfect.",
-  "great.",
-  "sure.",
-  "okay.",
-  "ok.",
-  "absolutely.",
-  "of course.",
-]);
-
-export function sanitizeTransferNarration(text: string): string {
-  let out = text;
-  out = out.replace(
-    /\b(i('|’)ll|let me)\s+(get|connect|transfer|put)\s+you\s+(over|through|with|to)\s+(to\s+)?(the\s+)?(right\s+)?(specialist|team|agent)(\s+now)?[.!]?/gi,
-    "I can help with that.",
-  );
-  out = out.replace(/\bone moment,\s*please[.!]?/gi, "");
-  return out.replace(/\s{2,}/g, " ").trim();
-}
-
-export function isShortLeadIn(text: string): boolean {
-  const normalized = text.trim().toLowerCase();
-  return normalized.length > 0 && normalized.length <= 14 && SHORT_LEAD_INS.has(normalized);
-}
 
 export function percentile(values: number[], p: number): number | undefined {
   if (values.length === 0) return undefined;
@@ -54,20 +38,81 @@ export function percentile(values: number[], p: number): number | undefined {
   return sorted[idx];
 }
 
+const TERMINAL_TUPLE_KEYS = new Set<string>([
+  "completed:handled:agent_end",
+  "completed:handled:unknown",
+  "transferred:transferred:transfer",
+  "transferred:transferred:unknown",
+  "abandoned:abandoned:caller_hangup",
+  "abandoned:abandoned:timeout",
+  "abandoned:abandoned:unknown",
+  "failed:failed:error",
+  "failed:failed:timeout",
+  "failed:failed:quota_denied",
+  "failed:failed:unknown",
+]);
+
+function toCanonicalConfidenceBandLocal(confidence: number | undefined): "high" | "medium" | "low" | "unknown" {
+  if (typeof confidence !== "number" || Number.isNaN(confidence)) return "unknown";
+  if (confidence >= 0.8) return "high";
+  if (confidence >= 0.5) return "medium";
+  return "low";
+}
+
+function validateTerminalTupleLocal(input: {
+  status?: string | null;
+  outcome?: string | null;
+  endReason?: string | null;
+}): { valid: boolean; normalized: CanonicalTerminalTuple } {
+  const normalized: CanonicalTerminalTuple = {
+    status:
+      input.status === "completed" ||
+      input.status === "transferred" ||
+      input.status === "abandoned" ||
+      input.status === "failed"
+        ? input.status
+        : "failed",
+    outcome:
+      input.outcome === "handled" ||
+      input.outcome === "transferred" ||
+      input.outcome === "abandoned" ||
+      input.outcome === "failed"
+        ? input.outcome
+        : "failed",
+    endReason:
+      input.endReason === "caller_hangup" ||
+      input.endReason === "agent_end" ||
+      input.endReason === "transfer" ||
+      input.endReason === "timeout" ||
+      input.endReason === "error" ||
+      input.endReason === "quota_denied" ||
+      input.endReason === "unknown"
+        ? input.endReason
+        : "unknown",
+  };
+
+  return {
+    valid: TERMINAL_TUPLE_KEYS.has(`${normalized.status}:${normalized.outcome}:${normalized.endReason}`),
+    normalized,
+  };
+}
+
 export function computeAdaptiveDebounceMs(text: string, confidence?: number): number {
-  const base = Math.max(300, Math.min(1200, env.LEGACY_FINAL_DEBOUNCE_MS));
+  const cap = Math.max(300, Math.min(1200, env.VOICE_LEGACY_FINAL_DEBOUNCE_MAX_MS));
+  const base = Math.max(300, Math.min(cap, env.LEGACY_FINAL_DEBOUNCE_MS));
   const trimmed = text.trim();
 
-  // Short utterances: add headroom so callers aren't cut off mid-thought.
-  if (trimmed.length < 24) {
-    return Math.max(400, Math.min(1200, Math.floor(base * 1.3)));
+  let ms: number;
+  if (/[.!?]$/.test(trimmed)) {
+    ms = Math.max(300, Math.min(cap, Math.floor(base * 0.8)));
+  } else if (typeof confidence === "number" && confidence >= 0.9) {
+    ms = Math.max(300, Math.min(cap, Math.floor(base * 0.85)));
+  } else if (trimmed.length < 24) {
+    ms = Math.max(300, Math.min(cap, Math.floor(base * 1.2)));
+  } else {
+    ms = base;
   }
-  // High-confidence long utterances still need the full base; don't shorten aggressively.
-  if (typeof confidence === "number" && confidence >= 0.92 && trimmed.length >= 40) {
-    return Math.max(300, Math.min(900, Math.floor(base * 0.95)));
-  }
-
-  return base;
+  return Math.max(300, Math.min(ms, cap));
 }
 
 export type InboundCallArgs = {
@@ -109,6 +154,32 @@ type TtsDispatchMetrics = {
   attempt: number;
 };
 
+export function mapRealtimeStopToCallEnd(
+  r: ConversationStopReason,
+): CanonicalTerminalTuple {
+  switch (r) {
+    case "end":
+      return { status: "completed", endReason: "agent_end", outcome: "handled" };
+    case "timeout":
+      return { status: "abandoned", endReason: "timeout", outcome: "abandoned" };
+    case "error":
+      return { status: "failed", endReason: "error", outcome: "failed" };
+    case "signal_abort":
+    case "bridge_closed":
+      return { status: "abandoned", endReason: "caller_hangup", outcome: "abandoned" };
+  }
+}
+
+export function toValidTerminalTuple(input: {
+  status?: string | null;
+  outcome?: string | null;
+  endReason?: string | null;
+}): CanonicalTerminalTuple {
+  const validated = validateTerminalTupleLocal(input);
+  if (validated.valid) return validated.normalized;
+  return { status: "failed", outcome: "failed", endReason: "unknown" };
+}
+
 export class CallController {
   constructor(private deps: ControllerDeps) {}
 
@@ -134,12 +205,12 @@ export class CallController {
     if (!phoneConfig) {
       logger.warn("no phone config after lazy fetch, routing to voicemail", { did, orgId, lob });
       await this.persistFallbackFailure(callId, orgId, "missing_config", "error");
-      this.routeToFallback("missing_config");
+      this.routeToFallback("missing_config", callId, orgId);
       return;
     }
     if (phoneConfig.routeType !== "ai") {
       logger.info("non-ai route, returning early", { did, orgId, routeType: phoneConfig.routeType });
-      this.routeToFallback("non_ai_route", phoneConfig);
+      this.routeToFallback("non_ai_route", callId, orgId, phoneConfig);
       return;
     }
 
@@ -147,7 +218,7 @@ export class CallController {
     if (!agentConfig) {
       logger.warn("missing agent config", { agentConfigId: phoneConfig.agentConfigId });
       await this.persistFallbackFailure(callId, orgId, "missing_agent_config", "error");
-      this.routeToFallback("missing_agent_config", phoneConfig);
+      this.routeToFallback("missing_agent_config", callId, orgId, phoneConfig);
       return;
     }
 
@@ -156,53 +227,78 @@ export class CallController {
       if (!quota.allowed) {
         logger.warn("quota denied, routing to voicemail", { orgId, reason: quota.reason });
         await this.persistFallbackFailure(callId, orgId, quota.reason ?? "quota_denied", "quota_denied");
-        this.routeToFallback("quota_denied", phoneConfig);
+        this.routeToFallback("quota_denied", callId, orgId, phoneConfig);
         return;
       }
     } catch (err) {
       logger.error("billing quota failed", { error: (err as Error).message });
       await this.persistFallbackFailure(callId, orgId, "quota_error", "error");
-      this.routeToFallback("quota_error", phoneConfig);
+      this.routeToFallback("quota_error", callId, orgId, phoneConfig);
       return;
     }
 
     let session: CallSession | null = null;
     let mediaSession: MediaSession | null = null;
     let callStarted = false;
-    let endReason: CallEndReason = "normal_completion";
-    let outcome: CallEndedPayload["outcome"] = "handled";
+    let terminalTuple: CanonicalTerminalTuple = {
+      status: "failed",
+      outcome: "failed",
+      endReason: "unknown",
+    };
 
     try {
       this.throwIfAborted(ctx?.signal);
       session = new CallSession(phoneConfig, agentConfig, { callId });
+      logger.info("voice pipeline", {
+        tag: "voice-regression",
+        stage: "inbound_session_ready",
+        callId: session.id,
+        did,
+        orgId,
+        conversationEngine: env.CONVERSATION_ENGINE,
+      });
       if (env.CONVERSATION_ENGINE !== "realtime_agents") {
         await session.restoreFromStore();
       }
-      mediaSession = await this.deps.media.startSession({ callId: session.id, did, orgId });
+      mediaSession = await this.deps.media.openMockMediaSession({ callId: session.id, did, orgId });
 
       await this.publishCallStarted({ session, did, orgId, phoneConfig, callerNumber: args.callerNumber });
       callStarted = true;
       traceLog.callStart(session.id, { did, orgId });
 
-      await this.handleDialogue(session, initialUtterance ?? "I need to book an appointment", mediaSession, ctx?.signal);
+      const realtimeStop = await this.handleDialogue(
+        session,
+        initialUtterance ?? "I need to book an appointment",
+        mediaSession,
+        ctx?.signal,
+      );
+      if (realtimeStop) {
+        terminalTuple = toValidTerminalTuple(mapRealtimeStopToCallEnd(realtimeStop));
+      }
     } catch (err) {
       const error = err as Error;
       if (error.name === "CallerHangup") {
-        endReason = "caller_hangup";
-        outcome = "abandoned";
+        terminalTuple = toValidTerminalTuple({
+          status: "abandoned",
+          outcome: "abandoned",
+          endReason: "caller_hangup",
+        });
         logger.info("call aborted by caller", { did, orgId });
       } else {
-        endReason = "error";
-        outcome = "failed";
+        terminalTuple = toValidTerminalTuple({
+          status: "failed",
+          outcome: "failed",
+          endReason: "error",
+        });
         logger.error("call handling failed", { did, orgId, error: error.message });
       }
       if (!callStarted) {
         await this.persistFallbackFailure(callId, orgId, "call_start_failure", "error");
-        this.routeToFallback("call_start_failure", phoneConfig);
+        this.routeToFallback("call_start_failure", callId, orgId, phoneConfig);
       }
     } finally {
       if (session && mediaSession && callStarted) {
-        await this.publishCallEnded(session, mediaSession, { endReason, outcome });
+        await this.publishCallEnded(session, mediaSession, { ...terminalTuple, terminalStatusSource: "realtime" });
       } else if (mediaSession) {
         mediaSession.stop();
       }
@@ -213,8 +309,8 @@ export class CallController {
     session: CallSession,
     initialUtterance: string,
     mediaSession: MediaSession,
-    signal?: AbortSignal
-  ): Promise<void> {
+    signal?: AbortSignal,
+  ): Promise<ConversationStopReason | undefined> {
     const tts =
       this.deps.elevenApiKey && this.deps.elevenVoiceId
         ? createTtsProvider({
@@ -235,17 +331,15 @@ export class CallController {
         error: (err as Error).message,
       });
     }
+    logger.info("voice pipeline", {
+      tag: "voice-regression",
+      stage: "bridge_connect",
+      callId: session.id,
+      hasBridge: !!bridgeConnection,
+    });
 
     if (env.CONVERSATION_ENGINE === "realtime_agents") {
-      await this.handleDialogueRealtime(
-        session,
-        initialUtterance,
-        mediaSession,
-        bridgeConnection,
-        tts,
-        signal,
-      );
-      return;
+      return this.handleDialogueRealtime(session, initialUtterance, mediaSession, bridgeConnection, tts, signal);
     }
 
     // Initialize STT client using env object
@@ -262,9 +356,16 @@ export class CallController {
     const greet = session.greet();
     if (tts && greet.type === "speak" && greet.text.trim().length > 0) {
       const ttsStart = Date.now();
-      await this.synthesizeAndSend(tts, greet.text, mediaSession, bridgeConnection,
+      const greetMs = await this.synthesizeAndSend(tts, greet.text, mediaSession, bridgeConnection,
         (chars, seconds) => session.addTtsUsage(chars, seconds), signal);
       traceLog.autoMessage(session.id, "greeting", greet.text, Date.now() - ttsStart);
+      logger.info("voice pipeline", {
+        tag: "voice-regression",
+        stage: "legacy_greeting_tts",
+        callId: session.id,
+        synthesisMs: greetMs,
+        hasBridge: !!bridgeConnection,
+      });
     }
 
     const minChunkChars = Math.max(8, env.LEGACY_TTS_MIN_CHUNK_CHARS);
@@ -432,12 +533,13 @@ export class CallController {
       scheduleAssemblerFlush(turnKey);
     };
 
-    const interruptLegacyTts = (reason: string): void => {
+    const interruptLegacyTts = (reason: string, force = false): void => {
       if (!tts) return;
       const now = Date.now();
-      if (now - lastBargeClearAt < 400) return;
+      if (!force && now - lastBargeClearAt < env.BARGE_IN_COOLDOWN_MS) return;
       lastBargeClearAt = now;
 
+      const tBarge = Date.now();
       const dropped = ttsQueue.length;
       ttsQueueGeneration++;
       ttsQueue.length = 0;
@@ -455,13 +557,15 @@ export class CallController {
         reason,
         droppedChunks: dropped,
       });
-    };
-
-    const hasTtsPlayingSince = (ms: number): boolean => {
-      for (const metrics of turnTtsMetrics.values()) {
-        if (metrics.firstTtsAt !== null && Date.now() - metrics.firstTtsAt >= ms) return true;
-      }
-      return false;
+      logger.info("voice tuning interruption", {
+        tag: "voice-tuning",
+        stage: "legacy_barge",
+        callId: session.id,
+        reason,
+        dropped_chunk_queue_items: dropped,
+        barge_in_to_audio_queue_clear_ms: Date.now() - tBarge,
+        tts_gen: ttsQueueGeneration,
+      });
     };
 
     const pumpTtsQueue = async (): Promise<void> => {
@@ -479,9 +583,6 @@ export class CallController {
           }
           const queueWaitMs = Date.now() - next.enqueuedAt;
           metrics.queueWaitSamples.push(queueWaitMs);
-
-          // While the agent itself is speaking, reset the silence clock so the
-          // silence monitor does not trip mid-response with "Are you still there?".
           lastActivityAt = Date.now();
 
           const synthesisMs = await this.synthesizeAndSend(
@@ -501,8 +602,6 @@ export class CallController {
               metrics.bytesSynthesized += dispatchMetrics.bytes;
             },
           );
-          // Bump again after the chunk finishes dispatching so the 8s grace
-          // window starts from the last agent audio, not the start of the turn.
           lastActivityAt = Date.now();
           if (synthesisMs <= 0) continue;
 
@@ -512,7 +611,6 @@ export class CallController {
         }
       } finally {
         ttsQueueBusy = false;
-        // Final bump when the queue drains completely.
         lastActivityAt = Date.now();
       }
     };
@@ -573,6 +671,7 @@ export class CallController {
       lastActivityAt = Date.now();
       silencePromptCount = 0;
       const turnKey = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+      const sttFinalAt = timing?.sttFinalizedAt;
       traceLog.sttFinal(session.id, userText, {
         sttFinalSegments: timing?.sttFinalSegments,
         sttFinalAssemblyMs: timing?.sttFinalAssemblyMs,
@@ -597,9 +696,31 @@ export class CallController {
           },
           timing,
         );
+        const afterLlmMs = Date.now();
+        if (typeof sttFinalAt === "number") {
+          logger.info("voice tuning eagerness", {
+            tag: "voice-tuning",
+            callId: session.id,
+            turnKey,
+            path: "legacy",
+            end_of_user_speech_to_llm_stream_complete_ms: afterLlmMs - sttFinalAt,
+          });
+        }
         flushAssembler(turnKey, true);
         clearAssemblerState(turnKey);
-        void pumpTtsQueue();
+        void pumpTtsQueue().then(() => {
+          const m = getTurnMetrics(turnKey);
+          if (typeof sttFinalAt === "number" && m.firstTtsAt !== null) {
+            logger.info("voice tuning eagerness", {
+              tag: "voice-tuning",
+              callId: session.id,
+              turnKey,
+              path: "legacy",
+              end_of_user_speech_to_first_tts_start_ms: m.firstTtsAt - sttFinalAt,
+              tts_chunks_dispatched: m.chunksDispatched,
+            });
+          }
+        });
 
         logger.info("turn processing completed", {
           callId: session.id,
@@ -888,6 +1009,31 @@ export class CallController {
       }
     }
 
+    let silenceTimer: ReturnType<typeof setTimeout> | null = null;
+    const clearSilenceTimer = () => {
+      if (silenceTimer) {
+        clearTimeout(silenceTimer);
+        silenceTimer = null;
+      }
+    };
+    const scheduleSilenceLoop = (runSilenceCheck: () => Promise<void>) => {
+      if (callEnded) return;
+      clearSilenceTimer();
+      silenceTimer = setTimeout(() => {
+        silenceTimer = null;
+        void (async () => {
+          try {
+            await runSilenceCheck();
+          } finally {
+            if (!callEnded) {
+              clearSilenceTimer();
+              scheduleSilenceLoop(runSilenceCheck);
+            }
+          }
+        })();
+      }, silenceCheckIntervalMs);
+    };
+
     try {
       // Create a dummy connection for STT if no bridge (required by startStream signature)
       const sttConnection = bridgeConnection ?? { callId: session.id } as RtpBridgeConnection;
@@ -897,20 +1043,17 @@ export class CallController {
         async (segment: TranscriptSegment) => {
           if (callEnded) return;
 
-          const trimmedSegmentText = segment.text.trim();
-          if (trimmedSegmentText.length > 0) {
-            // Any speech activity (partial or final) resets the silence timeout.
+          if (segment.text.trim().length > 0) {
+            // Any speech activity (partial or final) should reset silence timeout.
             lastActivityAt = Date.now();
             if (pendingUtteranceIngressAt === null) {
               pendingUtteranceIngressAt = segment.timestamp || Date.now();
             }
-            // Only interrupt TTS when we are confident the caller is really speaking:
-            // on a final, or on a substantial partial once TTS has been playing long
-            // enough that it's unlikely to be tts echo / throat-clearing.
-            const isSubstantialPartial =
-              !segment.isFinal && trimmedSegmentText.length > 8 && hasTtsPlayingSince(400);
-            if (segment.isFinal || isSubstantialPartial) {
-              interruptLegacyTts(segment.isFinal ? "caller_speaking_final" : "caller_speaking_partial");
+            const t = segment.text.trim();
+            if (segment.isFinal) {
+              interruptLegacyTts("user_stt_final", true);
+            } else if (t.length >= env.BARGE_IN_MIN_PARTIAL_CHARS) {
+              interruptLegacyTts("caller_partial", false);
             }
           }
 
@@ -948,9 +1091,25 @@ export class CallController {
         }
       );
 
-      // Silence detection: prompt if no caller activity for SILENCE_PROMPT_MS.
-      // Also skip while the agent is still speaking (ttsQueue draining) or mid-turn.
-      const silenceCheck = setInterval(async () => {
+      if (bridgeConnection) {
+        bridgeConnection.onClose(() => {
+          logger.info("RTP bridge closed, ending STT", { callId: session.id });
+          callEnded = true;
+          sttStream.close();
+        });
+        // Match realtime path: log only. Some WS stacks emit transient `error` before `close`;
+        // tearing down STT here caused no-audio (dialogue ended while TTS still expected).
+        bridgeConnection.onError((err) => {
+          logger.error("RTP bridge WebSocket error (non-fatal; rely on onClose for teardown)", {
+            callId: session.id,
+            error: err instanceof Error ? err.message : String(err),
+            tag: "voice-regression",
+          });
+        });
+      }
+
+      // Silence detection: prompt if no caller activity for SILENCE_PROMPT_MS (single-flight chain)
+      const runSilenceCheck = async () => {
         if (callEnded || isProcessing) return;
         if (ttsQueueBusy || ttsQueue.length > 0) return;
         if (Date.now() - lastActivityAt < SILENCE_PROMPT_MS) return;
@@ -964,19 +1123,14 @@ export class CallController {
         }
 
         silencePromptCount++;
-        const idleForMs = Date.now() - lastActivityAt;
         lastActivityAt = Date.now();
-        const prompt = silencePromptCount === 1
-          ? "Are you still there?"
-          : "I'll let you go — have a great day, goodbye!";
-        logger.info("silence prompt", {
-          callId: session.id,
-          attempt: silencePromptCount,
-          prompt,
-          idleForMs,
-          ttsQueueDepth: ttsQueue.length,
-          ttsQueueBusy,
-        });
+        const prompt =
+          silencePromptCount === 1
+            ? pickFirstSilencePrompt(session.id)
+            : silencePromptCount === 2
+              ? pickSecondSilencePrompt(session.id)
+              : SILENCE_FINAL_FAREWELL;
+        logger.info("silence prompt", { callId: session.id, attempt: silencePromptCount, prompt });
         logger.info("system prompt emitted", {
           callId: session.id,
           source: "silence_monitor",
@@ -997,7 +1151,8 @@ export class CallController {
           callEnded = true;
           sttStream.close();
         }
-      }, silenceCheckIntervalMs);
+      };
+      scheduleSilenceLoop(runSilenceCheck);
 
       // Pipe audio from bridge → STT
       if (bridgeConnection) {
@@ -1014,7 +1169,7 @@ export class CallController {
         const timeout = setTimeout(() => {
           logger.warn("call timeout reached", { callId: session.id, maxCallDuration });
           callEnded = true;
-          clearInterval(silenceCheck);
+          clearSilenceTimer();
           clearPendingFinalTimer();
           sttStream.close();
           resolve();
@@ -1025,7 +1180,7 @@ export class CallController {
             logger.info("call aborted by signal", { callId: session.id });
             clearTimeout(timeout);
             callEnded = true;
-            clearInterval(silenceCheck);
+            clearSilenceTimer();
             clearPendingFinalTimer();
             sttStream.close();
             resolve();
@@ -1037,13 +1192,14 @@ export class CallController {
           if (callEnded) {
             clearTimeout(timeout);
             clearInterval(check);
-            clearInterval(silenceCheck);
+            clearSilenceTimer();
             clearPendingFinalTimer();
             resolve();
           }
         }, Math.max(50, env.LEGACY_CALL_END_POLL_INTERVAL_MS));
       });
     } catch (error) {
+      clearSilenceTimer();
       logger.error("dialogue loop error", {
         callId: session.id,
         error: error instanceof Error ? error.message : String(error),
@@ -1077,6 +1233,7 @@ export class CallController {
       await session.cleanup();
       logger.info("dialogue loop ended", { callId: session.id, turns: session.getTranscript().length });
     }
+    return undefined;
   }
 
   private async handleDialogueRealtime(
@@ -1086,21 +1243,22 @@ export class CallController {
     bridgeConnection: RtpBridgeConnection | null,
     tts: ReturnType<typeof createTtsProvider> | null,
     signal?: AbortSignal,
-  ): Promise<void> {
+  ): Promise<ConversationStopReason> {
     let sentenceIndex = 0;
+    let ttsGen = 0;
 
     try {
       const restored = await sessionStore.getRealtimeConversationState(session.id);
       const shouldGreet = !restored || restored.transcript.length === 0;
       const greetingText =
         (session.context.agentConfig as unknown as { greetingMessage?: string }).greetingMessage ||
-        "Hello! Thanks for calling. How can I help you today?";
+        "Hi, thanks for calling. How can I help today?";
 
       if (shouldGreet) {
         session.markRealtimeAgentTurn(greetingText);
         if (tts && greetingText.trim().length > 0) {
           const ttsStart = Date.now();
-          await this.synthesizeAndSend(
+          const greetMs = await this.synthesizeAndSend(
             tts,
             greetingText,
             mediaSession,
@@ -1109,6 +1267,13 @@ export class CallController {
             signal,
           );
           traceLog.autoMessage(session.id, "greeting", greetingText, Date.now() - ttsStart);
+          logger.info("voice pipeline", {
+            tag: "voice-regression",
+            stage: "realtime_greeting_tts",
+            callId: session.id,
+            synthesisMs: greetMs,
+            hasBridge: !!bridgeConnection,
+          });
         }
       }
 
@@ -1117,11 +1282,30 @@ export class CallController {
         bridgeConnection,
         initialUtterance,
         signal,
-        maxCallDurationMs:
-          (session.context.agentConfig.maxCallDurationSec ?? env.LEGACY_DEFAULT_MAX_CALL_DURATION_SEC) * 1000,
-        onCallerAudioBytes: (bytes) => mediaSession.markCallerFrame(bytes),
+        maxCallDurationMs: (session.context.agentConfig.maxCallDurationSec ?? 1800) * 1000,
+        onCallerAudioBytes: (bytes) => {
+          mediaSession.markCallerFrame(bytes);
+          session.addSttUsageFromAudioBytes(bytes);
+        },
+        onBargeIn: () => {
+          ttsGen += 1;
+        },
+        onInputBlocked: tts
+          ? async (message) => {
+              session.markRealtimeAgentTurn(message);
+              await this.synthesizeAndSend(
+                tts,
+                message,
+                mediaSession,
+                bridgeConnection,
+                (chars, seconds) => session.addTtsUsage(chars, seconds),
+                signal,
+              );
+            }
+          : undefined,
         onSentence: async (sentence) => {
           if (!tts) return;
+          const myGen = ttsGen;
           const synthesisMs = await this.synthesizeAndSend(
             tts,
             sentence,
@@ -1129,6 +1313,7 @@ export class CallController {
             bridgeConnection,
             (chars, seconds) => session.addTtsUsage(chars, seconds),
             signal,
+            () => myGen === ttsGen,
           );
           traceLog.ttsSentence(session.id, "", sentenceIndex++, sentence.length, synthesisMs);
         },
@@ -1152,11 +1337,13 @@ export class CallController {
         reason: stopReason,
         turns: session.getTurnCount(),
       });
+      return stopReason;
     } catch (error) {
       logger.error("realtime dialogue loop error", {
         callId: session.id,
         error: error instanceof Error ? error.message : String(error),
       });
+      return "error";
     } finally {
       if (bridgeConnection) bridgeConnection.close();
       traceLog.callEnd(session.id, { turns: session.getTranscript().length });
@@ -1198,11 +1385,22 @@ export class CallController {
   private async publishCallEnded(
     session: CallSession,
     mediaSession: MediaSession,
-    overrides?: { endReason?: CallEndReason; outcome?: CallEndedPayload["outcome"] }
+    overrides?: {
+      status?: CanonicalTerminalTuple["status"];
+      endReason?: CallEndReason;
+      outcome?: CallEndedPayload["outcome"];
+      terminalStatusSource?: "realtime" | "carrier" | "system" | "unknown";
+    }
   ): Promise<void> {
     const stats = mediaSession.stop();
     const usage = session.getUsageSnapshot();
     usage.callDurationSec = Math.ceil(stats.durationMs / 1000);
+
+    const terminal = toValidTerminalTuple({
+      status: overrides?.status,
+      outcome: overrides?.outcome,
+      endReason: overrides?.endReason,
+    });
 
     await this.deps.events.callEnded({
       orgId: session.context.orgId,
@@ -1215,8 +1413,8 @@ export class CallController {
       startedAt: stats.startedAt,
       endedAt: stats.endedAt,
       durationMs: stats.durationMs,
-      endReason: overrides?.endReason ?? "normal_completion",
-      outcome: overrides?.outcome ?? "handled",
+      endReason: terminal.endReason,
+      outcome: terminal.outcome,
       usage
     });
 
@@ -1234,11 +1432,16 @@ export class CallController {
     persistCallEnd({
       callId: session.id,
       orgId: session.context.orgId,
-      endReason: overrides?.endReason ?? "normal_completion",
-      outcome: overrides?.outcome ?? "handled",
+      status: terminal.status,
+      endReason: terminal.endReason,
+      outcome: terminal.outcome,
+      terminalStatusSource: overrides?.terminalStatusSource ?? "realtime",
       durationSec: usage.callDurationSec,
       classifiedIntent: sm?.activeIntent ?? undefined,
       intentConfidence: sm?.intentConfidence ?? undefined,
+      intentSource: sm?.activeIntent ? "agent_inference" : "unknown",
+      intentConfidenceBand: toCanonicalConfidenceBandLocal(sm?.intentConfidence),
+      labelVersion: 1,
       finalIntent: sm?.activeIntent ?? undefined,
       slotsCollected: sm?.slots,
       turnCount: session.getTurnCount(),
@@ -1250,12 +1453,29 @@ export class CallController {
     }).catch(err => logger.warn("call-end persistence failed", { error: (err as Error).message }));
   }
 
-  private routeToFallback(reason: string, phoneConfig?: PhoneNumberConfig) {
+  private routeToFallback(
+    reason: string,
+    callId: string | undefined,
+    orgId: string | undefined,
+    phoneConfig?: PhoneNumberConfig,
+  ) {
     logger.info("falling back", {
       reason,
       fallbackQueue: phoneConfig?.queueExtension,
-      fallbackRoute: phoneConfig?.routeType ?? "voicemail"
+      fallbackRoute: phoneConfig?.routeType ?? "voicemail",
     });
+    if (callId && orgId) {
+      void persistCallEvent({
+        callId,
+        orgId,
+        eventType: "fallback_route_requested",
+        payload: {
+          reason,
+          queueExtension: phoneConfig?.queueExtension,
+          routeType: phoneConfig?.routeType,
+        },
+      });
+    }
   }
 
   private async persistFallbackFailure(
@@ -1265,11 +1485,18 @@ export class CallController {
     endReason: "error" | "timeout" | "quota_denied"
   ): Promise<void> {
     if (!callId) return;
+    const terminal = toValidTerminalTuple({
+      status: "failed",
+      outcome: "failed",
+      endReason,
+    });
     await persistCallEnd({
       callId,
       orgId,
-      endReason,
-      outcome: "failed",
+      status: terminal.status,
+      endReason: terminal.endReason,
+      outcome: terminal.outcome,
+      terminalStatusSource: "system",
       failureType,
       durationSec: 0,
       turnCount: 0,
@@ -1336,7 +1563,15 @@ export class CallController {
           attempt,
         };
         onDispatchMetrics?.(dispatchMetrics);
-        if (dispatchAborted || totalBytes === 0) {
+        if (dispatchAborted) {
+          logger.debug("voice pipeline", {
+            tag: "voice-regression",
+            stage: "tts_dispatch_dropped",
+            synthesisMs,
+          });
+          return 0;
+        }
+        if (totalBytes === 0) {
           return synthesisMs;
         }
 
@@ -1368,6 +1603,8 @@ export class CallController {
         });
         if (attempt === 2) {
           logger.warn("tts stream synthesis failed, falling back to text only", {
+            tag: "voice-regression",
+            stage: "tts_synthesis_error",
             error: (err as Error).message,
             bytesBeforeFailure: totalBytes,
             chunkCount,

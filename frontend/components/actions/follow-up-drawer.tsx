@@ -268,7 +268,7 @@ export function FollowUpDrawer({ followUp, open, onClose }: FollowUpDrawerProps)
                   <div className="p-3 bg-muted/50 rounded-lg space-y-2">
                     {call.summary && <p className="text-sm">{call.summary}</p>}
                     <div className="flex flex-wrap gap-2 text-xs">
-                      {call.intent && <Badge variant="outline">Intent: {call.intent}</Badge>}
+                      {call.intent && <Badge variant="outline">Classified intent: {call.intent}</Badge>}
                       {call.sentiment && (
                         <Badge
                           variant="outline"

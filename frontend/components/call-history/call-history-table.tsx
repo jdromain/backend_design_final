@@ -35,6 +35,8 @@ const defaultColumns = {
   duration: true,
   result: true,
   endReason: true,
+  failureCategory: true,
+  actionClass: true,
   phoneLine: false,
   turns: false,
   tools: false,
@@ -81,10 +83,12 @@ export function CallHistoryTable({ calls, isLoading, onRowClick, selectedIds, on
   }
 
   const resultConfig: Record<string, { label: string; className: string }> = {
-    completed: { label: "Completed", className: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20" },
+    completed: { label: "Handled", className: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20" },
     handoff: { label: "Handoff", className: "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20" },
     dropped: { label: "Dropped", className: "bg-muted text-muted-foreground border-muted" },
     systemFailed: { label: "System Failed", className: "bg-red-500/10 text-red-600 dark:text-red-400 border-red-500/20" },
+    pending: { label: "Pending", className: "bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/20" },
+    unknown: { label: "Unknown", className: "bg-zinc-500/10 text-zinc-600 dark:text-zinc-400 border-zinc-500/20" },
   }
 
   const getResultBadge = (result: string) => {
@@ -179,7 +183,7 @@ export function CallHistoryTable({ calls, isLoading, onRowClick, selectedIds, on
                 </TableHead>
               )}
               {visibleColumns.caller && <TableHead>Caller</TableHead>}
-              {visibleColumns.intent && <TableHead>Intent</TableHead>}
+              {visibleColumns.intent && <TableHead>Intent Category</TableHead>}
               {visibleColumns.direction && <TableHead>Direction</TableHead>}
               {visibleColumns.duration && (
                 <TableHead>
@@ -189,8 +193,10 @@ export function CallHistoryTable({ calls, isLoading, onRowClick, selectedIds, on
                   </button>
                 </TableHead>
               )}
-              {visibleColumns.result && <TableHead>Result</TableHead>}
+              {visibleColumns.result && <TableHead>Outcome</TableHead>}
               {visibleColumns.endReason && <TableHead>End Reason</TableHead>}
+              {visibleColumns.failureCategory && <TableHead>Failure Category</TableHead>}
+              {visibleColumns.actionClass && <TableHead>Action Class</TableHead>}
               {visibleColumns.phoneLine && <TableHead>Phone Line</TableHead>}
               {visibleColumns.turns && (
                 <TableHead>
@@ -278,6 +284,12 @@ export function CallHistoryTable({ calls, isLoading, onRowClick, selectedIds, on
                   )}
                   {visibleColumns.result && <TableCell>{getResultBadge(call.result)}</TableCell>}
                   {visibleColumns.endReason && <TableCell>{getEndReasonBadge(call.endReason ?? "—")}</TableCell>}
+                  {visibleColumns.failureCategory && (
+                    <TableCell>{getEndReasonBadge(call.classification?.failureCategory ?? "unknown")}</TableCell>
+                  )}
+                  {visibleColumns.actionClass && (
+                    <TableCell>{getEndReasonBadge(call.classification?.actionClass ?? "no_action")}</TableCell>
+                  )}
                   {visibleColumns.phoneLine && (
                     <TableCell className="font-mono text-sm">{call.phoneLineNumber}</TableCell>
                   )}

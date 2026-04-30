@@ -48,11 +48,12 @@ interface CallsTableProps {
 }
 
 const resultBadgeStyles: Record<CallRecord["result"], { class: string; label: string }> = {
-  completed: { class: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20", label: "Completed" },
+  completed: { class: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20", label: "Handled" },
   handoff: { class: "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20", label: "Handoff" },
   dropped: { class: "bg-muted text-muted-foreground border-muted", label: "Dropped" },
   systemFailed: { class: "bg-red-500/10 text-red-600 dark:text-red-400 border-red-500/20", label: "System Failed" },
   pending: { class: "bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/20", label: "In Progress" },
+  unknown: { class: "bg-zinc-500/10 text-zinc-600 dark:text-zinc-400 border-zinc-500/20", label: "Unknown" },
 }
 
 export function CallsTable({
@@ -137,7 +138,7 @@ export function CallsTable({
   }
 
   const quickFilters: { value: QuickFilter; label: string; count?: number }[] = [
-    { value: "completed", label: "Completed", count: calls.filter((c) => c.result === "completed").length },
+    { value: "completed", label: "Handled", count: calls.filter((c) => c.result === "completed").length },
     { value: "handoff", label: "Handoff", count: calls.filter((c) => c.result === "handoff").length },
     { value: "dropped", label: "Dropped", count: calls.filter((c) => c.result === "dropped").length },
     { value: "failed", label: "System Failed", count: calls.filter((c) => c.result === "systemFailed").length },
@@ -250,7 +251,7 @@ export function CallsTable({
                     </Button>
                   </TableHead>
                 )}
-                {visibleColumns.result && <TableHead>Result</TableHead>}
+                {visibleColumns.result && <TableHead>Outcome</TableHead>}
                 {visibleColumns.reason && <TableHead>Reason</TableHead>}
                 {visibleColumns.tools && <TableHead>Tools</TableHead>}
                 {visibleColumns.failureType && <TableHead>Failure Type</TableHead>}
@@ -311,7 +312,7 @@ export function CallsTable({
                       </TableCell>
                     )}
                     {visibleColumns.reason && (
-                      <TableCell className="text-sm text-muted-foreground">{call.endReason || "—"}</TableCell>
+                      <TableCell className="text-sm text-muted-foreground">{call.display?.reason ?? call.endReason ?? "—"}</TableCell>
                     )}
                     {visibleColumns.tools && (
                       <TableCell>
@@ -324,7 +325,9 @@ export function CallsTable({
                     )}
                     {visibleColumns.failureType && (
                       <TableCell className="text-sm text-muted-foreground">
-                        {call.result === "systemFailed" ? call.failureType || "Unknown" : "—"}
+                        {call.result === "systemFailed"
+                          ? (call.classification?.failureCategory ?? call.failureType ?? "Unknown")
+                          : "—"}
                       </TableCell>
                     )}
                     <TableCell>

@@ -4,9 +4,24 @@ import { sendData, sendError } from "../lib/responses";
 import { authHook, resolvedAuthHook } from "../auth/jwt";
 import { requireOrgForRequest } from "../auth/orgScope";
 import { ConfigStore } from "../config/store";
+import { callStore } from "../persistence/callStore";
 import { AnalyticsSummaryEnvelopeSchema } from "../contracts/httpSchemas";
 import { mapOutcomeToUiResult, normalizeEndReasonLabel } from "../lib/callTaxonomy";
 
+type TimeWindow = { start: Date; end: Date };
+
+function parseTimeWindowFromQuery(request: FastifyRequest): TimeWindow {
+  const q = request.query as { start?: string; end?: string };
+  const now = new Date();
+  if (q.start && q.end) {
+    const start = new Date(q.start);
+    const end = new Date(q.end);
+    if (!Number.isNaN(start.getTime()) && !Number.isNaN(end.getTime()) && start.getTime() <= end.getTime()) {
+      return { start, end };
+    }
+  }
+  return { start: new Date(now.getTime() - 24 * 60 * 60 * 1000), end: now };
+}
 
 function toIntentLabel(label: string | null): string {
   const raw = (label ?? "").trim();
@@ -92,6 +107,8 @@ export function registerAnalyticsRoutes(app: FastifyInstance, configStore: Confi
     const orgId = requireOrgForRequest(request, reply, (request.query as any).orgId);
     if (!orgId) return;
 
+    const { start, end } = parseTimeWindowFromQuery(request);
+
     const result = await query(
       `SELECT date_trunc('hour', started_at) AS time,
               COUNT(*)::int AS total,
@@ -101,24 +118,26 @@ export function registerAnalyticsRoutes(app: FastifyInstance, configStore: Confi
               COUNT(*) FILTER (WHERE outcome = 'transferred')::int AS handoff,
               COUNT(*) FILTER (WHERE outcome = 'abandoned')::int AS dropped
        FROM calls
-       WHERE org_id = $1 AND started_at > now() - interval '24 hours'
+       WHERE org_id = $1 AND started_at >= $2 AND started_at <= $3
        GROUP BY time ORDER BY time`,
-      [orgId]
+      [orgId, start, end]
     );
 
     const latencyResult = await query(
       `SELECT date_trunc('hour', ce.occurred_at) AS time,
               AVG(EXTRACT(EPOCH FROM (ce.occurred_at - c.started_at)) * 1000)::int AS avg_latency
        FROM call_events ce JOIN calls c ON ce.call_id = c.call_id
-       WHERE c.org_id = $1 AND ce.event_type = 'agent_spoke' AND ce.occurred_at > now() - interval '24 hours'
+       WHERE c.org_id = $1 AND ce.event_type = 'agent_spoke' AND ce.occurred_at >= $2 AND ce.occurred_at <= $3
        GROUP BY time ORDER BY time`,
-      [orgId]
+      [orgId, start, end]
     );
 
     const latencyMap = new Map<string, number>();
     for (const row of latencyResult.rows) {
       latencyMap.set(new Date(row.time).toISOString(), row.avg_latency ?? 0);
     }
+
+    const activeNow = await callStore.countActiveLiveCalls(orgId);
 
     const sparklines = {
       totalCalls: result.rows.map((r: any) => r.total),
@@ -127,7 +146,9 @@ export function registerAnalyticsRoutes(app: FastifyInstance, configStore: Confi
       failed: result.rows.map((r: any) => r.failed),
       handoff: result.rows.map((r: any) => r.handoff),
       dropped: result.rows.map((r: any) => r.dropped),
+      // Per-bucket: calls still in `in_progress` in that hour (not the same as live active count).
       latency: result.rows.map((r: any) => latencyMap.get(new Date(r.time).toISOString()) ?? 0),
+      activeNow,
     };
 
     sendData(reply, sparklines);
@@ -137,12 +158,15 @@ export function registerAnalyticsRoutes(app: FastifyInstance, configStore: Confi
     const orgId = requireOrgForRequest(request, reply, (request.query as any).orgId);
     if (!orgId) return;
 
+    const { start, end } = parseTimeWindowFromQuery(request);
+
     const result = await query(
       `SELECT classified_intent AS label, COUNT(*)::int AS value
        FROM calls
        WHERE org_id = $1 AND classified_intent IS NOT NULL
+         AND started_at >= $2 AND started_at <= $3
        GROUP BY classified_intent ORDER BY value DESC LIMIT 10`,
-      [orgId]
+      [orgId, start, end]
     );
 
     sendData(reply, result.rows.map((r: any) => ({ label: toIntentLabel(r.label), value: r.value })));
@@ -152,12 +176,15 @@ export function registerAnalyticsRoutes(app: FastifyInstance, configStore: Confi
     const orgId = requireOrgForRequest(request, reply, (request.query as any).orgId);
     if (!orgId) return;
 
+    const { start, end } = parseTimeWindowFromQuery(request);
+
     const result = await query(
-      `SELECT end_reason AS label, COUNT(*)::int AS value
+      `SELECT COALESCE(NULLIF(end_reason, ''), 'unknown') AS label, COUNT(*)::int AS value
        FROM calls
        WHERE org_id = $1 AND outcome = 'transferred'
-       GROUP BY end_reason ORDER BY value DESC LIMIT 10`,
-      [orgId]
+         AND started_at >= $2 AND started_at <= $3
+       GROUP BY COALESCE(NULLIF(end_reason, ''), 'unknown') ORDER BY value DESC LIMIT 10`,
+      [orgId, start, end]
     );
 
     sendData(reply, result.rows.map((r: any) => ({
@@ -170,13 +197,32 @@ export function registerAnalyticsRoutes(app: FastifyInstance, configStore: Confi
     const orgId = requireOrgForRequest(request, reply, (request.query as any).orgId);
     if (!orgId) return;
 
-    const result = await query(
-      `SELECT COALESCE(NULLIF(failure_type, ''), end_reason, 'unknown') AS label, COUNT(*)::int AS value
-       FROM calls
-       WHERE org_id = $1 AND outcome = 'failed'
-       GROUP BY COALESCE(NULLIF(failure_type, ''), end_reason, 'unknown') ORDER BY value DESC LIMIT 10`,
-      [orgId]
-    );
+    const { start, end } = parseTimeWindowFromQuery(request);
+
+    let result;
+    try {
+      // Preferred query when classification migration (009) is present.
+      result = await query(
+        `SELECT COALESCE(NULLIF(failure_category, ''), NULLIF(failure_type, ''), end_reason, 'unknown') AS label, COUNT(*)::int AS value
+         FROM calls
+         WHERE org_id = $1 AND outcome = 'failed'
+           AND started_at >= $2 AND started_at <= $3
+         GROUP BY COALESCE(NULLIF(failure_category, ''), NULLIF(failure_type, ''), end_reason, 'unknown') ORDER BY value DESC LIMIT 10`,
+        [orgId, start, end]
+      );
+    } catch (err) {
+      const code = (err as { code?: string })?.code;
+      if (code !== "42703") throw err; // undefined_column
+      // Backward-compatible fallback for pre-009 schemas.
+      result = await query(
+        `SELECT COALESCE(NULLIF(failure_type, ''), end_reason, 'unknown') AS label, COUNT(*)::int AS value
+         FROM calls
+         WHERE org_id = $1 AND outcome = 'failed'
+           AND started_at >= $2 AND started_at <= $3
+         GROUP BY COALESCE(NULLIF(failure_type, ''), end_reason, 'unknown') ORDER BY value DESC LIMIT 10`,
+        [orgId, start, end]
+      );
+    }
 
     sendData(reply, result.rows);
   });
@@ -184,6 +230,8 @@ export function registerAnalyticsRoutes(app: FastifyInstance, configStore: Confi
   app.get("/analytics/tools", { preHandler }, async (request: FastifyRequest, reply: FastifyReply) => {
     const orgId = requireOrgForRequest(request, reply, (request.query as any).orgId);
     if (!orgId) return;
+
+    const { start, end } = parseTimeWindowFromQuery(request);
 
     const result = await query(
       `SELECT
@@ -194,9 +242,10 @@ export function registerAnalyticsRoutes(app: FastifyInstance, configStore: Confi
          AVG((payload->>'latencyMs')::numeric)::int AS avg_latency
        FROM call_events
        WHERE org_id = $1 AND event_type = 'tool_called' AND payload->>'toolName' IS NOT NULL
+         AND occurred_at >= $2 AND occurred_at <= $3
        GROUP BY payload->>'toolName'
        ORDER BY invocations DESC`,
-      [orgId]
+      [orgId, start, end]
     );
 
     sendData(reply, result.rows.map((r: any) => ({
@@ -212,6 +261,8 @@ export function registerAnalyticsRoutes(app: FastifyInstance, configStore: Confi
     const orgId = requireOrgForRequest(request, reply, (request.query as any).orgId);
     if (!orgId) return;
 
+    const { start, end } = parseTimeWindowFromQuery(request);
+
     const agg = (await query(
       `SELECT
          COUNT(*)::int AS total_calls,
@@ -220,16 +271,17 @@ export function registerAnalyticsRoutes(app: FastifyInstance, configStore: Confi
          COUNT(*) FILTER (WHERE outcome = 'failed')::int AS failed,
          AVG(duration_sec)::int AS avg_duration
        FROM calls
-       WHERE org_id = $1`,
-      [orgId]
+       WHERE org_id = $1 AND started_at >= $2 AND started_at <= $3`,
+      [orgId, start, end]
     )).rows[0] ?? { total_calls: 0, handled: 0, escalated: 0, failed: 0, avg_duration: 0 };
 
     const intentsResult = await query(
       `SELECT classified_intent AS name, COUNT(*)::int AS count
        FROM calls
        WHERE org_id = $1 AND classified_intent IS NOT NULL
+         AND started_at >= $2 AND started_at <= $3
        GROUP BY classified_intent ORDER BY count DESC LIMIT 5`,
-      [orgId]
+      [orgId, start, end]
     );
 
     const totalCallsCount = Number(agg.total_calls) || 0;
@@ -303,7 +355,7 @@ export function registerAnalyticsRoutes(app: FastifyInstance, configStore: Confi
   });
 
   /**
-   * SQL-only dashboard summary (same semantics as client-side aggregate from /calls + live + tools).
+   * SQL-only home-dashboard KPIs for org + start/end. Not limited by GET /calls row cap.
    */
   app.get("/analytics/summary", {
     preHandler,
@@ -312,56 +364,107 @@ export function registerAnalyticsRoutes(app: FastifyInstance, configStore: Confi
     const orgId = requireOrgForRequest(request, reply, (request.query as any).orgId);
     if (!orgId) return;
 
+    const { start, end } = parseTimeWindowFromQuery(request);
+
     const aggRow = (
-      await query(
+      await query<{
+        total_calls: string;
+        completed_calls: string;
+        handoff_calls: string;
+        dropped_calls: string;
+        failed_calls: string;
+        total_duration_sec: string;
+      }>(
         `SELECT
            COUNT(*)::int AS total_calls,
-           COUNT(*) FILTER (WHERE outcome = 'handled')::int AS successful_calls,
+           COUNT(*) FILTER (WHERE outcome = 'handled')::int AS completed_calls,
+           COUNT(*) FILTER (WHERE outcome = 'transferred')::int AS handoff_calls,
+           COUNT(*) FILTER (WHERE outcome = 'abandoned')::int AS dropped_calls,
            COUNT(*) FILTER (WHERE outcome = 'failed')::int AS failed_calls,
            COALESCE(SUM(duration_sec), 0)::bigint AS total_duration_sec
          FROM calls
-         WHERE org_id = $1`,
-        [orgId]
+         WHERE org_id = $1 AND started_at >= $2 AND started_at <= $3`,
+        [orgId, start, end]
       )
     ).rows[0] ?? {
-      total_calls: 0,
-      successful_calls: 0,
-      failed_calls: 0,
+      total_calls: "0",
+      completed_calls: "0",
+      handoff_calls: "0",
+      dropped_calls: "0",
+      failed_calls: "0",
       total_duration_sec: "0",
     };
 
-    const liveRow = (
-      await query(
-        `SELECT COUNT(*)::int AS active_now
-         FROM calls
-         WHERE org_id = $1
-           AND status IN ('initiated', 'ringing', 'in_progress')`,
-        [orgId]
+    const totalCalls = Number(aggRow.total_calls) || 0;
+    const completedCalls = Number(aggRow.completed_calls) || 0;
+    const handoffCalls = Number(aggRow.handoff_calls) || 0;
+    const droppedCalls = Number(aggRow.dropped_calls) || 0;
+    const failedCalls = Number(aggRow.failed_calls) || 0;
+    const totalDurationSec = Number(aggRow.total_duration_sec) || 0;
+
+    const pct = (n: number) => (totalCalls > 0 ? Math.round((n / totalCalls) * 100) : 0);
+
+    const latencyRow = (
+      await query<{
+        sample_count: string;
+        avg_ms: string | null;
+      }>(
+        `SELECT
+          COUNT(*)::int AS sample_count,
+          AVG(first_speech.latency_ms)::float AS avg_ms
+         FROM (
+           SELECT MIN(
+             EXTRACT(EPOCH FROM (ce.occurred_at - c.started_at)) * 1000
+           ) AS latency_ms
+           FROM calls c
+           INNER JOIN call_events ce
+             ON ce.call_id = c.call_id AND ce.org_id = c.org_id
+           WHERE c.org_id = $1
+             AND c.started_at >= $2 AND c.started_at <= $3
+             AND ce.event_type = 'agent_spoke'
+           GROUP BY c.call_id
+         ) AS first_speech
+         WHERE first_speech.latency_ms IS NOT NULL`,
+        [orgId, start, end]
       )
-    ).rows[0] ?? { active_now: 0 };
+    ).rows[0] ?? { sample_count: "0", avg_ms: null };
+
+    const sampleCount = Number(latencyRow.sample_count) || 0;
+    const avgRaw = latencyRow.avg_ms;
+    const avgTimeToAgentSpeechHasData = sampleCount > 0 && avgRaw != null;
+    const avgTimeToAgentSpeechMs = avgTimeToAgentSpeechHasData
+      ? Math.round(Number(avgRaw))
+      : null;
+
+    const activeNow = await callStore.countActiveLiveCalls(orgId);
 
     const toolRow = (
       await query(
         `SELECT COUNT(*)::int AS tool_invocations
          FROM call_events
-         WHERE org_id = $1 AND event_type = 'tool_called'`,
-        [orgId]
+         WHERE org_id = $1 AND event_type = 'tool_called'
+           AND occurred_at >= $2 AND occurred_at <= $3`,
+        [orgId, start, end]
       )
     ).rows[0] ?? { tool_invocations: 0 };
 
-    const totalCalls = Number(aggRow.total_calls) || 0;
-    const successfulCalls = Number(aggRow.successful_calls) || 0;
-    const failedCalls = Number(aggRow.failed_calls) || 0;
-    const totalDurationSec = Number(aggRow.total_duration_sec) || 0;
-
     sendData(reply, {
       totalCalls,
-      successfulCalls,
+      successfulCalls: completedCalls,
+      completedCalls,
+      handoffCalls,
+      droppedCalls,
       failedCalls,
+      completionRate: pct(completedCalls),
+      handoffRate: pct(handoffCalls),
+      dropRate: pct(droppedCalls),
+      failureRate: pct(failedCalls),
       averageDurationMs: totalCalls > 0 ? (totalDurationSec * 1000) / totalCalls : 0,
-      successRate: totalCalls > 0 ? successfulCalls / totalCalls : 0,
-      activeNow: Number(liveRow.active_now) || 0,
-      toolInvocations: Number(toolRow.tool_invocations) || 0,
+      successRate: totalCalls > 0 ? completedCalls / totalCalls : 0,
+      activeNow,
+      toolInvocations: Number((toolRow as { tool_invocations: number }).tool_invocations) || 0,
+      avgTimeToAgentSpeechMs,
+      avgTimeToAgentSpeechHasData,
     });
   });
 }

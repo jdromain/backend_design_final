@@ -4,9 +4,29 @@ import { EventBusClient, createEventEnvelope } from "@rezovo/event-bus";
 import { createLogger } from "@rezovo/logging";
 import { EventPayloadByType } from "@rezovo/core-types";
 import { PersistenceStore } from "./persistence/store";
+import { callStore } from "./persistence/callStore";
+import { query } from "./persistence/dbClient";
 
 const logger = createLogger({ service: "platform-api", module: "billingQuota" });
 const persistence = new PersistenceStore();
+
+const DEFAULT_CONCURRENT_LIMIT = 10;
+
+async function getOrgConcurrentLimit(orgId: string): Promise<number> {
+  try {
+    const result = await query(
+      "SELECT concurrent_calls_limit FROM plans WHERE org_id = $1 AND status = 'active' ORDER BY created_at DESC LIMIT 1",
+      [orgId]
+    );
+    return result.rows[0]?.concurrent_calls_limit ?? DEFAULT_CONCURRENT_LIMIT;
+  } catch (err) {
+    logger.warn("failed to load plan; using default concurrent limit", {
+      error: (err as Error).message,
+      orgId,
+    });
+    return DEFAULT_CONCURRENT_LIMIT;
+  }
+}
 
 type UsageIngestBody = {
   orgId: string;
@@ -16,8 +36,6 @@ type UsageIngestBody = {
   callEndedAt: string;
   status?: "in_progress" | "completed";
 };
-
-const activeCalls = new Map<string, number>();
 
 export async function canStartCallHandler(
   request: FastifyRequest<{ Body: { orgId: string } }>,
@@ -29,14 +47,13 @@ export async function canStartCallHandler(
     return { allowed: false, reason: "orgId required" };
   }
 
-  const active = activeCalls.get(orgId) ?? 0;
-  // Simple soft cap of 10 concurrent calls per organization in this scaffold.
-  if (active >= 10) {
+  const active = await callStore.countActiveLiveCalls(orgId);
+  const limit = await getOrgConcurrentLimit(orgId);
+  if (active >= limit) {
     return { allowed: false, reason: "concurrency_limit" };
   }
 
-  activeCalls.set(orgId, active + 1);
-  return { allowed: true, active: active + 1 };
+  return { allowed: true, active };
 }
 
 export function registerUsageIngest(eventBus: EventBusClient) {
@@ -59,9 +76,6 @@ export function registerUsageIngest(eventBus: EventBusClient) {
     });
 
     await eventBus.publish(envelope);
-    const active = activeCalls.get(body.orgId) ?? 1;
-    const nextActive = Math.max(0, active - 1);
-    activeCalls.set(body.orgId, nextActive);
 
     await persistence.appendUsage({
       orgId: body.orgId,

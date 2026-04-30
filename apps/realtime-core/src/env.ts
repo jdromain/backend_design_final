@@ -112,6 +112,32 @@ export const env = {
   REALTIME_TTS_MAX_CHUNK_CHARS: optionalInt("REALTIME_TTS_MAX_CHUNK_CHARS", 180),
   REALTIME_TTS_MAX_CHUNK_WAIT_MS: optionalInt("REALTIME_TTS_MAX_CHUNK_WAIT_MS", 300),
   REALTIME_OUTPUT_MODERATION_TIMEOUT_MS: optionalInt("REALTIME_OUTPUT_MODERATION_TIMEOUT_MS", 250),
+  /**
+   * Max post-final STT debounce (ms) before the legacy pipeline sends an utterance to the LLM.
+   * `computeAdaptiveDebounceMs` is capped to this.
+   */
+  VOICE_LEGACY_FINAL_DEBOUNCE_MAX_MS: optionalInt("VOICE_LEGACY_FINAL_DEBOUNCE_MAX_MS", 420),
+  /**
+   * Realtime: race timeout for `guardrails.checkInput` (fail-open after this; ms).
+   */
+  VOICE_INPUT_GUARD_RACE_MS: optionalInt("VOICE_INPUT_GUARD_RACE_MS", 120),
+  /**
+   * Realtime: max wait for KB fetch per turn (abort in-flight request after this; ms).
+   */
+  VOICE_KB_RACE_MS: optionalInt("VOICE_KB_RACE_MS", 280),
+  /**
+   * Minimum gap (ms) between partial-speech barge-in clears to reduce noise / double-fire.
+   */
+  BARGE_IN_COOLDOWN_MS: optionalInt("BARGE_IN_COOLDOWN_MS", 180),
+  /**
+   * Legacy: only treat STT **partial** as barge if trimmed text length is at least this
+   * (reduces one-letter / noise false interrupts).
+   */
+  BARGE_IN_MIN_PARTIAL_CHARS: optionalInt("BARGE_IN_MIN_PARTIAL_CHARS", 2),
+  /**
+   * Realtime: on OpenAI `input_audio_buffer.speech_started`, stop agent playback early (VAD).
+   */
+  REALTIME_EARLY_BARGE_ON_SPEECH_STARTED: optionalBool("REALTIME_EARLY_BARGE_ON_SPEECH_STARTED", true),
 
   // Redis
   REDIS_ENABLED: optionalBool("REDIS_ENABLED", false),
@@ -132,6 +158,11 @@ export const env = {
   PLATFORM_API_URL: optional("PLATFORM_API_URL", "http://localhost:3001"),
   /** Shared bearer token for platform-api protected internal routes. */
   INTERNAL_SERVICE_TOKEN: optional("INTERNAL_SERVICE_TOKEN", ""),
+  /**
+   * HMAC key for `POST /inbound-call` (header `x-rezovo-signature: sha256=<hex>` of raw body).
+   * In production, set; if empty, verification is skipped (log warning on first request).
+   */
+  INTERNAL_WEBHOOK_SECRET: optional("INTERNAL_WEBHOOK_SECRET", ""),
   /** First snapshot organization — must match SQL seeds (e.g. org_localdemo). */
   REALTIME_BOOTSTRAP_ORG_ID: optional("REALTIME_BOOTSTRAP_ORG_ID", "org_localdemo"),
 

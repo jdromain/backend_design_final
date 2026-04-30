@@ -50,7 +50,8 @@ if [[ "$legacy_col_count" != "0" ]]; then
 fi
 echo "OK: organizations.clerk_organization_id is absent."
 
-active_non_org=$(run_query "SELECT COUNT(*) FROM public.organizations WHERE status='active' AND id !~ '^org_[A-Za-z0-9]+$';")
+# Aligned with database/006_org_id_canonical_cutover.sql: slug may include underscores (e.g. org_sanity_kb).
+active_non_org=$(run_query "SELECT COUNT(*) FROM public.organizations WHERE status='active' AND id !~ '^org_[A-Za-z0-9_]+$';")
 if [[ "$active_non_org" != "0" ]]; then
   echo "ERROR: active organizations contain non-org ids." >&2
   exit 1

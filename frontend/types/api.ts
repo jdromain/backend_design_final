@@ -17,12 +17,48 @@ export interface CallRecord {
   intent?: "Billing" | "Support" | "Sales" | "Booking" | "Unknown"
   direction: "inbound" | "outbound"
   durationMs: number
-  result: "completed" | "handoff" | "dropped" | "systemFailed" | "pending"
+  result: "completed" | "handoff" | "dropped" | "systemFailed" | "pending" | "unknown"
   endReason?: string
   turnCount?: number
   toolsUsed: { name: string; success: boolean }[]
   toolErrors?: number
   failureType?: string
+  canonical?: {
+    status: string
+    outcome: string
+    endReason: string
+    terminalStatusSource: string
+    intentSource: string
+    intentConfidenceBand: string
+  }
+  classification?: {
+    status: string
+    outcome: string
+    endReason: string
+    failureCategory: string
+    intentCategory: "Billing" | "Support" | "Sales" | "Booking" | "Unknown"
+    intentConfidenceBand: string
+    actionClass: "no_action" | "review_required" | "followup_required" | "escalate_human" | "engineering_investigate"
+    toolSummary: {
+      toolsUsedCount: number
+      toolErrorsCount: number
+      primaryFailedTool: string
+      toolFailureClass: string
+    }
+    provenance: {
+      terminalStatusSource: string
+      intentSource: string
+      labelVersion: number
+    }
+  }
+  display?: {
+    status: string
+    result: string
+    reason: string
+    intent: string
+    tools: string
+    failureType: string
+  }
 }
 
 // ─── Call Detail (timeline, transcript, tools) ──────────────────────────────
@@ -35,6 +71,7 @@ export type TimelineEventType =
   | "call_ended"
   | "transfer"
   | "error"
+  | "unknown"
 
 export interface TimelineEvent {
   id: string
@@ -42,6 +79,13 @@ export interface TimelineEvent {
   timestamp: string
   description: string
   details?: string
+  canonical?: {
+    rawType: string
+    mappedType: string
+  }
+  display?: {
+    typeLabel: string
+  }
 }
 
 export interface TranscriptLine {
@@ -72,7 +116,7 @@ export interface LiveCall {
   agentName: string
   agentVersion: string
   intent?: "Billing" | "Support" | "Booking" | "Sales" | "Unknown"
-  state: "ringing" | "active" | "at_risk" | "handoff_requested" | "error"
+  state: "ringing" | "active" | "at_risk" | "handoff_requested" | "error" | "unknown"
   direction: "inbound" | "outbound"
   startedAt: string
   durationSeconds: number
@@ -84,6 +128,44 @@ export interface LiveCall {
   tools: ToolActivity[]
   tags: string[]
   transcriptStatus?: TranscriptStatus
+  canonical?: {
+    status: string
+    outcome: string
+    endReason: string
+    terminalStatusSource: string
+    intentSource: string
+    intentConfidenceBand: string
+    failureType: string
+    toolErrors: number
+  }
+  classification?: {
+    status: string
+    outcome: string
+    endReason: string
+    failureCategory: string
+    intentCategory: "Billing" | "Support" | "Sales" | "Booking" | "Unknown"
+    intentConfidenceBand: string
+    actionClass: "no_action" | "review_required" | "followup_required" | "escalate_human" | "engineering_investigate"
+    toolSummary: {
+      toolsUsedCount: number
+      toolErrorsCount: number
+      primaryFailedTool: string
+      toolFailureClass: string
+    }
+    provenance: {
+      terminalStatusSource: string
+      intentSource: string
+      labelVersion: number
+    }
+  }
+  display?: {
+    status: string
+    result: string
+    reason: string
+    intent: string
+    tools: string
+    failureType: string
+  }
 }
 
 // ─── Agents ─────────────────────────────────────────────────────────────────

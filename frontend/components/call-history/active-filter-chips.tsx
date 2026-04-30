@@ -3,12 +3,18 @@
 import { X } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import type { Filters } from "./call-history-filters"
+import {
+  CANONICAL_ACTION_CLASS_FILTER_OPTIONS,
+  CANONICAL_FAILURE_CATEGORY_FILTER_OPTIONS,
+  toDisplayReason,
+} from "@/lib/call-labels"
 
 const resultLabels: Record<string, string> = {
-  completed: "Completed",
-  handoff: "Handoff",
-  dropped: "Dropped",
-  systemFailed: "System Failed",
+  handled: "Handled",
+  transferred: "Handoff",
+  abandoned: "Dropped",
+  failed: "System Failed",
+  unknown: "Unknown",
 }
 
 interface ActiveFilterChipsProps {
@@ -21,11 +27,11 @@ export function ActiveFilterChips({ filters, onRemoveFilter, phoneLines }: Activ
   const chips: { label: string; key: keyof Filters; value?: string }[] = []
 
   filters.results.forEach((result) => {
-    chips.push({ label: `Result: ${resultLabels[result] || result}`, key: "results", value: result })
+    chips.push({ label: `Outcome: ${resultLabels[result] || result}`, key: "results", value: result })
   })
 
   if (filters.intent && filters.intent !== "all") {
-    chips.push({ label: `Intent: ${filters.intent}`, key: "intent" })
+    chips.push({ label: `Classified intent: ${filters.intent}`, key: "intent" })
   }
 
   if (filters.phoneLine && filters.phoneLine !== "all") {
@@ -37,11 +43,21 @@ export function ActiveFilterChips({ filters, onRemoveFilter, phoneLines }: Activ
     chips.push({ label: `Direction: ${filters.direction}`, key: "direction" })
   }
 
-  if (filters.endReason && filters.endReason !== "all") {
+  if (filters.endReason) {
     chips.push({
-      label: `End: ${filters.endReason}`,
+      label: `End: ${toDisplayReason(filters.endReason)}`,
       key: "endReason",
     })
+  }
+
+  if (filters.failureCategory) {
+    const label = CANONICAL_FAILURE_CATEGORY_FILTER_OPTIONS.find((o) => o.value === filters.failureCategory)?.label ?? filters.failureCategory
+    chips.push({ label: `Failure: ${label}`, key: "failureCategory" })
+  }
+
+  if (filters.actionClass) {
+    const label = CANONICAL_ACTION_CLASS_FILTER_OPTIONS.find((o) => o.value === filters.actionClass)?.label ?? filters.actionClass
+    chips.push({ label: `Action: ${label}`, key: "actionClass" })
   }
 
   if (filters.toolUsed && filters.toolUsed !== "all") {

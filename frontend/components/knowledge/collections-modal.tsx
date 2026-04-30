@@ -26,6 +26,8 @@ interface CollectionsModalProps {
   collections: Collection[]
   onCreateCollection: (name: string, description: string) => void
   onDeleteCollection: (id: string) => void
+  /** In live API mode, namespaces are derived from uploads — UI collection CRUD is disabled */
+  readOnly?: boolean
 }
 
 export function CollectionsModal({
@@ -34,6 +36,7 @@ export function CollectionsModal({
   collections,
   onCreateCollection,
   onDeleteCollection,
+  readOnly = false,
 }: CollectionsModalProps) {
   const [tab, setTab] = useState<"list" | "create">("list")
   const [newName, setNewName] = useState("")
@@ -53,13 +56,17 @@ export function CollectionsModal({
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>Manage Collections</DialogTitle>
-          <DialogDescription>Organize your documents into collections for easier management</DialogDescription>
+          <DialogDescription>
+            {readOnly
+              ? "In live mode, namespaces (collections) are implied by where you upload. Use the collection filter to narrow the list."
+              : "Organize your documents into collections for easier management"}
+          </DialogDescription>
         </DialogHeader>
 
-        <Tabs value={tab} onValueChange={(v) => setTab(v as "list" | "create")}>
-          <TabsList className="grid w-full grid-cols-2">
+        <Tabs value={readOnly ? "list" : tab} onValueChange={(v) => !readOnly && setTab(v as "list" | "create")}>
+          <TabsList className={`grid w-full ${readOnly ? "grid-cols-1" : "grid-cols-2"}`}>
             <TabsTrigger value="list">Collections</TabsTrigger>
-            <TabsTrigger value="create">Create New</TabsTrigger>
+            {!readOnly && <TabsTrigger value="create">Create New</TabsTrigger>}
           </TabsList>
 
           <TabsContent value="list" className="mt-4">
@@ -67,9 +74,11 @@ export function CollectionsModal({
               <div className="text-center py-8">
                 <FolderOpen className="h-12 w-12 mx-auto text-muted-foreground" />
                 <p className="mt-2 text-sm text-muted-foreground">No collections yet</p>
-                <Button variant="link" onClick={() => setTab("create")}>
-                  Create your first collection
-                </Button>
+                {!readOnly && (
+                  <Button variant="link" onClick={() => setTab("create")}>
+                    Create your first collection
+                  </Button>
+                )}
               </div>
             ) : (
               <div className="space-y-2 max-h-[300px] overflow-y-auto">
@@ -92,53 +101,57 @@ export function CollectionsModal({
                         <span>{formatDistanceToNow(col.updatedAt, { addSuffix: true })}</span>
                       </div>
                     </div>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant="ghost" size="icon" className="h-8 w-8">
-                          <MoreHorizontal className="h-4 w-4" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        <DropdownMenuItem
-                          onClick={() => onDeleteCollection(col.id)}
-                          className="text-destructive focus:text-destructive"
-                        >
-                          <Trash2 className="mr-2 h-4 w-4" />
-                          Delete
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
+                    {!readOnly && (
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button variant="ghost" size="icon" className="h-8 w-8">
+                            <MoreHorizontal className="h-4 w-4" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem
+                            onClick={() => onDeleteCollection(col.id)}
+                            className="text-destructive focus:text-destructive"
+                          >
+                            <Trash2 className="mr-2 h-4 w-4" />
+                            Delete
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    )}
                   </div>
                 ))}
               </div>
             )}
           </TabsContent>
 
-          <TabsContent value="create" className="mt-4 space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="col-name">Collection Name</Label>
-              <Input
-                id="col-name"
-                placeholder="e.g., Product Documentation"
-                value={newName}
-                onChange={(e) => setNewName(e.target.value)}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="col-desc">Description (optional)</Label>
-              <Textarea
-                id="col-desc"
-                placeholder="Describe what documents belong in this collection..."
-                value={newDescription}
-                onChange={(e) => setNewDescription(e.target.value)}
-                rows={3}
-              />
-            </div>
-            <Button onClick={handleCreate} disabled={!newName.trim()} className="w-full">
-              <Plus className="mr-2 h-4 w-4" />
-              Create Collection
-            </Button>
-          </TabsContent>
+          {!readOnly && (
+            <TabsContent value="create" className="mt-4 space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="col-name">Collection Name</Label>
+                <Input
+                  id="col-name"
+                  placeholder="e.g., Product Documentation"
+                  value={newName}
+                  onChange={(e) => setNewName(e.target.value)}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="col-desc">Description (optional)</Label>
+                <Textarea
+                  id="col-desc"
+                  placeholder="Describe what documents belong in this collection..."
+                  value={newDescription}
+                  onChange={(e) => setNewDescription(e.target.value)}
+                  rows={3}
+                />
+              </div>
+              <Button onClick={handleCreate} disabled={!newName.trim()} className="w-full">
+                <Plus className="mr-2 h-4 w-4" />
+                Create Collection
+              </Button>
+            </TabsContent>
+          )}
         </Tabs>
       </DialogContent>
     </Dialog>

@@ -8,9 +8,10 @@ import type { RtpBridgeConnection } from "../../media/rtpBridgeClient";
 import { env } from "../../env";
 import type { CallSession, OnSentenceCallback } from "../callSession";
 import { fetchKbPassages } from "../openai-agents";
-import { guardrailsEngine } from "../openai-agents/guardrails";
+import { guardrailsEngine, type GuardrailResult } from "../openai-agents/guardrails";
 import { sessionStore } from "../openai-agents/sessionStore";
 import {
+  buildResponseInstructions,
   inferIntentFromAgentName,
   inferSpecialistFromAgentName,
   isStateChangingTool,
@@ -19,6 +20,13 @@ import {
   type ApprovalGateState,
   type CallContext,
 } from "../openai-agents/agents";
+import { isShortLeadIn, sanitizeTransferNarration } from "../../voice/formatting";
+import { VOICE_SAFER_REPHRASE } from "../../voice/callerPhrases";
+import {
+  pickFirstSilencePrompt,
+  pickSecondSilencePrompt,
+  SILENCE_FINAL_FAREWELL,
+} from "../../voice/silencePrompts";
 import type { TurnDiagnostics } from "../openai-agents";
 import {
   buildRealtimeSessionConfig,
@@ -36,22 +44,7 @@ const MIN_CHUNK_CHARS = Math.max(8, env.REALTIME_TTS_MIN_CHUNK_CHARS);
 const MAX_CHUNK_CHARS = Math.max(MIN_CHUNK_CHARS + 8, env.REALTIME_TTS_MAX_CHUNK_CHARS);
 const MAX_CHUNK_WAIT_MS = Math.max(80, env.REALTIME_TTS_MAX_CHUNK_WAIT_MS);
 
-const SHORT_LEAD_INS = new Set([
-  "got it.",
-  "got it!",
-  "thanks.",
-  "thank you.",
-  "thank you!",
-  "perfect.",
-  "great.",
-  "sure.",
-  "okay.",
-  "ok.",
-  "absolutely.",
-  "of course.",
-]);
-
-type ConversationStopReason =
+export type ConversationStopReason =
   | "bridge_closed"
   | "signal_abort"
   | "timeout"
@@ -99,6 +92,10 @@ type RunRealtimeConversationOptions = {
   maxCallDurationMs: number;
   onTurnDiagnostics?: (diagnostics: TurnDiagnostics) => void;
   onCallerAudioBytes?: (bytes: number) => void;
+  /** Fires after barge-in (user spoke while assistant was responding). Bump TTS generation to drop stale audio. */
+  onBargeIn?: () => void;
+  /** When input guardrails block, play this via external TTS instead of `response.create`. */
+  onInputBlocked?: (message: string) => void | Promise<void>;
 };
 
 function formatOpeningHours(openingHours: CallSession["context"]["agentConfig"]["openingHours"]): string {
@@ -222,20 +219,6 @@ function hashPercent(input: string): number {
   return hash % 100;
 }
 
-function sanitizeTransferNarration(text: string): string {
-  let out = text;
-  out = out.replace(
-    /\b(i('|’)ll|let me)\s+(get|connect|transfer|put)\s+you\s+(over|through|with|to)\s+(to\s+)?(the\s+)?(right\s+)?(specialist|team|agent)(\s+now)?[.!]?/gi,
-    "I can help with that.",
-  );
-  out = out.replace(/\bone moment,\s*please[.!]?/gi, "");
-  return out.replace(/\s{2,}/g, " ").trim();
-}
-
-function isShortLeadIn(text: string): boolean {
-  const normalized = text.trim().toLowerCase();
-  return normalized.length > 0 && normalized.length <= 14 && SHORT_LEAD_INS.has(normalized);
-}
 
 function fastLocalChunkGuardrail(text: string): string {
   const suspiciousPiiPatterns = [
@@ -243,7 +226,7 @@ function fastLocalChunkGuardrail(text: string): string {
     /\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b/,
   ];
   for (const pattern of suspiciousPiiPatterns) {
-    if (pattern.test(text)) return "I apologize, let me rephrase that.";
+    if (pattern.test(text)) return VOICE_SAFER_REPHRASE;
   }
   return text;
 }
@@ -281,7 +264,7 @@ async function applyOutputGuardrail(
     return localChecked;
   }
 
-  return outputCheck.message || "I apologize, let me rephrase that.";
+  return outputCheck.message || VOICE_SAFER_REPHRASE;
 }
 
 export async function runRealtimeConversation({
@@ -293,6 +276,8 @@ export async function runRealtimeConversation({
   maxCallDurationMs,
   onTurnDiagnostics,
   onCallerAudioBytes,
+  onBargeIn,
+  onInputBlocked,
 }: RunRealtimeConversationOptions): Promise<ConversationStopReason> {
   const { agentConfig } = session.context;
   const kbNamespace = agentConfig.kbNamespace;
@@ -403,14 +388,85 @@ export async function runRealtimeConversation({
     stopResolver = resolve;
   });
 
+  let silenceLadderTimer: ReturnType<typeof setInterval> | null = null;
+
   const stop = (reason: ConversationStopReason): void => {
     if (stopped) return;
     stopped = true;
     stopReason = reason;
+    if (silenceLadderTimer) {
+      clearInterval(silenceLadderTimer);
+      silenceLadderTimer = null;
+    }
     if (stopResolver) {
       stopResolver(reason);
     }
   };
+
+  const SILENCE_L1_MS = 6_000;
+  const SILENCE_L2_MS = 16_000;
+  const SILENCE_L3_MS = 24_000;
+  const SILENCE_END_MS = 32_000;
+
+  let lastUserActivityAt = Date.now();
+  let sentSilence1 = false;
+  let sentSilence2 = false;
+  let sentSilence3 = false;
+  silenceLadderTimer = setInterval(() => {
+    if (stopped) return;
+    const idle = Date.now() - lastUserActivityAt;
+    if (idle >= SILENCE_END_MS) {
+      stop("timeout");
+      return;
+    }
+    if (idle >= SILENCE_L3_MS && !sentSilence3 && sentSilence2) {
+      sentSilence3 = true;
+      try {
+        const instr = buildResponseInstructions(callContext, realtimeSession.currentAgent.name);
+        const line = SILENCE_FINAL_FAREWELL;
+        realtimeSession.transport.sendEvent({
+          type: "response.create",
+          response: {
+            instructions: `${instr} The caller is still on the line but quiet. In one short sentence, say exactly: ${line}`,
+          },
+        });
+      } catch {
+        /* ignore */
+      }
+      return;
+    }
+    if (idle >= SILENCE_L2_MS && !sentSilence2 && sentSilence1) {
+      sentSilence2 = true;
+      try {
+        const instr = buildResponseInstructions(callContext, realtimeSession.currentAgent.name);
+        const line = pickSecondSilencePrompt(session.id);
+        realtimeSession.transport.sendEvent({
+          type: "response.create",
+          response: {
+            instructions: `${instr} The caller is still quiet. In one very short, warm sentence, say exactly: ${line}`,
+          },
+        });
+      } catch {
+        /* ignore */
+      }
+      return;
+    }
+    if (idle >= SILENCE_L1_MS && !sentSilence1) {
+      sentSilence1 = true;
+      try {
+        const instr = buildResponseInstructions(callContext, realtimeSession.currentAgent.name);
+        const line = pickFirstSilencePrompt(session.id);
+        realtimeSession.transport.sendEvent({
+          type: "response.create",
+          response: {
+            instructions: `${instr} The caller has gone quiet. In one very short, warm sentence, say exactly: ${line}`,
+          },
+        });
+      } catch {
+        /* ignore */
+      }
+    }
+  }, 1_000);
 
   let persistTimer: NodeJS.Timeout | null = null;
   const persistNow = async (): Promise<void> => {
@@ -466,6 +522,8 @@ export async function runRealtimeConversation({
   let emptyPassCountByCall = restored?.emptyPassCountByCall ?? 0;
   let duplicateFinalizeCountByCall = 0;
   let bargeInClearCount = 0;
+  /** Throttle VAD / early barge to avoid flapping. */
+  let lastEarlyBargeAt = 0;
   let totalChunksDispatched = 0;
   const queueWaitSamplesByCall: number[] = [];
   let ragTotalQueries = 0;
@@ -513,6 +571,7 @@ export async function runRealtimeConversation({
         const guardrailMs = Date.now() - guardrailStartedAt;
         if (!safe) continue;
 
+        const isFirstTtsThisTurn = next.metrics.chunksDispatched === 0;
         if (next.metrics.firstTtsAt === null) {
           next.metrics.firstTtsAt = Date.now();
         }
@@ -525,6 +584,15 @@ export async function runRealtimeConversation({
           await onSentence(safe);
           next.metrics.chunksDispatched += 1;
           totalChunksDispatched += 1;
+          if (isFirstTtsThisTurn) {
+            logger.info("voice tuning eagerness", {
+              tag: "voice-tuning",
+              callId: session.id,
+              path: "realtime",
+              turnKey: next.turnKey,
+              end_of_user_speech_to_first_tts_synthesis_start_ms: next.metrics.firstTtsAt! - next.metrics.transcriptAt,
+            });
+          }
           logger.info("realtime sentence dispatched", {
             callId: session.id,
             responseId: next.responseId,
@@ -910,6 +978,7 @@ export async function runRealtimeConversation({
     const startedAt = Date.now();
     const timeoutResult = { timeout: true } as const;
     const runRetrieve = async (namespace: string): Promise<string[] | typeof timeoutResult> => {
+      const ac = new AbortController();
       let timer: NodeJS.Timeout | null = null;
       try {
         ragTotalQueries += 1;
@@ -920,9 +989,13 @@ export async function runRealtimeConversation({
             session.context.orgId,
             session.context.businessId,
             namespace,
+            ac.signal,
           ).catch(() => [] as string[]),
           new Promise<typeof timeoutResult>((resolve) => {
-            timer = setTimeout(() => resolve(timeoutResult), KB_FETCH_TIMEOUT_MS);
+            timer = setTimeout(() => {
+              ac.abort();
+              resolve(timeoutResult);
+            }, env.VOICE_KB_RACE_MS);
           }),
         ]);
         return outcome;
@@ -1141,18 +1214,73 @@ export async function runRealtimeConversation({
     const event = rawEvent as Record<string, unknown>;
     const eventType = typeof event.type === "string" ? event.type : "unknown";
 
+    if (eventType === "input_audio_buffer.speech_started" && env.REALTIME_EARLY_BARGE_ON_SPEECH_STARTED) {
+      const t = Date.now();
+      if (t - lastEarlyBargeAt < env.BARGE_IN_COOLDOWN_MS) {
+        return;
+      }
+      lastEarlyBargeAt = t;
+      const t0 = t;
+      const qBefore = clearChunkQueue();
+      onBargeIn?.();
+      realtimeSession.interrupt();
+      if (enableBargeClearPacing && bridgeConnection) {
+        bridgeConnection.clearPlayback();
+        bargeInClearCount += 1;
+      }
+      logger.info("voice tuning interruption", {
+        tag: "voice-tuning",
+        callId: session.id,
+        stage: "realtime_speech_started_barge",
+        barge_in_to_audio_queue_clear_ms: Date.now() - t0,
+        cleared_queued_sentences: qBefore,
+        tts_queue_generation_after: queueGeneration,
+      });
+      return;
+    }
+
     if (eventType === "conversation.item.input_audio_transcription.completed") {
       transcriptQueue = transcriptQueue
         .then(async () => {
           const transcript = typeof event.transcript === "string" ? event.transcript.trim() : "";
           if (!transcript) return;
 
+          const transcriptAt = Date.now();
+          lastUserActivityAt = transcriptAt;
+          sentSilence1 = false;
+          sentSilence2 = false;
+          sentSilence3 = false;
+
+          const guardRaceMs = env.VOICE_INPUT_GUARD_RACE_MS;
+          const inputCheck = await Promise.race<GuardrailResult>([
+            guardrailsEngine.checkInput(transcript, session.id),
+            new Promise<GuardrailResult>((resolve) =>
+              setTimeout(() => resolve({ blocked: false, action: "none" }), guardRaceMs),
+            ),
+          ]);
+          const tAfterGuard = Date.now();
+          if (inputCheck.blocked && onInputBlocked) {
+            const msg = inputCheck.message || "I can’t help with that right now. How else can I help?";
+            await onInputBlocked(msg);
+            return;
+          }
+
+          const tBargeStart = Date.now();
           const interruptedQueueLen = clearChunkQueue();
+          onBargeIn?.();
           realtimeSession.interrupt();
           if (enableBargeClearPacing && bridgeConnection) {
             bridgeConnection.clearPlayback();
             bargeInClearCount += 1;
           }
+          logger.info("voice tuning interruption", {
+            tag: "voice-tuning",
+            callId: session.id,
+            stage: "realtime_transcript_completed_barge",
+            barge_in_to_audio_queue_clear_ms: Date.now() - tBargeStart,
+            cleared_queued_sentences: interruptedQueueLen,
+            tts_queue_generation: queueGeneration,
+          });
 
           lastUserText = transcript;
           session.markRealtimeUserTurn(transcript);
@@ -1161,7 +1289,6 @@ export async function runRealtimeConversation({
           callContext.currentDateTime = new Date().toISOString();
 
           responseCreateSeq += 1;
-          const transcriptAt = Date.now();
           pendingTurnMetrics = createTurnMetrics(
             session.getTurnCount(),
             responseCreateSeq,
@@ -1189,7 +1316,9 @@ export async function runRealtimeConversation({
             }
           }
 
+          const tKb0 = Date.now();
           const kbRefresh = await maybeRefreshKb(transcript);
+          const tAfterKb = Date.now();
           if (pendingTurnMetrics) {
             pendingTurnMetrics.ragFallbackUsed = kbRefresh.fallbackUsed;
           }
@@ -1223,6 +1352,7 @@ export async function runRealtimeConversation({
             pendingTurnMetrics.turnState = "response_requested";
             pendingTurnMetrics.responseRequestedAt = Date.now();
           }
+          const tResponseCreate = Date.now();
           logger.info("realtime response requested", {
             callId: session.id,
             turnSeq: pendingTurnMetrics?.turnSeq ?? session.getTurnCount(),
@@ -1230,7 +1360,22 @@ export async function runRealtimeConversation({
             activeAgent: realtimeSession.currentAgent.name,
             activeTurnKey,
           });
-          realtimeSession.transport.sendEvent({ type: "response.create" });
+          const responseInstr = buildResponseInstructions(callContext, realtimeSession.currentAgent.name);
+          realtimeSession.transport.sendEvent({
+            type: "response.create",
+            response: { instructions: responseInstr },
+          });
+          logger.info("voice tuning eagerness", {
+            tag: "voice-tuning",
+            callId: session.id,
+            path: "realtime",
+            end_of_user_speech_to_response_create_ms: tResponseCreate - transcriptAt,
+            end_of_user_speech_to_guard_done_ms: tAfterGuard - transcriptAt,
+            end_of_user_speech_to_kb_done_ms: tAfterKb - transcriptAt,
+            guard_race_config_ms: guardRaceMs,
+            kb_wall_ms: tAfterKb - tKb0,
+            kb_retrieval_ms: kbRefresh.durationMs,
+          });
         })
         .catch((error) => {
           logger.warn("realtime transcript processing failed", {
@@ -1334,6 +1479,16 @@ export async function runRealtimeConversation({
           transcriptToFirstTextDeltaMs: state.metrics.firstTextDeltaAt - state.metrics.transcriptAt,
           activeAgent: realtimeSession.currentAgent.name,
         });
+        if (state.metrics.transcriptAt) {
+          logger.info("voice tuning eagerness", {
+            tag: "voice-tuning",
+            callId: session.id,
+            path: "realtime",
+            turnKey: state.turnKey,
+            end_of_user_speech_to_first_model_output_ms: state.metrics.firstTextDeltaAt! - state.metrics.transcriptAt,
+            responseId,
+          });
+        }
       }
 
       state.textBuffer += delta;
@@ -1384,6 +1539,7 @@ export async function runRealtimeConversation({
       if (currentIngressStartedAt === null) {
         currentIngressStartedAt = Date.now();
       }
+      lastUserActivityAt = Date.now();
       onCallerAudioBytes?.(frame.payload.length);
       realtimeSession.sendAudio(toArrayBuffer(frame.payload));
     });

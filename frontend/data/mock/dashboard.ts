@@ -1,6 +1,8 @@
 // Mock data extracted from app/page.tsx
 // DO NOT import this file directly from components. Use lib/data/dashboard.ts instead.
 
+import type { DashboardKpiSummary } from "@/types/dashboard-kpi"
+
 export const generateOutcomesData = () => {
   return Array.from({ length: 24 }, (_, i) => {
     const hour = new Date()
@@ -88,6 +90,38 @@ export const sparklineData = {
   handoff: [8, 6, 7, 5, 6, 5, 4, 5, 4, 4, 3, 5],
   dropped: [2, 3, 2, 4, 3, 2, 3, 4, 3, 2, 3, 3],
   latency: [220, 235, 228, 245, 232, 248, 240, 255, 245, 250, 242, 245],
+  /** Live count (mock); real API returns this from Postgres. */
+  activeNow: 3,
+}
+
+/** Headline KPIs for mock mode — same shape as `GET /analytics/summary`. */
+export function buildMockDashboardSummary(): DashboardKpiSummary {
+  const calls = generateCallsData()
+  const total = calls.length
+  const completed = calls.filter((c) => c.result === "completed").length
+  const handoff = calls.filter((c) => c.result === "handoff").length
+  const dropped = calls.filter((c) => c.result === "dropped").length
+  const failed = calls.filter((c) => c.result === "systemFailed").length
+  const pct = (n: number) => (total > 0 ? Math.round((n / total) * 100) : 0)
+  const totalDurMs = calls.reduce((s, c) => s + c.durationMs, 0)
+  return {
+    totalCalls: total,
+    activeNow: sparklineData.activeNow,
+    successfulCalls: completed,
+    completedCalls: completed,
+    handoffCalls: handoff,
+    droppedCalls: dropped,
+    failedCalls: failed,
+    completionRate: pct(completed),
+    handoffRate: pct(handoff),
+    dropRate: pct(dropped),
+    failureRate: pct(failed),
+    averageDurationMs: total > 0 ? totalDurMs / total : 0,
+    successRate: total > 0 ? completed / total : 0,
+    toolInvocations: 42,
+    avgTimeToAgentSpeechMs: 240,
+    avgTimeToAgentSpeechHasData: true,
+  }
 }
 
 export const systemHealth = {

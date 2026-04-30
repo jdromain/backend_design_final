@@ -8,6 +8,7 @@ import { buildServer } from "./server";
 import { callStore } from "./persistence/callStore";
 import { ping } from "./persistence/dbClient";
 import { runClerkDirectorySyncOnStartup } from "./auth/clerkDirectorySync";
+import { recoverStuckKbDocuments } from "./kb";
 
 const logger = createLogger({ service: "platform-api", module: "bootstrap" });
 
@@ -77,6 +78,16 @@ async function printStartupDiagnostics(): Promise<void> {
 async function bootstrap(): Promise<void> {
   await printStartupDiagnostics();
   await runClerkDirectorySyncOnStartup();
+
+  if (env.KB_RECOVER_STUCK_ON_STARTUP && (await ping())) {
+    try {
+      await recoverStuckKbDocuments();
+    } catch (err) {
+      logger.warn("kb stuck-document recovery failed", { error: err instanceof Error ? err.message : String(err) });
+    }
+  } else if (!env.KB_RECOVER_STUCK_ON_STARTUP) {
+    logger.info("kb stuck-document recovery skipped (KB_RECOVER_STUCK_ON_STARTUP=false)");
+  }
 
   const bus =
     env.EVENT_BUS_IMPL === "redis"

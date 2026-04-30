@@ -9,6 +9,7 @@ export class EventPublisher {
       eventType: "CallStarted",
       orgId: payload.orgId,
       callId: payload.callId,
+      eventId: `call.started:${payload.callId}`,
       payload: {
         did: payload.did,
         businessId: payload.businessId,
@@ -27,6 +28,7 @@ export class EventPublisher {
       eventType: "CallEnded",
       orgId: payload.orgId,
       callId: payload.callId,
+      eventId: `call.ended:${payload.callId}`,
       payload: {
         did: payload.did,
         businessId: payload.businessId,

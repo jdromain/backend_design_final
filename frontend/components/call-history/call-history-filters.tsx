@@ -14,14 +14,26 @@ import {
 import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
+import {
+  CANONICAL_ACTION_CLASS_FILTER_OPTIONS,
+  CANONICAL_END_REASON_FILTER_OPTIONS,
+  CANONICAL_FAILURE_CATEGORY_FILTER_OPTIONS,
+  CANONICAL_OUTCOME_FILTER_OPTIONS,
+  type CanonicalActionClass,
+  type CanonicalEndReason,
+  type CanonicalFailureCategory,
+  type CanonicalOutcome,
+} from "@/lib/call-labels"
 
 export interface Filters {
   search: string
-  results: string[]
+  results: CanonicalOutcome[]
   intent: string
   phoneLine: string
   direction: string
-  endReason: string
+  endReason: CanonicalEndReason | ""
+  failureCategory: CanonicalFailureCategory | ""
+  actionClass: CanonicalActionClass | ""
   durationBucket: string
   toolUsed: string
   toolErrorsOnly: boolean
@@ -44,29 +56,29 @@ export function CallHistoryFilters({
   phoneLines,
   tools,
   intents = ["Billing", "Support", "Sales", "Booking", "Unknown"],
-  endReasons = [
-    "Normal completion",
-    "Customer requested human",
-    "Caller hung up",
-    "Tool timeout",
-    "API error",
-  ],
+  endReasons = [],
   directions = ["inbound", "outbound"],
 }: CallHistoryFiltersProps) {
   const [moreFiltersOpen, setMoreFiltersOpen] = useState(false)
 
-  const results = [
-    { value: "completed", label: "Completed" },
-    { value: "handoff", label: "Handoff" },
-    { value: "dropped", label: "Dropped" },
-    { value: "systemFailed", label: "System Failed" },
-  ]
+  const results = CANONICAL_OUTCOME_FILTER_OPTIONS
+  const canonicalEndReasonOptions =
+    endReasons.length > 0
+      ? CANONICAL_END_REASON_FILTER_OPTIONS.filter((option) => {
+          const optionValue = option.value.toLowerCase()
+          const optionLabel = option.label.toLowerCase()
+          return endReasons.some((facet) => {
+            const f = facet.trim().toLowerCase()
+            return f === optionValue || f === optionLabel
+          })
+        })
+      : CANONICAL_END_REASON_FILTER_OPTIONS
 
   const updateFilter = <K extends keyof Filters>(key: K, value: Filters[K]) => {
     onFiltersChange({ ...filters, [key]: value })
   }
 
-  const toggleResult = (result: string) => {
+  const toggleResult = (result: CanonicalOutcome) => {
     const newResults = filters.results.includes(result)
       ? filters.results.filter((r) => r !== result)
       : [...filters.results, result]
@@ -81,6 +93,8 @@ export function CallHistoryFilters({
       phoneLine: "",
       direction: "",
       endReason: "",
+      failureCategory: "",
+      actionClass: "",
       durationBucket: "",
       toolUsed: "",
       toolErrorsOnly: false,
@@ -95,6 +109,8 @@ export function CallHistoryFilters({
     filters.phoneLine ||
     filters.direction ||
     filters.endReason ||
+    filters.failureCategory ||
+    filters.actionClass ||
     filters.toolUsed ||
     filters.toolErrorsOnly
 
@@ -115,7 +131,7 @@ export function CallHistoryFilters({
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button variant="outline" className="min-w-[140px] bg-transparent">
-              Result
+              Outcome
               {filters.results.length > 0 && (
                 <span className="ml-2 rounded-full bg-primary px-2 py-0.5 text-xs text-primary-foreground">
                   {filters.results.length}
@@ -137,12 +153,12 @@ export function CallHistoryFilters({
           </DropdownMenuContent>
         </DropdownMenu>
 
-        <Select value={filters.intent} onValueChange={(v) => updateFilter("intent", v)}>
+        <Select value={filters.intent || "all"} onValueChange={(v) => updateFilter("intent", v === "all" ? "" : v)}>
           <SelectTrigger className="w-[140px]">
-            <SelectValue placeholder="Intent" />
+            <SelectValue placeholder="Intent Category" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">All Intents</SelectItem>
+            <SelectItem value="all">All intent categories</SelectItem>
             {intents.map((intent) => (
               <SelectItem key={intent} value={intent}>
                 {intent}
@@ -151,7 +167,10 @@ export function CallHistoryFilters({
           </SelectContent>
         </Select>
 
-        <Select value={filters.direction} onValueChange={(v) => updateFilter("direction", v)}>
+        <Select
+          value={filters.direction || "all"}
+          onValueChange={(v) => updateFilter("direction", v === "all" ? "" : v)}
+        >
           <SelectTrigger className="w-[140px]">
             <SelectValue placeholder="Direction" />
           </SelectTrigger>
@@ -194,7 +213,10 @@ export function CallHistoryFilters({
         </CollapsibleTrigger>
         <CollapsibleContent className="pt-3">
           <div className="flex flex-wrap items-center gap-3">
-            <Select value={filters.phoneLine} onValueChange={(v) => updateFilter("phoneLine", v)}>
+            <Select
+              value={filters.phoneLine || "all"}
+              onValueChange={(v) => updateFilter("phoneLine", v === "all" ? "" : v)}
+            >
               <SelectTrigger className="w-[180px]">
                 <SelectValue placeholder="Phone Line" />
               </SelectTrigger>
@@ -208,15 +230,18 @@ export function CallHistoryFilters({
               </SelectContent>
             </Select>
 
-            <Select value={filters.endReason} onValueChange={(v) => updateFilter("endReason", v)}>
+            <Select
+              value={filters.endReason || "all"}
+              onValueChange={(v) => updateFilter("endReason", v === "all" ? "" : (v as CanonicalEndReason))}
+            >
               <SelectTrigger className="w-[200px]">
                 <SelectValue placeholder="End Reason" />
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All</SelectItem>
-                {endReasons.map((reason) => (
-                  <SelectItem key={reason} value={reason}>
-                    {reason}
+                {canonicalEndReasonOptions.map((reason) => (
+                  <SelectItem key={reason.value} value={reason.value}>
+                    {reason.label}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -231,6 +256,40 @@ export function CallHistoryFilters({
                 {tools.map((tool) => (
                   <SelectItem key={tool} value={tool}>
                     {tool}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+
+            <Select
+              value={filters.failureCategory || "all"}
+              onValueChange={(v) => updateFilter("failureCategory", v === "all" ? "" : (v as CanonicalFailureCategory))}
+            >
+              <SelectTrigger className="w-[210px]">
+                <SelectValue placeholder="Failure Category" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All failure categories</SelectItem>
+                {CANONICAL_FAILURE_CATEGORY_FILTER_OPTIONS.map((category) => (
+                  <SelectItem key={category.value} value={category.value}>
+                    {category.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+
+            <Select
+              value={filters.actionClass || "all"}
+              onValueChange={(v) => updateFilter("actionClass", v === "all" ? "" : (v as CanonicalActionClass))}
+            >
+              <SelectTrigger className="w-[220px]">
+                <SelectValue placeholder="Action Class" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All action classes</SelectItem>
+                {CANONICAL_ACTION_CLASS_FILTER_OPTIONS.map((action) => (
+                  <SelectItem key={action.value} value={action.value}>
+                    {action.label}
                   </SelectItem>
                 ))}
               </SelectContent>

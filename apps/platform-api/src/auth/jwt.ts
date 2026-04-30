@@ -92,59 +92,77 @@ export function authHook(allowedRoles?: AuthRole[]) {
       return;
     }
 
+    let session: VerifiedClerkSession;
     try {
-      const session = await verifyClerkToken(token);
-      const user = await resolveClerkUser(session, request);
-      if (!user) {
-        sendError(
-          reply,
-          403,
-          "org_not_provisioned",
-          "No Rezovo user membership exists for this account/org context.",
-        );
-        return;
-      }
-
-      const mismatch = assertSessionOrgConsistency(session, user);
-      if (mismatch === "missing_org") {
-        sendError(
-          reply,
-          403,
-          "missing_org",
-          "Active Clerk organization is required. Switch to an organization in Clerk.",
-        );
-        return;
-      }
-      if (mismatch === "org_mismatch") {
-        sendError(
-          reply,
-          403,
-          "org_membership_required",
-          "Active Clerk organization is not linked to this Rezovo user membership.",
-        );
-        return;
-      }
-
-      request.auth = {
-        sub: user.userId,
-        org_id: user.orgId,
-        email: user.email,
-        roles: user.roles,
-      };
-
-      if (allowedRoles && allowedRoles.length > 0) {
-        const roles = request.auth.roles;
-        const ok = allowedRoles.some((role) => roles.includes(role));
-        if (!ok) {
-          reply.status(403).send({ error: "forbidden" });
-          return;
-        }
-      }
+      session = await verifyClerkToken(token);
     } catch (error) {
       logger.warn("auth verification failed", {
         error: error instanceof Error ? error.message : String(error),
       });
       reply.status(401).send({ error: "unauthorized" });
+      return;
+    }
+
+    let user: AuthUser | undefined;
+    try {
+      user = await resolveClerkUser(session, request);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      logger.error("auth user resolution failed (database)", { error: msg });
+      sendError(
+        reply,
+        503,
+        "auth_store_unavailable",
+        "Database error while loading the signed-in user. If you upgraded the stack, reset the Postgres volume " +
+          "(docker compose down -v && docker compose up -d) or run database migrations so users.org_id exists.",
+      );
+      return;
+    }
+
+    if (!user) {
+      sendError(
+        reply,
+        403,
+        "org_not_provisioned",
+        "No Rezovo user membership exists for this account/org context.",
+      );
+      return;
+    }
+
+    const mismatch = assertSessionOrgConsistency(session, user);
+    if (mismatch === "missing_org") {
+      sendError(
+        reply,
+        403,
+        "missing_org",
+        "Active Clerk organization is required. Switch to an organization in Clerk.",
+      );
+      return;
+    }
+    if (mismatch === "org_mismatch") {
+      sendError(
+        reply,
+        403,
+        "org_membership_required",
+        "Active Clerk organization is not linked to this Rezovo user membership.",
+      );
+      return;
+    }
+
+    request.auth = {
+      sub: user.userId,
+      org_id: user.orgId,
+      email: user.email,
+      roles: user.roles,
+    };
+
+    if (allowedRoles && allowedRoles.length > 0) {
+      const roles = request.auth.roles;
+      const ok = allowedRoles.some((role) => roles.includes(role));
+      if (!ok) {
+        reply.status(403).send({ error: "forbidden" });
+        return;
+      }
     }
   };
 }

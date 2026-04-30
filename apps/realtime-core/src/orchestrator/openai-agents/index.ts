@@ -9,6 +9,7 @@ export async function fetchKbPassages(
   orgId: string,
   businessId: string,
   namespace: string,
+  signal?: AbortSignal,
 ): Promise<string[]> {
   try {
     const result = await retrieveKb({
@@ -17,12 +18,17 @@ export async function fetchKbPassages(
       namespace,
       query,
       topK: 3,
+      signal,
+      timeoutMs: 500,
     });
     if (result.passages.length > 0) {
       logger.debug("KB passages fetched", { callId, matchCount: result.passages.length });
       return result.passages.map((p) => p.text);
     }
   } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      return [];
+    }
     logger.warn("KB fetch failed (non-fatal)", {
       callId,
       error: error instanceof Error ? error.message : String(error),

@@ -32,7 +32,7 @@ BEGIN
         SELECT 1
         FROM public.tenants
         WHERE status = 'active'
-          AND id !~ '^org_[A-Za-z0-9]+$'
+          AND id !~ '^org_[A-Za-z0-9_]+$'
           AND (clerk_organization_id IS NULL OR btrim(clerk_organization_id) = '')
       ) THEN
         RAISE EXCEPTION 'active tenant missing clerk_organization_id for org-id rekey';
@@ -43,7 +43,7 @@ BEGIN
         FROM public.tenants
         WHERE status = 'active'
           AND clerk_organization_id IS NOT NULL
-          AND clerk_organization_id !~ '^org_[A-Za-z0-9]+$'
+          AND clerk_organization_id !~ '^org_[A-Za-z0-9_]+$'
       ) THEN
         RAISE EXCEPTION 'active tenant has malformed clerk_organization_id (expected org_...)';
       END IF;
@@ -61,7 +61,7 @@ BEGIN
       INSERT INTO org_rekey_map (old_id, new_id)
       SELECT id, clerk_organization_id
       FROM public.tenants
-      WHERE id !~ '^org_[A-Za-z0-9]+$'
+      WHERE id !~ '^org_[A-Za-z0-9_]+$'
         AND clerk_organization_id IS NOT NULL
         AND btrim(clerk_organization_id) <> ''
         AND id <> clerk_organization_id
@@ -71,7 +71,7 @@ BEGIN
         SELECT 1
         FROM public.tenants
         WHERE status = 'active'
-          AND id !~ '^org_[A-Za-z0-9]+$'
+          AND id !~ '^org_[A-Za-z0-9_]+$'
       ) THEN
         RAISE EXCEPTION 'active tenant id is not org_* and no clerk_organization_id column exists';
       END IF;
@@ -81,7 +81,7 @@ BEGIN
       SELECT 1
       FROM public.organizations
       WHERE status = 'active'
-        AND id !~ '^org_[A-Za-z0-9]+$'
+        AND id !~ '^org_[A-Za-z0-9_]+$'
     ) THEN
       RAISE EXCEPTION 'active organization id is not org_*';
     END IF;
@@ -293,7 +293,7 @@ ALTER TABLE public.organizations
 
 ALTER TABLE public.organizations
   ADD CONSTRAINT organizations_active_org_id_format
-  CHECK (status <> 'active' OR id ~ '^org_[A-Za-z0-9]+$');
+  CHECK (status <> 'active' OR id ~ '^org_[A-Za-z0-9_]+$');
 
 DROP FUNCTION IF EXISTS public.match_kb_chunks(vector(1536), text, text, integer, double precision);
 

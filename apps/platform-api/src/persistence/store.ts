@@ -95,9 +95,42 @@ export class PersistenceStore {
     return null;
   }
 
-  async saveConfig(_orgId: string, _lob: string, _cfg: StoredConfig): Promise<void> {
-    // Config publishing is handled through the agent_configs table directly.
-    // This is a no-op for now — will be wired when config management is built out.
+  async saveConfig(orgId: string, lob: string, cfg: StoredConfig): Promise<void> {
+    try {
+      const configId = cfg.agentConfig?.id;
+      const businessId = cfg.agentConfig?.businessId ?? orgId;
+      const version = cfg.version ?? cfg.agentConfig?.version ?? 1;
+      if (!configId) {
+        logger.warn("saveConfig skipped: missing agentConfig.id", { orgId, lob });
+        return;
+      }
+      await query(
+        `INSERT INTO agent_configs (org_id, config_id, business_id, lob, version, status, config, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, now())
+         ON CONFLICT (org_id, config_id, version) DO UPDATE SET
+           business_id = EXCLUDED.business_id,
+           lob         = EXCLUDED.lob,
+           status      = EXCLUDED.status,
+           config      = EXCLUDED.config,
+           updated_at  = now()`,
+        [
+          orgId,
+          configId,
+          businessId,
+          lob,
+          version,
+          cfg.status ?? "draft",
+          JSON.stringify(cfg.agentConfig),
+        ]
+      );
+      logger.info("agent config persisted", { orgId, lob, configId, version });
+    } catch (err) {
+      logger.warn("failed to save agent config", {
+        error: (err as Error).message,
+        orgId,
+        lob,
+      });
+    }
   }
 
   // ─── Tool Results (idempotency) ───
@@ -198,6 +231,7 @@ export class PersistenceStore {
       );
     } catch (err) {
       logger.warn("failed to append document", { error: (err as Error).message, docId: record.docId });
+      throw err;
     }
   }
 
@@ -214,13 +248,18 @@ export class PersistenceStore {
     }
   }
 
-  async markDocumentFailed(orgId: string, docId: string): Promise<void> {
+  /**
+   * Marks a document failed. Persists a bounded `last_error` for UI + ops visibility.
+   */
+  async markDocumentFailed(orgId: string, docId: string, lastError: string): Promise<void> {
+    const errText = (lastError ?? "").trim() || "unknown error";
+    const errStored = errText.length > 2000 ? errText.slice(0, 2000) : errText;
     try {
       await query(
         `UPDATE kb_documents
-         SET status = 'failed', updated_at = now()
+         SET status = 'failed', last_error = $3, updated_at = now()
          WHERE org_id = $1 AND doc_id = $2`,
-        [orgId, docId]
+        [orgId, docId, errStored]
       );
     } catch (err) {
       logger.warn("markDocumentFailed failed", { error: (err as Error).message, orgId, docId });
@@ -449,9 +488,107 @@ export class PersistenceStore {
   // ─── Usage ───
 
   async appendUsage(record: UsageRecord): Promise<void> {
-    // Usage is now tracked in the calls table via callStore.upsertCall.
-    // This method exists for backward compat with billingQuota.
-    logger.debug("usage appended (tracked in calls table)", { callId: record.callId });
+    const u = (record.usage ?? {}) as {
+      duration_seconds?: number;
+      callDurationSec?: number;
+      phone_number?: string;
+      cost?: number;
+      ai_enabled?: boolean;
+    };
+    const durationSeconds =
+      typeof u.duration_seconds === "number"
+        ? u.duration_seconds
+        : typeof u.callDurationSec === "number"
+          ? u.callDurationSec
+          : 0;
+    try {
+      await query(
+        `INSERT INTO usage_records
+           (org_id, call_id, phone_number, duration_seconds, ai_enabled, cost, recorded_at)
+         VALUES ($1, $2, $3, $4, $5, $6, now())
+         ON CONFLICT (call_id) DO NOTHING`,
+        [
+          record.orgId,
+          record.callId,
+          u.phone_number ?? "",
+          durationSeconds,
+          u.ai_enabled ?? true,
+          u.cost ?? null,
+        ]
+      );
+      logger.debug("usage appended", { callId: record.callId, orgId: record.orgId });
+    } catch (err) {
+      logger.warn("failed to append usage", {
+        error: (err as Error).message,
+        callId: record.callId,
+        orgId: record.orgId,
+      });
+    }
+  }
+
+  /** One idempotent row per `call_id` after `/calls/end` (mirrors `calls.duration_sec`). Not billing. */
+  async mirrorUsageRecordFromCallEnd(params: {
+    orgId: string;
+    callId: string;
+    phoneNumber: string;
+    durationSec: number;
+  }): Promise<void> {
+    await this.appendUsage({
+      orgId: params.orgId,
+      callId: params.callId,
+      usage: {
+        duration_seconds: params.durationSec,
+        phone_number: params.phoneNumber,
+      },
+      callStartedAt: "",
+      callEndedAt: "",
+    });
+  }
+
+  /**
+   * Latest published `agent_configs` for org + lob, or `null` if none.
+   * Used to hydrate ConfigStore on read — drafts do not affect runtime.
+   */
+  async loadPublishedAgentConfig(orgId: string, lob: string): Promise<StoredConfig | null> {
+    try {
+      const result = await query<{
+        version: number;
+        config: AgentConfigSnapshot;
+        business_id: string;
+        config_id: string;
+      }>(
+        `SELECT version, config::jsonb AS config, business_id, config_id
+         FROM agent_configs
+         WHERE org_id = $1 AND lob = $2 AND status = 'published'
+         ORDER BY version DESC
+         LIMIT 1`,
+        [orgId, lob]
+      );
+      const row = result.rows[0];
+      if (!row) return null;
+      const agentConfig: AgentConfigSnapshot = {
+        ...(row.config as AgentConfigSnapshot),
+        orgId,
+        businessId: (row.config as AgentConfigSnapshot).businessId || row.business_id,
+        id: (row.config as AgentConfigSnapshot).id || row.config_id,
+        version: (row.config as AgentConfigSnapshot).version ?? row.version,
+      };
+      return {
+        version: row.version,
+        status: "published",
+        agentConfig,
+        phoneNumbers: [],
+        plan: { orgId, planId: "plan-default", maxConcurrentCalls: null },
+        lob,
+      };
+    } catch (err) {
+      logger.warn("loadPublishedAgentConfig failed", {
+        orgId,
+        lob,
+        error: (err as Error).message,
+      });
+      return null;
+    }
   }
 
   // ─── Webhooks ───

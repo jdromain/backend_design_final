@@ -14,6 +14,8 @@ vi.mock("@/lib/data/call-details", () => ({
       details: "raw event: carrier_voice",
     },
   ]),
+  getTranscriptLines: vi.fn(async () => []),
+  getToolActivities: vi.fn(async () => []),
 }))
 
 describe("Dashboard runtime guards", () => {
@@ -52,6 +54,7 @@ describe("Dashboard runtime guards", () => {
 
     render(<CallDetailDrawer call={call} open onOpenChange={() => {}} />)
 
+    expect(await screen.findByText("Handled")).toBeInTheDocument()
     expect(await screen.findByText("carrier voice")).toBeInTheDocument()
   })
 })

@@ -94,6 +94,12 @@ export const env = {
   /** Shared bearer token for trusted server-to-server calls (realtime-core -> platform-api). */
   INTERNAL_SERVICE_TOKEN: optional("INTERNAL_SERVICE_TOKEN", ""),
 
+  /**
+   * HMAC key for `POST` to realtime-core `/inbound-call` (header `x-rezovo-signature: sha256=<hex>`).
+   * Must match `INTERNAL_WEBHOOK_SECRET` on realtime-core.
+   */
+  INTERNAL_WEBHOOK_SECRET: optional("INTERNAL_WEBHOOK_SECRET", ""),
+
   /** When true, include error stacks in `http_error` JSONL (default off in production). */
   LOG_STACK_TRACES: optionalBool("LOG_STACK_TRACES", false),
 
@@ -110,6 +116,13 @@ export const env = {
   CALENDLY_ACCESS_TOKEN: optional("CALENDLY_ACCESS_TOKEN", ""),
   CALENDLY_EVENT_TYPE_URI: optional("CALENDLY_EVENT_TYPE_URI", ""),
   CALENDLY_TIMEZONE: optional("CALENDLY_TIMEZONE", "America/New_York"),
+
+  /**
+   * Re-embed `kb_documents` rows stuck in `ingest_requested` on cold start. Disable in Docker
+   * if the DB has very large documents (or use a lower cap in `kb.ts`); the jobs worker can
+   * still process new ingests. Set to true in .env to enable.
+   */
+  KB_RECOVER_STUCK_ON_STARTUP: optionalBool("KB_RECOVER_STUCK_ON_STARTUP", true),
 } as const;
 
 if (env.REDIS_ENABLED && !env.REDIS_URL) {

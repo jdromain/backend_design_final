@@ -3,28 +3,24 @@
  * for diagnosing issues. Does not change any business logic.
  */
 
-import * as fs from "fs";
+import { promises as fs } from "fs";
 import * as path from "path";
 
 const LOG_DIR = path.resolve(process.cwd(), "logs");
 const LOG_FILE = path.join(LOG_DIR, "realtime-core.log");
 
-function ensureLogDir(): void {
+async function writeLineAsync(entry: Record<string, unknown>): Promise<void> {
   try {
-    fs.mkdirSync(LOG_DIR, { recursive: true });
-  } catch {
-    // ignore
+    await fs.mkdir(LOG_DIR, { recursive: true });
+    const line = JSON.stringify({ ts: new Date().toISOString(), ...entry }) + "\n";
+    await fs.appendFile(LOG_FILE, line, "utf8");
+  } catch (err) {
+    console.error("[traceLog] write failed", (err as Error).message);
   }
 }
 
 function writeLine(entry: Record<string, unknown>): void {
-  try {
-    ensureLogDir();
-    const line = JSON.stringify({ ts: new Date().toISOString(), ...entry }) + "\n";
-    fs.appendFileSync(LOG_FILE, line);
-  } catch (err) {
-    console.error("[traceLog] write failed", (err as Error).message);
-  }
+  void writeLineAsync(entry);
 }
 
 export const traceLog = {

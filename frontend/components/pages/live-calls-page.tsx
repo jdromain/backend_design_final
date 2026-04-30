@@ -392,7 +392,7 @@ export function LiveCallsPage() {
         (call) =>
           call.callerNumber.toLowerCase().includes(query) ||
           call.callId.toLowerCase().includes(query) ||
-          (call.intent || "").toLowerCase().includes(query),
+          (call.display?.intent ?? call.intent ?? "").toLowerCase().includes(query),
       )
     }
 

@@ -2,6 +2,7 @@ import { assertMockSafety } from "./_env-check"
 import { generateMockCalls, mockAgents, mockPhoneLines, availableTools } from "@/data/mock/call-history"
 import type { CallRecord } from "@/types/api"
 import { appendOrgQuery, get, post } from "@/lib/api-client"
+import { normalizeCallRecordLabels } from "@/lib/call-labels"
 
 assertMockSafety()
 
@@ -49,10 +50,11 @@ function toQueryString(input: CallHistoryQuery): string {
 }
 
 export async function getCallHistory(query: CallHistoryQuery = {}): Promise<CallRecord[]> {
-  if (useMocks) return generateMockCalls() as CallRecord[]
+  if (useMocks) return (generateMockCalls() as CallRecord[]).map(normalizeCallRecordLabels)
   const qs = toQueryString(query)
   const path = qs ? `/calls?${qs}` : "/calls"
-  return get<CallRecord[]>(appendOrgQuery(path))
+  const rows = await get<CallRecord[]>(appendOrgQuery(path))
+  return rows.map(normalizeCallRecordLabels)
 }
 
 export async function getCallHistoryFacets(params: {

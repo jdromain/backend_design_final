@@ -55,7 +55,7 @@ const outcomeColors = {
 }
 
 const outcomeLabels = {
-  completed: "Completed",
+  completed: "Handled",
   handoff: "Handoff",
   dropped: "Dropped",
   systemFailed: "System Failed",
@@ -151,8 +151,11 @@ export function OutcomesChart({
     <Card>
       <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
         <div>
-          <CardTitle>Call Results Over Time</CardTitle>
-          <CardDescription>Call results breakdown over time</CardDescription>
+          <CardTitle>Call Outcomes Over Time</CardTitle>
+          <CardDescription>
+            Operational outcomes from call end (handled, transferred, etc.), not proof the caller’s issue was fully
+            resolved.
+          </CardDescription>
         </div>
         <div className="flex items-center gap-2">
           <Tabs value={viewMode} onValueChange={(v) => setViewMode(v as ViewMode)}>

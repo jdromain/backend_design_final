@@ -2,6 +2,7 @@ import { assertMockSafety } from "./_env-check"
 import { generateMockLiveCalls } from "@/data/mock/live-calls"
 import type { LiveCall } from "@/types/api"
 import { appendOrgQuery, get, post } from "@/lib/api-client"
+import { normalizeLiveCallLabels } from "@/lib/call-labels"
 
 assertMockSafety()
 
@@ -11,7 +12,7 @@ export async function getLiveCalls(params?: {
   includeStale?: boolean
   staleAfterMinutes?: number
 }): Promise<LiveCall[]> {
-  if (useMocks) return generateMockLiveCalls() as LiveCall[]
+  if (useMocks) return (generateMockLiveCalls() as LiveCall[]).map(normalizeLiveCallLabels)
   const staleAfterMinutes = typeof params?.staleAfterMinutes === "number" && params.staleAfterMinutes > 0
     ? params.staleAfterMinutes
     : 15
@@ -21,7 +22,8 @@ export async function getLiveCalls(params?: {
   qs.set("excludeStale", String(!includeStale))
   qs.set("staleAfterMinutes", String(staleAfterMinutes))
   const path = qs.size > 0 ? `/calls/live?${qs.toString()}` : "/calls/live"
-  const calls = await get<LiveCall[]>(appendOrgQuery(path))
+  const rows = await get<LiveCall[]>(appendOrgQuery(path))
+  const calls = rows.map(normalizeLiveCallLabels)
   if (includeStale) return calls
 
   const cutoff = Date.now() - staleAfterMinutes * 60 * 1000

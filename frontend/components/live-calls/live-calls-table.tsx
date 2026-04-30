@@ -105,6 +105,11 @@ export function LiveCallsTable({ calls, isLoading, onCallClick, selectedCallId, 
       icon: AlertTriangle,
       color: "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400",
     },
+    unknown: {
+      label: "Unknown",
+      icon: AlertTriangle,
+      color: "bg-zinc-100 text-zinc-700 dark:bg-zinc-900/30 dark:text-zinc-400",
+    },
   }
 
   if (isLoading) {

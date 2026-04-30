@@ -5,6 +5,7 @@
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from "vitest";
 import { Value } from "@sinclair/typebox/value";
 import { createInMemoryEventBus } from "@rezovo/event-bus";
+import twilio from "twilio";
 
 vi.hoisted(() => {
   process.env.CLERK_AUTH_ENABLED = "true";
@@ -12,6 +13,7 @@ vi.hoisted(() => {
   process.env.CLERK_JWT_PUBLIC_KEY = "pk_test_contract";
   process.env.CLERK_WEBHOOK_SECRET = "whsec_contract";
   process.env.INTERNAL_SERVICE_TOKEN = "contract-internal-service-token";
+  process.env.TWILIO_AUTH_TOKEN = "twilio-auth-contract";
 });
 
 vi.mock("./auth/clerk", () => ({
@@ -36,7 +38,8 @@ vi.mock("./persistence/dbClient", () => {
     closePool: vi.fn().mockResolvedValue(undefined),
     getPool: vi.fn(),
     getClient: vi.fn(),
-    withTransaction: vi.fn(),
+    withTransaction: vi.fn(async (fn: (client: { query: typeof query }) => Promise<unknown>) =>
+      fn({ query })),
   };
 });
 
@@ -147,6 +150,7 @@ const testOrganizationLiveRow = {
 
 function wireDbMocks() {
   const q = vi.mocked(query);
+  q.mockReset();
   q.mockImplementation(async (sql: string, params?: unknown[]) => {
     const s = sql.toLowerCase();
     const p0 = params?.[0];
@@ -183,23 +187,43 @@ function wireDbMocks() {
     if (s.includes("select call_id, payload") && s.includes("tool_called")) {
       return { rows: [] };
     }
-    if (s.includes("from calls") && s.includes("status = any") && s.includes("ended_at is null")) {
+    if (s.includes("count(*)::int as c") && s.includes("from calls") && s.includes("in_progress")) {
+      if (p0 === TEST_ORG_ID) {
+        return { rows: [{ c: "1" }] };
+      }
+      return { rows: [{ c: "0" }] };
+    }
+    if (
+      (s.includes("from calls") && s.includes("status = any") && s.includes("ended_at is null")) ||
+      (s.includes("in ('initiated'") && s.includes("from calls") && s.includes("select *"))
+    ) {
       if (p0 === TEST_ORG_ID) {
         return { rows: [testOrganizationLiveRow] };
       }
       return { rows: [] };
     }
-    if (s.includes("filter (where outcome = 'handled')")) {
+    if (
+      s.includes("completed_calls") &&
+      s.includes("handoff_calls") &&
+      s.includes("dropped_calls") &&
+      s.includes("from calls") &&
+      s.includes("org_id = $1")
+    ) {
       return {
         rows: [
           {
-            total_calls: 4,
-            successful_calls: 2,
-            failed_calls: 1,
-            total_duration_sec: "240",
+            total_calls: "150",
+            completed_calls: "100",
+            handoff_calls: "30",
+            dropped_calls: "10",
+            failed_calls: "10",
+            total_duration_sec: "12000",
           },
         ],
       };
+    }
+    if (s.includes("sample_count") && s.includes("agent_spoke") && s.includes("group by c.call_id")) {
+      return { rows: [{ sample_count: "2", avg_ms: 240 }] };
     }
     if (s.includes("as active_now")) {
       return { rows: [{ active_now: 1 }] };
@@ -207,11 +231,39 @@ function wireDbMocks() {
     if (s.includes("tool_invocations") && s.includes("tool_called")) {
       return { rows: [{ tool_invocations: 5 }] };
     }
-    if (s.includes("from calls c") && s.includes("order by c.started_at desc")) {
+    if (
+      (s.includes("from calls c") && s.includes("order by c.started_at desc")) ||
+      (s.includes("from calls") && s.includes("limit 100"))
+    ) {
       if (p0 === TEST_ORG_ID) {
         return { rows: [testOrganizationCallRow, testOrganizationFailedStatusOnlyRow] };
       }
       return { rows: [] };
+    }
+    if (s.includes("select * from calls where call_id = $1")) {
+      if (p0 === "call-end-existing-duration") {
+        return {
+          rows: [
+            {
+              ...testOrganizationCallRow,
+              call_id: "call-end-existing-duration",
+              org_id: TEST_ORG_ID,
+              phone_number: "+18005550999",
+              duration_sec: 321,
+            },
+          ],
+        };
+      }
+      return { rows: [] };
+    }
+    if (s.includes("delete from kb_chunks where org_id = $1 and doc_id = $2")) {
+      return { rowCount: 1, rows: [] };
+    }
+    if (s.includes("delete from kb_documents where org_id = $1 and doc_id = $2 returning doc_id")) {
+      if (p0 === TEST_ORG_ID && params?.[1] === "doc-delete-1") {
+        return { rowCount: 1, rows: [{ doc_id: "doc-delete-1" }] };
+      }
+      return { rowCount: 0, rows: [] };
     }
     if (s.includes("from calls") && s.includes("org_id")) {
       return { rows: [] };
@@ -289,7 +341,12 @@ describe("platform-api HTTP contract (inject)", () => {
     expect(res.statusCode).toBe(200);
     const body = res.json();
     expect(Value.Check(AnalyticsSummaryEnvelopeSchema, body)).toBe(true);
-    expect(body.data.totalCalls).toBe(4);
+    expect(body.data.totalCalls).toBe(150);
+    expect(body.data.completedCalls).toBe(100);
+    expect(body.data.completionRate).toBe(67);
+    expect(body.data.handoffRate).toBe(20);
+    expect(body.data.avgTimeToAgentSpeechHasData).toBe(true);
+    expect(body.data.avgTimeToAgentSpeechMs).toBe(240);
     expect(body.data.toolInvocations).toBe(5);
   });
 
@@ -304,6 +361,102 @@ describe("platform-api HTTP contract (inject)", () => {
     const body = res.json();
     expect(body?.data?.ok).toBe(true);
     expect(body?.data?.diagnostics?.docId).toBe("doc-123");
+  });
+
+  it("POST /twilio/voice rejects missing Twilio signature when auth token is configured", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/twilio/voice",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-forwarded-proto": "https",
+        "x-forwarded-host": "contract.example.com",
+      },
+      payload: {
+        CallSid: "CA_missing_sig",
+        From: "+15551234567",
+        To: "+18005550199",
+        CallStatus: "ringing",
+        Direction: "inbound",
+      },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json()).toEqual({ error: "invalid_signature" });
+  });
+
+  it("POST /twilio/voice accepts valid Twilio signature", async () => {
+    vi.spyOn(twilio, "validateRequest").mockReturnValueOnce(true);
+    const payload = {
+      CallSid: "CA_valid_sig",
+      From: "+15551234567",
+      To: "+18005550199",
+      CallStatus: "ringing",
+      Direction: "inbound",
+    };
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/twilio/voice",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-forwarded-proto": "https",
+        "x-forwarded-host": "contract.example.com",
+        "x-twilio-signature": "test-valid-signature",
+      },
+      payload,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["content-type"]).toContain("text/xml");
+  });
+
+  it("GET /kb/status rejects cross-org access", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: `/kb/status?orgId=some-other-org&docId=doc-1`,
+      headers: { authorization: `Bearer ${bearerForOrg(TEST_ORG_ID)}` },
+    });
+    expect(res.statusCode).toBe(403);
+    const body = res.json();
+    expect(body.error?.code).toBe("org_mismatch");
+  });
+
+  it("POST /calls/end mirrors existing duration when durationSec is omitted", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/calls/end",
+      headers: {
+        authorization: "Bearer contract-internal-service-token",
+        "content-type": "application/json",
+      },
+      payload: {
+        callId: "call-end-existing-duration",
+        orgId: TEST_ORG_ID,
+        outcome: "handled",
+      },
+    });
+    expect(res.statusCode).toBe(200);
+
+    const usageInsert = vi
+      .mocked(query)
+      .mock.calls.find((call) => String(call[0]).toLowerCase().includes("insert into usage_records"));
+    expect(usageInsert).toBeDefined();
+    const usageArgs = usageInsert?.[1] as unknown[];
+    expect(usageArgs[0]).toBe(TEST_ORG_ID);
+    expect(usageArgs[1]).toBe("call-end-existing-duration");
+    expect(usageArgs[2]).toBe("+18005550999");
+    expect(usageArgs[3]).toBe(321);
+  });
+
+  it("DELETE /knowledge/documents/:docId deletes KB doc for the authenticated org", async () => {
+    const res = await app.inject({
+      method: "DELETE",
+      url: "/knowledge/documents/doc-delete-1",
+      headers: { authorization: `Bearer ${bearerForOrg(TEST_ORG_ID)}` },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.data.ok).toBe(true);
+    expect(body.data.diagnostics?.docId).toBe("doc-delete-1");
   });
 
   it("POST /auth/login is removed in Clerk-first mode", async () => {

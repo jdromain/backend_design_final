@@ -78,15 +78,6 @@ export type PlanSnapshot = {
   maxConcurrentCalls: number | null;
 };
 
-export type CallStage =
-  | "greeting"
-  | "intake"
-  | "qualification"
-  | "booking"
-  | "handoff"
-  | "message"
-  | "closing";
-
 export type CallTranscriptEntry = {
   from: "user" | "agent";
   text: string;
@@ -99,7 +90,6 @@ export type CallSessionContext = {
   businessId: string;
   phoneNumberConfig: PhoneNumberConfig;
   agentConfig: AgentConfigSnapshot;
-  stage: CallStage;
   slots: {
     callerName?: string;
     callbackNumber?: string;
@@ -111,13 +101,361 @@ export type CallSessionContext = {
   startedAt: Date;
 };
 
-export type CallEndReason =
+export type CanonicalCallStatus =
+  | "initiated"
+  | "ringing"
+  | "in_progress"
+  | "completed"
+  | "failed"
+  | "abandoned"
+  | "transferred"
+  | "unknown";
+
+export type CanonicalOutcome = "handled" | "failed" | "abandoned" | "transferred" | "unknown";
+
+export type CanonicalEndReason =
   | "caller_hangup"
   | "agent_end"
-  | "normal_completion"
   | "transfer"
   | "timeout"
-  | "error";
+  | "error"
+  | "quota_denied"
+  | "unknown";
+
+export type CanonicalIntentSource = "model_classifier" | "agent_inference" | "human_override" | "unknown";
+
+export type CanonicalConfidenceBand = "high" | "medium" | "low" | "unknown";
+export type CanonicalFailureCategory =
+  | "carrier_error"
+  | "stt_error"
+  | "tts_error"
+  | "llm_error"
+  | "tool_error"
+  | "config_error"
+  | "auth_error"
+  | "quota_error"
+  | "unknown";
+
+export type CanonicalActionClass =
+  | "no_action"
+  | "review_required"
+  | "followup_required"
+  | "escalate_human"
+  | "engineering_investigate";
+
+export type CanonicalIntentCategory = "Billing" | "Support" | "Sales" | "Booking" | "Unknown";
+
+export type CanonicalToolSummary = {
+  toolsUsedCount: number;
+  toolErrorsCount: number;
+  primaryFailedTool: string;
+  toolFailureClass: CanonicalFailureCategory;
+};
+
+export type CanonicalClassification = {
+  status: CanonicalCallStatus;
+  outcome: CanonicalOutcome;
+  endReason: CanonicalEndReason;
+  failureCategory: CanonicalFailureCategory;
+  intentCategory: CanonicalIntentCategory;
+  intentConfidenceBand: CanonicalConfidenceBand;
+  actionClass: CanonicalActionClass;
+  toolSummary: CanonicalToolSummary;
+  provenance: {
+    terminalStatusSource: "realtime" | "carrier" | "system" | "unknown";
+    intentSource: CanonicalIntentSource;
+    labelVersion: number;
+  };
+};
+
+export type CanonicalTerminalStatus = Exclude<
+  CanonicalCallStatus,
+  "initiated" | "ringing" | "in_progress" | "unknown"
+>;
+
+export type CanonicalTerminalOutcome = Exclude<CanonicalOutcome, "unknown">;
+
+export type CanonicalTerminalTuple = {
+  status: CanonicalTerminalStatus;
+  outcome: CanonicalTerminalOutcome;
+  endReason: CanonicalEndReason;
+};
+
+export type CanonicalTupleValidation = {
+  valid: boolean;
+  normalized: CanonicalTerminalTuple;
+  reason?: string;
+};
+
+export const CANONICAL_UNKNOWN_VALUE = "unknown" as const;
+
+const TERMINAL_STATUS_SET = new Set<CanonicalTerminalStatus>([
+  "completed",
+  "failed",
+  "abandoned",
+  "transferred",
+]);
+
+const NON_TERMINAL_STATUS_SET = new Set<CanonicalCallStatus>(["initiated", "ringing", "in_progress", "unknown"]);
+
+export const CANONICAL_TERMINAL_TUPLES: readonly CanonicalTerminalTuple[] = [
+  { status: "completed", outcome: "handled", endReason: "agent_end" },
+  { status: "completed", outcome: "handled", endReason: "unknown" },
+  { status: "transferred", outcome: "transferred", endReason: "transfer" },
+  { status: "transferred", outcome: "transferred", endReason: "unknown" },
+  { status: "abandoned", outcome: "abandoned", endReason: "caller_hangup" },
+  { status: "abandoned", outcome: "abandoned", endReason: "timeout" },
+  { status: "abandoned", outcome: "abandoned", endReason: "unknown" },
+  { status: "failed", outcome: "failed", endReason: "error" },
+  { status: "failed", outcome: "failed", endReason: "timeout" },
+  { status: "failed", outcome: "failed", endReason: "quota_denied" },
+  { status: "failed", outcome: "failed", endReason: "unknown" },
+] as const;
+
+const CANONICAL_TERMINAL_TUPLE_KEYS = new Set<string>(
+  CANONICAL_TERMINAL_TUPLES.map((tuple) => `${tuple.status}:${tuple.outcome}:${tuple.endReason}`)
+);
+
+export function isCanonicalTerminalStatus(status: string | null | undefined): status is CanonicalTerminalStatus {
+  return TERMINAL_STATUS_SET.has(status as CanonicalTerminalStatus);
+}
+
+export function isCanonicalNonTerminalStatus(status: string | null | undefined): status is CanonicalCallStatus {
+  return NON_TERMINAL_STATUS_SET.has(status as CanonicalCallStatus);
+}
+
+export function toCanonicalConfidenceBand(confidence: number | null | undefined): CanonicalConfidenceBand {
+  if (typeof confidence !== "number" || Number.isNaN(confidence)) return "unknown";
+  if (confidence >= 0.8) return "high";
+  if (confidence >= 0.5) return "medium";
+  return "low";
+}
+
+export function validateCanonicalTerminalTuple(input: {
+  status?: string | null;
+  outcome?: string | null;
+  endReason?: string | null;
+}): CanonicalTupleValidation {
+  const normalized: CanonicalTerminalTuple = {
+    status: isCanonicalTerminalStatus(input.status) ? input.status : "failed",
+    outcome: (input.outcome === "handled" ||
+      input.outcome === "failed" ||
+      input.outcome === "abandoned" ||
+      input.outcome === "transferred"
+      ? input.outcome
+      : "failed") as CanonicalTerminalOutcome,
+    endReason: (input.endReason === "caller_hangup" ||
+      input.endReason === "agent_end" ||
+      input.endReason === "transfer" ||
+      input.endReason === "timeout" ||
+      input.endReason === "error" ||
+      input.endReason === "quota_denied" ||
+      input.endReason === "unknown"
+      ? input.endReason
+      : "unknown") as CanonicalEndReason,
+  };
+
+  const key = `${normalized.status}:${normalized.outcome}:${normalized.endReason}`;
+  if (!CANONICAL_TERMINAL_TUPLE_KEYS.has(key)) {
+    return {
+      valid: false,
+      normalized: { status: "failed", outcome: "failed", endReason: "unknown" },
+      reason: `invalid terminal tuple: ${key}`,
+    };
+  }
+  return { valid: true, normalized };
+}
+
+export type CanonicalDisplayLabels = {
+  statusLabel: string;
+  resultLabel: string;
+  reasonLabel: string;
+  intentLabel: string;
+  toolsLabel: string;
+  failureTypeLabel: string;
+};
+
+export type CanonicalDisplayMapperInput = {
+  status?: string | null;
+  outcome?: string | null;
+  endReason?: string | null;
+  intent?: string | null;
+  toolsUsedCount?: number | null;
+  toolErrorCount?: number | null;
+  failureType?: string | null;
+};
+
+function normalizeUnknownString(value?: string | null): string {
+  if (!value || value.trim().length === 0) return "Unknown";
+  if (value === "unknown") return "Unknown";
+  return value;
+}
+
+export function normalizeCanonicalIntentCategory(value?: string | null): CanonicalIntentCategory {
+  switch (value) {
+    case "Billing":
+    case "Support":
+    case "Sales":
+    case "Booking":
+    case "Unknown":
+      return value;
+    default:
+      return "Unknown";
+  }
+}
+
+export function inferFailureCategoryFromString(value?: string | null): CanonicalFailureCategory {
+  const v = (value ?? "").trim().toLowerCase();
+  if (!v) return "unknown";
+  if (v.includes("quota")) return "quota_error";
+  if (v.includes("tool")) return "tool_error";
+  if (v.includes("stt") || v.includes("deepgram") || v.includes("transcript")) return "stt_error";
+  if (v.includes("tts") || v.includes("eleven") || v.includes("synth")) return "tts_error";
+  if (v.includes("llm") || v.includes("model") || v.includes("openai")) return "llm_error";
+  if (
+    v.includes("carrier") ||
+    v.includes("twilio") ||
+    v.includes("sip") ||
+    v.includes("busy") ||
+    v.includes("no-answer") ||
+    v.includes("canceled")
+  ) {
+    return "carrier_error";
+  }
+  if (v.includes("auth") || v.includes("signature") || v.includes("unauthor")) return "auth_error";
+  if (v.includes("config") || v.includes("missing_") || v.includes("route")) return "config_error";
+  return "unknown";
+}
+
+export function deriveCanonicalFailureCategory(input: {
+  outcome?: string | null;
+  failureType?: string | null;
+  toolErrorsCount?: number | null;
+  endReason?: string | null;
+  toolFailureClass?: CanonicalFailureCategory | null;
+}): CanonicalFailureCategory {
+  if (input.outcome !== "failed") return "unknown";
+
+  const fromFailureType = inferFailureCategoryFromString(input.failureType);
+  if (fromFailureType !== "unknown") return fromFailureType;
+
+  if (input.toolFailureClass && input.toolFailureClass !== "unknown") return input.toolFailureClass;
+  if ((input.toolErrorsCount ?? 0) > 0) return "tool_error";
+
+  if (input.endReason === "quota_denied") return "quota_error";
+  if (input.endReason === "error") return "unknown";
+  if (input.endReason === "timeout") return "unknown";
+  return "unknown";
+}
+
+export function deriveCanonicalActionClass(input: {
+  outcome: CanonicalOutcome;
+  endReason: CanonicalEndReason;
+  failureCategory: CanonicalFailureCategory;
+  intentCategory: CanonicalIntentCategory;
+  toolErrorsCount?: number | null;
+}): CanonicalActionClass {
+  if (input.failureCategory !== "unknown" || (input.toolErrorsCount ?? 0) > 0) {
+    return "engineering_investigate";
+  }
+  if (input.outcome === "failed") {
+    return "review_required";
+  }
+  if (input.outcome === "transferred" || input.endReason === "transfer") {
+    return "escalate_human";
+  }
+  if (input.intentCategory === "Unknown") {
+    return "followup_required";
+  }
+  if (input.outcome === "abandoned") {
+    return "review_required";
+  }
+  return "no_action";
+}
+
+export function mapCanonicalToDisplayLabels(input: CanonicalDisplayMapperInput): CanonicalDisplayLabels {
+  const statusLabel = (() => {
+    switch (input.status) {
+      case "initiated":
+        return "Initiated";
+      case "ringing":
+        return "Ringing";
+      case "in_progress":
+        return "In Progress";
+      case "completed":
+        return "Completed";
+      case "failed":
+        return "Failed";
+      case "abandoned":
+        return "Abandoned";
+      case "transferred":
+        return "Transferred";
+      default:
+        return "Unknown";
+    }
+  })();
+
+  const resultLabel = (() => {
+    switch (input.outcome) {
+      case "handled":
+        return "Handled";
+      case "transferred":
+        return "Handoff";
+      case "abandoned":
+        return "Dropped";
+      case "failed":
+        return "System Failed";
+      default:
+        return "Unknown";
+    }
+  })();
+
+  const reasonLabel = (() => {
+    switch (input.endReason) {
+      case "agent_end":
+        return "Agent Ended";
+      case "caller_hangup":
+        return "Caller Hangup";
+      case "transfer":
+        return "Transfer";
+      case "timeout":
+        return "Timeout";
+      case "error":
+        return "Error";
+      case "quota_denied":
+        return "Quota Denied";
+      default:
+        return "Unknown";
+    }
+  })();
+
+  const toolTotal = typeof input.toolsUsedCount === "number" ? input.toolsUsedCount : 0;
+  const toolErrors = typeof input.toolErrorCount === "number" ? input.toolErrorCount : 0;
+  const toolsLabel = toolTotal === 0 ? "No Tools" : toolErrors > 0 ? `${toolTotal} (${toolErrors} errors)` : `${toolTotal}`;
+
+  return {
+    statusLabel,
+    resultLabel,
+    reasonLabel,
+    intentLabel: normalizeUnknownString(input.intent),
+    toolsLabel,
+    failureTypeLabel: normalizeUnknownString(input.failureType),
+  };
+}
+
+export type CanonicalLabelContract = {
+  canonical: {
+    status: CanonicalCallStatus;
+    outcome: CanonicalOutcome;
+    endReason: CanonicalEndReason;
+    intentSource: CanonicalIntentSource;
+    intentConfidenceBand: CanonicalConfidenceBand;
+  };
+  display: CanonicalDisplayLabels;
+};
+
+export type LegacyCallEndReason = "normal_completion";
+export type CallEndReason = CanonicalEndReason | LegacyCallEndReason;
 
 export type UsageBreakdown = {
   callDurationSec: number;
@@ -147,7 +485,7 @@ export type CallEndedPayload = {
   endedAt: string;
   durationMs: number;
   endReason: CallEndReason;
-  outcome?: "handled" | "transferred" | "voicemail" | "abandoned" | "failed";
+  outcome?: "handled" | "transferred" | "voicemail" | "abandoned" | "failed" | "unknown";
   usage?: UsageBreakdown;
 };
 

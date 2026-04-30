@@ -22,8 +22,10 @@ export function RecentCallsTable({ calls }: RecentCallsTableProps) {
     const variants: Record<CallRecord["outcome"], "default" | "secondary" | "destructive" | "outline"> = {
       handled: "default",
       escalated: "secondary",
+      transferred: "secondary",
       failed: "destructive",
       abandoned: "outline",
+      unknown: "outline",
     };
     return variants[outcome];
   };
@@ -88,4 +90,3 @@ export function RecentCallsTable({ calls }: RecentCallsTableProps) {
     </Card>
   );
 }
-

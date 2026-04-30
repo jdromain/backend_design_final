@@ -17,6 +17,22 @@ import {
   onboardingSteps,
 } from "@/data/mock/dashboard"
 import { appendOrgQuery, get } from "@/lib/api-client"
+import type { DashboardKpiSummary } from "@/types/dashboard-kpi"
+import { normalizeCallRecordLabels } from "@/lib/call-labels"
+
+export type DashboardDateRange = { start?: string; end?: string }
+
+export type { DashboardKpiSummary } from "@/types/dashboard-kpi"
+
+export function appendDateRangeToPath(path: string, range?: DashboardDateRange): string {
+  if (!range?.start && !range?.end) return path
+  const p = new URLSearchParams()
+  if (range.start) p.set("start", range.start)
+  if (range.end) p.set("end", range.end)
+  const qs = p.toString()
+  if (!qs) return path
+  return path.includes("?") ? `${path}&${qs}` : `${path}?${qs}`
+}
 
 assertMockSafety()
 
@@ -30,6 +46,8 @@ type ApiSparklines = {
   handoff: number[]
   dropped: number[]
   latency: number[]
+  /** Live in-progress/ringing count from Postgres (stale calls excluded) — not a sparkline bucket. */
+  activeNow?: number
 }
 
 type DashboardActivity = ReturnType<typeof generateActivityData>[number]
@@ -50,7 +68,9 @@ function normalizeActivityItem(item: DashboardActivity | Record<string, unknown>
   }
 }
 
-function mapSparklinesFromApi(api: ApiSparklines): typeof sparklineData {
+function mapSparklinesFromApi(
+  api: ApiSparklines
+): typeof sparklineData & { activeNow: number } {
   return {
     calls: api.totalCalls ?? [],
     active: api.activeCalls ?? [],
@@ -59,6 +79,7 @@ function mapSparklinesFromApi(api: ApiSparklines): typeof sparklineData {
     handoff: api.handoff ?? [],
     dropped: api.dropped ?? [],
     latency: api.latency ?? [],
+    activeNow: typeof api.activeNow === "number" ? api.activeNow : 0,
   }
 }
 
@@ -100,9 +121,10 @@ function mapApiIncidentToPanel(i: ApiIncident): Incident {
   }
 }
 
-export async function getDashboardOutcomes() {
+export async function getDashboardOutcomes(range?: DashboardDateRange) {
   if (useMocks) return generateOutcomesData()
-  return get<ReturnType<typeof generateOutcomesData>>(appendOrgQuery("/analytics/outcomes"))
+  const path = appendDateRangeToPath(appendOrgQuery("/analytics/outcomes"), range)
+  return get<ReturnType<typeof generateOutcomesData>>(path)
 }
 
 export async function getDashboardOutcomesByRange(params: {
@@ -110,29 +132,60 @@ export async function getDashboardOutcomesByRange(params: {
   to: Date
   granularity: "hour" | "day" | "week"
 }) {
-  if (useMocks) return generateOutcomesData()
-  const qs = new URLSearchParams({
-    from: params.from.toISOString(),
-    to: params.to.toISOString(),
-    granularity: params.granularity,
+  const base = appendDateRangeToPath(appendOrgQuery("/analytics/outcomes"), {
+    start: params.from.toISOString(),
+    end: params.to.toISOString(),
   })
-  return get<ReturnType<typeof generateOutcomesData>>(appendOrgQuery(`/analytics/outcomes?${qs.toString()}`))
+  const parsed = new URL(base, "http://local")
+  parsed.searchParams.set("granularity", params.granularity)
+  const path = `${parsed.pathname}${parsed.search}`
+  if (useMocks) return generateOutcomesData()
+  return get<ReturnType<typeof generateOutcomesData>>(path)
 }
 
-export async function getDashboardCalls(params?: {
+type DashboardCallsInput = DashboardDateRange & {
+  /** Compatibility for existing callers that still pass Date objects. */
   from?: Date
   to?: Date
+  /** Optional row-cap hint for /calls. */
   limit?: number
-}): Promise<CallRecord[]> {
-  if (useMocks) return generateCallsData()
-  const qs = new URLSearchParams()
-  if (params?.from) qs.set("from", params.from.toISOString())
-  if (params?.to) qs.set("to", params.to.toISOString())
-  if (typeof params?.limit === "number" && params.limit > 0) {
-    qs.set("limit", String(params.limit))
+}
+
+/**
+ * Recent calls for table/drilldown only. The API caps this list (see platform-api
+ * `getCallsByOrganization` … `LIMIT 100`). **Do not** use this array’s length
+ * for org-wide Total Calls or outcome rates; use `getDashboardSummary` instead.
+ */
+export async function getDashboardCalls(range?: DashboardCallsInput): Promise<CallRecord[]> {
+  if (useMocks) return generateCallsData().map(normalizeCallRecordLabels)
+  const normalizedRange: DashboardDateRange = {
+    start: range?.start ?? (range?.from ? range.from.toISOString() : undefined),
+    end: range?.end ?? (range?.to ? range.to.toISOString() : undefined),
   }
-  const path = qs.size > 0 ? `/calls?${qs.toString()}` : "/calls"
-  return get<CallRecord[]>(appendOrgQuery(path))
+  const basePath = appendDateRangeToPath(appendOrgQuery("/calls"), normalizedRange)
+  const parsed = new URL(basePath, "http://local")
+  if (typeof range?.limit === "number" && range.limit > 0) {
+    parsed.searchParams.set("limit", String(range.limit))
+  }
+  const path = `${parsed.pathname}${parsed.search}`
+  const rows = await get<CallRecord[]>(path)
+  return rows.map(normalizeCallRecordLabels)
+}
+
+/**
+ * SQL-backed KPIs for the home dashboard (`GET /analytics/summary`), same `start`/`end`
+ * as sparklines. Not affected by the GET /calls row cap.
+ */
+export async function getDashboardSummary(
+  range?: DashboardDateRange
+): Promise<DashboardKpiSummary> {
+  if (useMocks) {
+    const { buildMockDashboardSummary } = await import("@/data/mock/dashboard")
+    return buildMockDashboardSummary()
+  }
+  return get<DashboardKpiSummary>(
+    appendDateRangeToPath(appendOrgQuery("/analytics/summary"), range)
+  )
 }
 
 export async function getDashboardActivity() {
@@ -141,9 +194,11 @@ export async function getDashboardActivity() {
   return Array.isArray(rows) ? rows.map((r) => normalizeActivityItem(r)) : []
 }
 
-export async function getSparklineData() {
+export async function getSparklineData(range?: DashboardDateRange) {
   if (useMocks) return sparklineData
-  const raw = await get<ApiSparklines>(appendOrgQuery("/analytics/sparklines"))
+  const raw = await get<ApiSparklines>(
+    appendDateRangeToPath(appendOrgQuery("/analytics/sparklines"), range)
+  )
   return mapSparklinesFromApi(raw)
 }
 
@@ -164,21 +219,27 @@ function mapInsightRows(rows: ApiInsightRow[]): InsightItem[] {
   return rows.map((r, i) => ({ id: String(i + 1), label: r.label, count: r.value }))
 }
 
-export async function getTopIntents() {
+export async function getTopIntents(range?: DashboardDateRange) {
   if (useMocks) return topIntents
-  const rows = await get<ApiInsightRow[]>(appendOrgQuery("/analytics/intents"))
+  const rows = await get<ApiInsightRow[]>(
+    appendDateRangeToPath(appendOrgQuery("/analytics/intents"), range)
+  )
   return Array.isArray(rows) ? mapInsightRows(rows) : []
 }
 
-export async function getTopHandoffReasons() {
+export async function getTopHandoffReasons(range?: DashboardDateRange) {
   if (useMocks) return topHandoffReasons
-  const rows = await get<ApiInsightRow[]>(appendOrgQuery("/analytics/handoffs"))
+  const rows = await get<ApiInsightRow[]>(
+    appendDateRangeToPath(appendOrgQuery("/analytics/handoffs"), range)
+  )
   return Array.isArray(rows) ? mapInsightRows(rows) : []
 }
 
-export async function getTopFailureReasons() {
+export async function getTopFailureReasons(range?: DashboardDateRange) {
   if (useMocks) return topFailureReasons
-  const rows = await get<ApiInsightRow[]>(appendOrgQuery("/analytics/failures"))
+  const rows = await get<ApiInsightRow[]>(
+    appendDateRangeToPath(appendOrgQuery("/analytics/failures"), range)
+  )
   return Array.isArray(rows) ? mapInsightRows(rows) : []
 }
 

@@ -160,8 +160,12 @@ CREATE INDEX IF NOT EXISTS idx_api_keys_org ON public.api_keys(org_id);
 -- SEED DATA
 -- ================================================================
 
+-- Idempotent seed: one demo user per (org_id, email). Conflict target must match
+-- idx_users_org_email_unique ON (org_id, email) — not (email) alone.
 INSERT INTO public.users (id, org_id, email, roles, name, status)
 VALUES ('user-admin', 'org_localdemo', 'admin@example.com', '{admin}', 'Admin User', 'active')
-ON CONFLICT (email) DO UPDATE SET
-  roles = '{admin}',
-  org_id = 'org_localdemo';
+ON CONFLICT (org_id, email) DO UPDATE SET
+  id = EXCLUDED.id,
+  roles = EXCLUDED.roles,
+  name = EXCLUDED.name,
+  status = EXCLUDED.status;

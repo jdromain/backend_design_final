@@ -1,17 +1,15 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import twilio from "twilio";
 import { createLogger } from "@rezovo/logging";
+import { validateCanonicalTerminalTuple, type CanonicalTerminalTuple } from "@rezovo/core-types";
 import { env } from "../env";
 import { callStore, PhoneNumberRecord } from "../persistence/callStore";
-import { randomUUID } from "crypto";
+import { createHmac, randomUUID } from "crypto";
 import { isDefaultCompletionReason } from "../lib/callTaxonomy";
 
 const logger = createLogger({ service: "platform-api", module: "twilioRoutes" });
 
-type TerminalUpdate = {
-  status: "completed" | "failed" | "abandoned";
-  outcome: "handled" | "failed" | "abandoned";
-  endReason: "normal_completion" | "agent_end" | "error" | "timeout" | "caller_hangup";
+type TerminalUpdate = CanonicalTerminalTuple & {
   failureType?: string;
 };
 
@@ -29,52 +27,76 @@ function buildTwilioValidationUrl(request: FastifyRequest): string {
   return `${proto}://${host}${request.url}`;
 }
 
+function validateTwilioSignature(request: FastifyRequest): boolean {
+  if (!env.TWILIO_AUTH_TOKEN) return true;
+  const signature = firstHeader(request.headers["x-twilio-signature"]);
+  if (!signature) return false;
+  const url = buildTwilioValidationUrl(request);
+  return twilio.validateRequest(env.TWILIO_AUTH_TOKEN, signature, url, request.body as any);
+}
+
 export function mapTwilioTerminalStatus(
   callStatus: string | undefined,
   body: Record<string, string>
 ): TerminalUpdate | null {
   const status = (callStatus || "").toLowerCase();
+  let mapped: TerminalUpdate | null = null;
+
   switch (status) {
     case "completed":
-      return {
+      mapped = {
         status: "completed",
         outcome: "handled",
         // Twilio terminal callback is the strongest caller-side signal we get.
         // Realtime-core explicit reasons still win via canTwilioEnrichTerminal().
         endReason: "caller_hangup",
       };
+      break;
     case "busy":
-      return {
+      mapped = {
         status: "failed",
         outcome: "failed",
         endReason: "error",
         failureType: "busy",
       };
+      break;
     case "no-answer":
-      return {
+      mapped = {
         status: "failed",
         outcome: "failed",
         endReason: "timeout",
         failureType: "no-answer",
       };
+      break;
     case "failed":
-      return {
+      mapped = {
         status: "failed",
         outcome: "failed",
         endReason: "error",
         failureType: body.ErrorMessage || body.ErrorCode || "carrier_failed",
       };
+      break;
     case "canceled":
     case "cancelled":
-      return {
+      mapped = {
         status: "abandoned",
         outcome: "abandoned",
         endReason: "caller_hangup",
         failureType: "canceled",
       };
+      break;
     default:
-      return null;
+      mapped = null;
+      break;
   }
+
+  if (!mapped) return null;
+
+  const validated = validateCanonicalTerminalTuple(mapped);
+  if (!validated.valid) {
+    return null;
+  }
+  return { ...validated.normalized, failureType: mapped.failureType };
 }
 
 function hasTerminalLifecycleState(call: {
@@ -129,6 +151,12 @@ function canTwilioEnrichTerminal(call: {
 export function registerTwilioRoutes(app: FastifyInstance): void {
   app.post("/twilio/voice", async (request: FastifyRequest, reply: FastifyReply) => {
     try {
+      if (!validateTwilioSignature(request)) {
+        logger.warn("invalid Twilio signature (voice)", { url: buildTwilioValidationUrl(request) });
+        reply.status(403).send({ error: "invalid_signature" });
+        return;
+      }
+
       const body = request.body as Record<string, string>;
       const { CallSid, From, To, CallStatus, Direction } = body;
 
@@ -159,6 +187,7 @@ export function registerTwilioRoutes(app: FastifyInstance): void {
         direction: (Direction === "outbound-api" || Direction === "outbound-dial") ? "outbound" : "inbound",
         status: "initiated",
         startedAt: new Date().toISOString(),
+        terminalStatusSource: "unknown",
       });
       if (!inserted) {
         logger.error("failed to persist inbound call record", { callId, CallSid });
@@ -172,19 +201,28 @@ export function registerTwilioRoutes(app: FastifyInstance): void {
         payload: body as unknown as Record<string, unknown>,
       });
 
-      // Notify realtime-core about the incoming call
+      // Notify realtime-core about the incoming call (HMAC must match realtime-core INTERNAL_WEBHOOK_SECRET)
       const realtimeCoreUrl = env.REALTIME_CORE_URL;
       try {
+        const notifyBody = JSON.stringify({
+          callId,
+          did: To,
+          orgId: voiceNumber.orgId,
+          lob: voiceNumber.lob || "default",
+          callerNumber: From,
+        });
+        const notifyHeaders: Record<string, string> = {
+          "Content-Type": "application/json",
+        };
+        const webhookSecret = env.INTERNAL_WEBHOOK_SECRET?.trim();
+        if (webhookSecret) {
+          const sig = createHmac("sha256", webhookSecret).update(notifyBody, "utf8").digest("hex");
+          notifyHeaders["x-rezovo-signature"] = `sha256=${sig}`;
+        }
         const notifyResponse = await fetch(`${realtimeCoreUrl}/inbound-call`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            callId,
-            did: To,
-            orgId: voiceNumber.orgId,
-            lob: voiceNumber.lob || "default",
-            callerNumber: From,
-          }),
+          headers: notifyHeaders,
+          body: notifyBody,
         });
         if (!notifyResponse.ok) {
           logger.warn("failed to notify realtime-core", { status: notifyResponse.status, callId });
@@ -227,11 +265,8 @@ export function registerTwilioRoutes(app: FastifyInstance): void {
 
   app.post("/twilio/status", async (request: FastifyRequest, reply: FastifyReply) => {
     try {
-      const signature = request.headers["x-twilio-signature"] as string;
-      const url = buildTwilioValidationUrl(request);
-
-      if (env.TWILIO_AUTH_TOKEN && !twilio.validateRequest(env.TWILIO_AUTH_TOKEN, signature, url, request.body as any)) {
-        logger.warn("invalid Twilio signature", { url });
+      if (!validateTwilioSignature(request)) {
+        logger.warn("invalid Twilio signature (status)", { url: buildTwilioValidationUrl(request) });
         reply.status(403).send({ error: "invalid_signature" });
         return;
       }
@@ -298,6 +333,7 @@ export function registerTwilioRoutes(app: FastifyInstance): void {
             endReason: call.endReason,
             failureType: terminal.failureType,
             twilioCallSid: call.twilioCallSid,
+            terminalStatusSource: call.terminalStatusSource,
           });
           if (!updatedFailureType) {
             logger.warn("failed to persist Twilio failure-type enrichment", {
@@ -332,6 +368,7 @@ export function registerTwilioRoutes(app: FastifyInstance): void {
         durationSec: CallDuration ? parseInt(CallDuration, 10) : undefined,
         startedAt: call.startedAt,
         twilioCallSid: call.twilioCallSid,
+        terminalStatusSource: "carrier",
       });
       if (!terminalUpdated) {
         logger.warn("failed to persist Twilio terminal update", {

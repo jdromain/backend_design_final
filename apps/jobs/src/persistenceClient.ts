@@ -81,13 +81,15 @@ export const persistenceClient = {
     }
   },
 
-  async markDocumentFailed(orgId: string, docId: string): Promise<void> {
+  async markDocumentFailed(orgId: string, docId: string, lastError: string): Promise<void> {
+    const errText = (lastError ?? "").trim() || "unknown error";
+    const errStored = errText.length > 2000 ? errText.slice(0, 2000) : errText;
     try {
       await getPool().query(
         `UPDATE kb_documents
-         SET status = 'failed', updated_at = now()
+         SET status = 'failed', last_error = $3, updated_at = now()
          WHERE org_id = $1 AND doc_id = $2`,
-        [orgId, docId]
+        [orgId, docId, errStored]
       );
     } catch (err) {
       logger.warn("markDocumentFailed failed", { error: (err as Error).message, orgId, docId });

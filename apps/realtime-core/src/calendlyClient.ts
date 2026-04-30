@@ -1,11 +1,26 @@
+import { createHash } from "crypto";
 import { createLogger } from "@rezovo/logging";
 
 const logger = createLogger({ service: "realtime-core", module: "calendly" });
 
 const BASE_URL = "https://api.calendly.com";
 
-let cachedEventTypeUri: string | null = null;
-let cachedOrgUri: string | null = null;
+type TokenCache = { orgUri: string | null; eventTypeUri: string | null };
+const perTokenCache = new Map<string, TokenCache>();
+
+function tokenCacheKey(accessToken: string): string {
+  return createHash("sha256").update(accessToken).digest("hex").slice(0, 16);
+}
+
+function getTokenCache(accessToken: string): TokenCache {
+  const k = tokenCacheKey(accessToken);
+  let c = perTokenCache.get(k);
+  if (!c) {
+    c = { orgUri: null, eventTypeUri: null };
+    perTokenCache.set(k, c);
+  }
+  return c;
+}
 
 class CalendlyApiError extends Error {
   readonly status: number;
@@ -77,12 +92,14 @@ async function calendlyFetch<T>(
   options?: RequestInit
 ): Promise<T> {
   const url = path.startsWith("http") ? path : `${BASE_URL}${path}`;
+  const { signal, ...rest } = options ?? {};
   const res = await fetch(url, {
-    ...options,
+    ...rest,
+    signal: signal ?? AbortSignal.timeout(4_000),
     headers: {
       Authorization: `Bearer ${accessToken}`,
       "Content-Type": "application/json",
-      ...options?.headers,
+      ...rest?.headers,
     },
   });
 
@@ -105,16 +122,17 @@ async function calendlyFetch<T>(
  * Resolve the organization URI for this token. Cached after first call.
  */
 export async function resolveOrganizationUri(accessToken: string): Promise<string> {
-  if (cachedOrgUri) return cachedOrgUri;
+  const c = getTokenCache(accessToken);
+  if (c.orgUri) return c.orgUri;
 
   try {
     const userRes = await calendlyFetch<{ resource: { uri: string; current_organization: string } }>(
       "/users/me",
       accessToken
     );
-    cachedOrgUri = userRes.resource.current_organization;
-    logger.info("calendly org resolved", { org: cachedOrgUri });
-    return cachedOrgUri;
+    c.orgUri = userRes.resource.current_organization;
+    logger.info("calendly org resolved", { org: c.orgUri });
+    return c.orgUri;
   } catch (err) {
     const meta = getCalendlyErrorMeta(err);
     logger.error("resolveOrganizationUri failed", meta);
@@ -127,7 +145,8 @@ export async function resolveOrganizationUri(accessToken: string): Promise<strin
  * Cached after first resolution so subsequent calls are instant.
  */
 export async function resolveEventTypeUri(accessToken: string): Promise<string> {
-  if (cachedEventTypeUri) return cachedEventTypeUri;
+  const c = getTokenCache(accessToken);
+  if (c.eventTypeUri) return c.eventTypeUri;
 
   try {
     const orgUri = await resolveOrganizationUri(accessToken);
@@ -137,14 +156,14 @@ export async function resolveEventTypeUri(accessToken: string): Promise<string> 
       throw new Error("No active event types found on this Calendly account. Create one in Calendly settings.");
     }
 
-    cachedEventTypeUri = types[0].uri;
+    c.eventTypeUri = types[0].uri;
     logger.info("calendly event type auto-resolved", {
       name: types[0].name,
       duration: types[0].duration,
-      uri: cachedEventTypeUri,
+      uri: c.eventTypeUri,
       totalActive: types.length,
     });
-    return cachedEventTypeUri;
+    return c.eventTypeUri;
   } catch (err) {
     const meta = getCalendlyErrorMeta(err);
     logger.error("resolveEventTypeUri failed", meta);

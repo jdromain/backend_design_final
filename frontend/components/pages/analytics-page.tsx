@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useMemo, useEffect } from "react"
+import { useRouter } from "next/navigation"
 import { AnalyticsControlsBar, type AnalyticsFilters } from "@/components/analytics/analytics-controls-bar"
 import { AnalyticsKpiRow, getDefaultKpis } from "@/components/analytics/analytics-kpi-row"
 import { OutcomesOverTimeChart } from "@/components/analytics/outcomes-over-time-chart"
@@ -12,7 +13,6 @@ import { KpiRowSkeleton, ChartSkeleton } from "@/components/loading-skeleton"
 import { Card, CardContent, CardHeader } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
 import { useToast } from "@/hooks/use-toast"
-import { subDays } from "date-fns"
 
 import {
   getPhoneLines,
@@ -20,13 +20,14 @@ import {
   getAgentPerformance,
   getAnalyticsInsights,
 } from "@/lib/data/analytics"
-import { getDashboardOutcomesByRange, getSparklineData } from "@/lib/data/dashboard"
+import { getDashboardOutcomes, getSparklineData } from "@/lib/data/dashboard"
 
 interface AnalyticsPageProps {
   onNavigate?: (page: string, params?: Record<string, string>) => void
 }
 
 export function AnalyticsPage({ onNavigate }: AnalyticsPageProps) {
+  const router = useRouter()
   const { toast } = useToast()
   const [isLoading, setIsLoading] = useState(true)
   const [phoneLines, setPhoneLines] = useState<string[]>([])
@@ -47,34 +48,30 @@ export function AnalyticsPage({ onNavigate }: AnalyticsPageProps) {
   >([])
   const [hourlyData, setHourlyData] = useState<{ hour: string; calls: number }[]>([])
   const [heatmapData, setHeatmapData] = useState<{ day: string; hours: number[] }[]>([])
-  const [filters, setFilters] = useState<AnalyticsFilters>(() => {
-    const to = new Date()
-    return {
-      dateRange: { from: subDays(to, 7), to },
-      datePreset: "7d",
-      compareEnabled: false,
-      phoneLine: "all",
-      outcome: "all",
-      direction: "all",
-    }
+  const [filters, setFilters] = useState<AnalyticsFilters>({
+    dateRange: { from: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000), to: new Date() },
+    datePreset: "7d",
+    compareEnabled: false,
+    phoneLine: "all",
+    outcome: "all",
+    direction: "all",
   })
 
   useEffect(() => {
     let cancelled = false
-    setIsLoading(true)
-    const rangeFrom = filters.dateRange?.from ?? new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
-    const rangeTo = filters.dateRange?.to ?? new Date()
+    const from = filters.dateRange?.from ?? new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
+    const to = filters.dateRange?.to ?? new Date()
+    const range = {
+      start: from.toISOString(),
+      end: to.toISOString(),
+    }
     Promise.all([
       getPhoneLines(),
-      getToolsPerformance(),
-      getAgentPerformance(),
+      getToolsPerformance(range),
+      getAgentPerformance(range),
       getAnalyticsInsights(),
-      getDashboardOutcomesByRange({
-        from: rangeFrom,
-        to: rangeTo,
-        granularity: "day",
-      }),
-      getSparklineData(),
+      getDashboardOutcomes(range),
+      getSparklineData(range),
     ])
       .then(([lines, tools, agent, insightList, rawOutcomes, spark]) => {
         if (cancelled) return
@@ -143,7 +140,7 @@ export function AnalyticsPage({ onNavigate }: AnalyticsPageProps) {
     return () => {
       cancelled = true
     }
-  }, [filters.dateRange?.from, filters.dateRange?.to])
+  }, [filters.dateRange?.from, filters.dateRange?.to, filters.datePreset])
 
   const kpiData = useMemo(() => {
     const totalCalls = agentPerformance?.totalCalls ?? 0
@@ -190,7 +187,6 @@ export function AnalyticsPage({ onNavigate }: AnalyticsPageProps) {
 
   const handleFiltersChange = (newFilters: AnalyticsFilters) => {
     setFilters(newFilters)
-    toast({ title: "Filters Applied", description: "Analytics data updated" })
   }
 
   if (isLoading) {
@@ -243,7 +239,7 @@ export function AnalyticsPage({ onNavigate }: AnalyticsPageProps) {
       <OutcomesOverTimeChart
         data={outcomesSeries}
         compareEnabled={filters.compareEnabled}
-        onSegmentClick={(time) => handleDrilldown("time", time)}
+        onSegmentClick={(time, outcome) => handleDrilldown("time", time)}
       />
 
       {/* Volume + Insights */}
@@ -252,6 +248,7 @@ export function AnalyticsPage({ onNavigate }: AnalyticsPageProps) {
           <VolumeModule hourlyData={hourlyData} heatmapData={heatmapData} onCellClick={handleVolumeClick} />
         </div>
         <InsightsCard
+          description="Based on the last 7 days — not the date range selected above"
           insights={insights.map((insight) => ({
             type: insight.type as "regression" | "improvement" | "spike",
             title: insight.title,

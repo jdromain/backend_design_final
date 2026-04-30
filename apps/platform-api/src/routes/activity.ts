@@ -21,7 +21,7 @@ export function registerActivityRoutes(app: FastifyInstance) {
     );
 
     const notifications = await query(
-      `SELECT id, type, title AS message, timestamp
+      `SELECT id, type, title, message, timestamp
        FROM notifications
        WHERE org_id = $1
        ORDER BY timestamp DESC LIMIT 20`,
@@ -36,11 +36,11 @@ export function registerActivityRoutes(app: FastifyInstance) {
         message: e.type.replace(/_/g, " "),
         timestamp: e.timestamp,
       })),
-      ...notifications.rows.map((n: any) => ({
+      ...notifications.rows.map((n: { id: string; type: string; title?: string | null; message?: string | null; timestamp: string }) => ({
         id: n.id,
         severity: n.type === "error" ? "error" : n.type === "warning" ? "warning" : "info",
         type: "notification",
-        message: n.message,
+        message: (n.message && String(n.message).trim()) || (n.title && String(n.title).trim()) || "Notification",
         timestamp: n.timestamp,
       })),
     ].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())

@@ -1,10 +1,4 @@
-import {
-  AgentConfigSnapshot,
-  ConfigChangedPayload,
-  PhoneNumberConfig,
-  PlanSnapshot,
-  RouteType
-} from "@rezovo/core-types";
+import { AgentConfigSnapshot, PhoneNumberConfig, PlanSnapshot, RouteType } from "@rezovo/core-types";
 import { ConfigSnapshotResponse } from "./fetcher";
 
 type CacheState = {
@@ -42,12 +36,6 @@ export class ConfigCache {
     }
   }
 
-  applyConfigChanged(evt: ConfigChangedPayload & { org_id: string; lob?: string }): void {
-    // No-op placeholder; in a full implementation we'd fetch fresh config for the entity.
-    // Keep hook to allow future refresh logic.
-    return;
-  }
-
   getRoute(did: string, orgId: string, lob?: string): PhoneNumberConfig | undefined {
     return this.state.phoneNumbers.get(cacheKey(orgId, did, lob));
   }
@@ -60,10 +48,21 @@ export class ConfigCache {
     return this.state.plans.get(orgId);
   }
 
+  /** Replace only this org+lob in cache; do not evict other tenants' routes. */
   replaceFromSnapshot(snapshot: ConfigSnapshotResponse): void {
-    this.state.phoneNumbers.clear();
-    this.state.agents.clear();
-    this.state.plans.clear();
+    const lob = snapshot.lob ?? "default";
+    const orgPhonePrefix = `${snapshot.orgId}::${lob}::`;
+    for (const key of [...this.state.phoneNumbers.keys()]) {
+      if (key.startsWith(orgPhonePrefix)) {
+        this.state.phoneNumbers.delete(key);
+      }
+    }
+    for (const [id, agent] of [...this.state.agents.entries()]) {
+      if (agent.orgId === snapshot.orgId) {
+        this.state.agents.delete(id);
+      }
+    }
+    this.state.plans.delete(snapshot.orgId);
     this.hydrate({
       phoneNumbers: snapshot.phoneNumbers,
       agents: [snapshot.agentConfig],

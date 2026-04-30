@@ -17,6 +17,7 @@ import OpenAI from "openai";
 import { createLogger } from "@rezovo/logging";
 import { sessionStore } from "./sessionStore";
 import { env } from "../../env";
+import { VOICE_SAFER_REPHRASE } from "../../voice/callerPhrases";
 
 const logger = createLogger({ service: "realtime-core", module: "guardrails" });
 
@@ -97,7 +98,7 @@ export class GuardrailsEngine {
           return {
             blocked: true,
             action: "transfer",
-            message: "Let me connect you with someone who can help.",
+            message: "One moment—I'll have someone help you with that.",
             category: "severe_content",
           };
         }
@@ -146,7 +147,7 @@ export class GuardrailsEngine {
           return {
             blocked: true,
             action: "block",
-            message: "I apologize, let me rephrase that.",
+            message: VOICE_SAFER_REPHRASE,
             category: "pii_leak",
           };
         }
@@ -156,11 +157,12 @@ export class GuardrailsEngine {
       const moderation = await this.moderate(text);
       if (moderation && (moderation.violence || moderation["self-harm"] || moderation.sexual)) {
         logger.warn("output flagged by moderation", { callId });
-      return {
+        return {
           blocked: true,
           action: "block",
+          message: VOICE_SAFER_REPHRASE,
           category: "output_moderation",
-      };
+        };
       }
 
       logger.info("guardrail output check passed", { callId, action: "none" });

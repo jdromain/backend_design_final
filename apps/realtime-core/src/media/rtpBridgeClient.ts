@@ -48,11 +48,13 @@ export class RtpBridgeClient {
     this.authToken = opts?.authToken;
   }
 
-  async startSession(params: { callId: string; did: string; orgId: string }): Promise<MediaSession> {
-    if (this.mock) {
-      return MediaSession.mock(params);
-    }
-    // Placeholder: a real implementation would open a gRPC/HTTP stream here.
+  /**
+   * In-process call frame accounting (STT/TTS byte counters) for a call.
+   * The RTP WebSocket to the media bridge is opened via {@link RtpBridgeClient.connect `connect`};
+   * this method does not open transport — it always returns a mock `MediaSession` until a
+   * real session implementation exists.
+   */
+  async openMockMediaSession(params: { callId: string; did: string; orgId: string }): Promise<MediaSession> {
     return MediaSession.mock(params);
   }
 

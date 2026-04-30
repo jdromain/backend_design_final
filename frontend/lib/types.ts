@@ -33,10 +33,46 @@ export interface CallRecord {
   startedAt: string;
   endedAt?: string;
   durationMs?: number;
-  outcome: "handled" | "failed" | "abandoned" | "escalated";
+  outcome: "handled" | "failed" | "abandoned" | "escalated" | "transferred" | "unknown";
   endReason?: string;
   turnCount?: number;
   toolsUsed?: string[];
+  canonical?: {
+    status: string;
+    outcome: string;
+    endReason: string;
+    terminalStatusSource: string;
+    intentSource: string;
+    intentConfidenceBand: string;
+  };
+  classification?: {
+    status: string;
+    outcome: string;
+    endReason: string;
+    failureCategory: string;
+    intentCategory: "Billing" | "Support" | "Sales" | "Booking" | "Unknown";
+    intentConfidenceBand: string;
+    actionClass: "no_action" | "review_required" | "followup_required" | "escalate_human" | "engineering_investigate";
+    toolSummary: {
+      toolsUsedCount: number;
+      toolErrorsCount: number;
+      primaryFailedTool: string;
+      toolFailureClass: string;
+    };
+    provenance: {
+      terminalStatusSource: string;
+      intentSource: string;
+      labelVersion: number;
+    };
+  };
+  display?: {
+    status: string;
+    result: string;
+    reason: string;
+    intent: string;
+    tools: string;
+    failureType: string;
+  };
 }
 
 export interface AnalyticsAggregation {
@@ -100,4 +136,3 @@ export interface CallsQueryParams {
   outcome?: CallRecord["outcome"];
   phoneNumber?: string;
 }
-

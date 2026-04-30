@@ -20,7 +20,10 @@ export function getRedisClient(): RedisClient {
     throw new Error("REDIS_URL is not configured");
   }
   client = new Redis(url, {
-    lazyConnect: true
+    lazyConnect: true,
+    connectTimeout: 10_000,
+    enableOfflineQueue: false,
+    maxRetriesPerRequest: 1,
   });
   return client;
 }

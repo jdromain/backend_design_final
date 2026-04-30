@@ -23,9 +23,9 @@ export interface ChunkerOptions {
 }
 
 const DEFAULTS: Required<ChunkerOptions> = {
-  targetSize: 1600,  // ~400 tokens
-  overlap: 200,      // ~50 tokens overlap
-  minSize: 100,      // don't produce tiny fragments
+  targetSize: 1600, // ~400 tokens
+  overlap: 200, // ~50 tokens overlap
+  minSize: 100, // don't produce tiny fragments
 };
 
 /**
@@ -46,7 +46,7 @@ function splitSentences(text: string): string[] {
   const raw = normalized.split(/(?<=[.!?])\s+|(?:\n\s*\n)/);
 
   // Filter out empty strings and whitespace-only
-  return raw.map(s => s.trim()).filter(s => s.length > 0);
+  return raw.map((s) => s.trim()).filter((s) => s.length > 0);
 }
 
 /**
@@ -77,6 +77,26 @@ export function chunkText(text: string, options?: ChunkerOptions): TextChunk[] {
   while (sentenceIdx < sentences.length) {
     const sentence = sentences[sentenceIdx];
 
+    if (sentence.length > targetSize) {
+      if (currentChunk.length > 0) {
+        const chunkT = currentChunk.join(" ").trim();
+        if (chunkT.length >= minSize) {
+          chunks.push({ index: chunks.length, text: chunkT });
+        } else if (chunkT.length > 0 && chunks.length > 0) {
+          chunks[chunks.length - 1]!.text += " " + chunkT;
+        } else {
+          chunks.push({ index: chunks.length, text: chunkT });
+        }
+        currentChunk = [];
+        currentLength = 0;
+      }
+      for (let off = 0; off < sentence.length; off += targetSize) {
+        chunks.push({ index: chunks.length, text: sentence.slice(off, off + targetSize) });
+      }
+      sentenceIdx++;
+      continue;
+    }
+
     // If adding this sentence would exceed target size...
     if (currentLength + sentence.length > targetSize && currentChunk.length > 0) {
       // Emit the current chunk
@@ -89,13 +109,18 @@ export function chunkText(text: string, options?: ChunkerOptions): TextChunk[] {
       const overlapSentences: string[] = [];
       let overlapLen = 0;
       for (let i = currentChunk.length - 1; i >= 0 && overlapLen < overlap; i--) {
-        overlapSentences.unshift(currentChunk[i]);
-        overlapLen += currentChunk[i].length + 1; // +1 for space
+        overlapSentences.unshift(currentChunk[i]!);
+        overlapLen += currentChunk[i]!.length + 1; // +1 for space
       }
 
       currentChunk = overlapSentences;
       currentLength = overlapLen;
-      // Don't advance sentenceIdx — re-process this sentence in new chunk
+      const newJoin = currentChunk.length ? currentChunk.join(" ").trim() : "";
+      if (newJoin === chunkText) {
+        currentChunk = [];
+        currentLength = 0;
+      }
+      // Don't advance sentenceIdx — re-process this sentence in new chunk (unless we cleared a stall)
       continue;
     }
 

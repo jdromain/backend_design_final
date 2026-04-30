@@ -42,4 +42,9 @@ describe("mapTwilioTerminalStatus", () => {
     expect(mapped?.endReason).toBe("caller_hangup");
     expect(mapped?.failureType).toBe("canceled");
   });
+
+  it("returns null for non-terminal statuses", () => {
+    const mapped = mapTwilioTerminalStatus("in-progress", {});
+    expect(mapped).toBeNull();
+  });
 });

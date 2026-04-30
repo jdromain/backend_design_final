@@ -14,11 +14,14 @@ export type KbDocumentApiRow = {
   name: string
   type: KbDocument["type"]
   sizeBytes: number
-  status: "chunking" | "ready" | "failed"
+  status: "ingest_requested" | "chunking" | "ready" | "failed"
   chunks: number
   active?: boolean
   ingestedAt: string
   updatedAt: string
+  /** API may send from `last_error` column */
+  errorMessage?: string
+  last_error?: string
 }
 
 type IngestKnowledgeBody = {
@@ -60,10 +63,24 @@ function formatBytes(n: number): string {
   return `${(n / (1024 * 1024)).toFixed(1)} MB`
 }
 
-function mapRowToKbDocument(row: KbDocumentApiRow): KbDocument {
+function resolveKbErrorMessage(row: KbDocumentApiRow): string | undefined {
+  const fromApi = row.errorMessage ?? row.last_error
+  if (fromApi == null) return undefined
+  const s = String(fromApi).trim()
+  return s.length > 0 ? s : undefined
+}
+
+export function mapRowToKbDocument(row: KbDocumentApiRow): KbDocument {
+  const errMsg = resolveKbErrorMessage(row)
   const progress = row.status === "ready" ? 100 : row.status === "failed" ? 30 : 55
   const procStatus: ProcessingStatus =
-    row.status === "ready" ? "ready" : row.status === "failed" ? "failed" : "chunking"
+    row.status === "ready"
+      ? "ready"
+      : row.status === "failed"
+        ? "failed"
+        : row.status === "ingest_requested"
+          ? "ingest_requested"
+          : "chunking"
   return {
     id: row.id,
     name: row.name,
@@ -80,6 +97,7 @@ function mapRowToKbDocument(row: KbDocumentApiRow): KbDocument {
     usedByAgents: [],
     uploadedAt: new Date(row.ingestedAt),
     updatedAt: new Date(row.updatedAt),
+    ...(errMsg ? { errorMessage: errMsg } : {}),
   }
 }
 
@@ -170,6 +188,13 @@ export async function deleteKnowledgeDocument(docId: string): Promise<{
     }
     return { ok: false, errorMessage: "Delete failed" }
   }
+}
+
+export async function reingestKnowledgeDocument(docId: string): Promise<{ ok: boolean; chunks?: number }> {
+  if (useMocks) {
+    return { ok: true, chunks: Math.floor(Math.random() * 60) + 10 }
+  }
+  return post<{ ok: boolean; chunks?: number }>(appendOrgQuery(`/knowledge/documents/${encodeURIComponent(docId)}/reingest`), {})
 }
 
 export async function retrieveKnowledgePassages(params: {

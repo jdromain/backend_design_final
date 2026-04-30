@@ -36,6 +36,7 @@ import { Label } from "@/components/ui/label"
 import { CreateFollowUpModal } from "@/components/actions/create-follow-up-modal"
 import type { Contact } from "@/lib/actions-store"
 import { subDays } from "date-fns"
+import { mapInitialLegacyFilterToCanonicalOutcome, matchesCanonicalCallFilters } from "@/lib/call-labels"
 
 import {
   getCallHistory,
@@ -62,6 +63,8 @@ const defaultFilters: Filters = {
   phoneLine: "",
   direction: "",
   endReason: "",
+  failureCategory: "",
+  actionClass: "",
   durationBucket: "",
   toolUsed: "",
   toolErrorsOnly: false,
@@ -91,23 +94,23 @@ const BUILT_IN_VIEWS: BuiltInViewDef[] = [
   {
     id: "attention",
     label: "Needs attention",
-    description: "Failures and handoffs, last 7 days",
+    description: "Engineering investigate + escalate human, last 7 days",
     getState: () => {
       const to = new Date()
       return {
-        filters: { ...defaultFilters, results: ["systemFailed", "handoff"] },
+        filters: { ...defaultFilters, actionClass: "engineering_investigate" },
         dateRange: { from: subDays(to, 7), to },
       }
     },
   },
   {
     id: "completed",
-    label: "Completed only",
-    description: "Successfully completed calls, last 7 days",
+    label: "Handled only",
+    description: "Calls with outcome Handled, last 7 days",
     getState: () => {
       const to = new Date()
       return {
-        filters: { ...defaultFilters, results: ["completed"] },
+        filters: { ...defaultFilters, results: ["handled"] },
         dateRange: { from: subDays(to, 7), to },
       }
     },
@@ -124,29 +127,48 @@ const BUILT_IN_VIEWS: BuiltInViewDef[] = [
       }
     },
   },
+  {
+    id: "failed-tool-errors",
+    label: "Failed: Tool Error",
+    description: "Failed calls categorized as tool_error, last 7 days",
+    getState: () => {
+      const to = new Date()
+      return {
+        filters: { ...defaultFilters, results: ["failed"], failureCategory: "tool_error" },
+        dateRange: { from: subDays(to, 7), to },
+      }
+    },
+  },
+  {
+    id: "caller-hangups",
+    label: "Caller Hangups",
+    description: "Calls ended by caller_hangup, last 7 days",
+    getState: () => {
+      const to = new Date()
+      return {
+        filters: { ...defaultFilters, endReason: "caller_hangup" },
+        dateRange: { from: subDays(to, 7), to },
+      }
+    },
+  },
+  {
+    id: "followup-required",
+    label: "Needs Follow-up",
+    description: "Calls tagged followup_required, last 7 days",
+    getState: () => {
+      const to = new Date()
+      return {
+        filters: { ...defaultFilters, actionClass: "followup_required" },
+        dateRange: { from: subDays(to, 7), to },
+      }
+    },
+  },
 ]
 
 export interface HistoryPageProps {
   initialFilter?: string
   initialIntent?: string
   initialReason?: string
-}
-
-function mapInitialFilterToResults(filter: string): string[] {
-  if (filter === "failed") return ["systemFailed"]
-  if (filter === "handoff") return ["handoff"]
-  if (filter === "dropped") return ["dropped"]
-  if (filter === "completed") return ["completed"]
-  return []
-}
-
-function buildInitialFilters(initialFilter?: string, initialIntent?: string, initialReason?: string): Filters {
-  return {
-    ...defaultFilters,
-    ...(initialFilter ? { results: mapInitialFilterToResults(initialFilter) } : {}),
-    ...(initialIntent !== undefined && initialIntent !== "" ? { intent: initialIntent } : {}),
-    ...(initialReason !== undefined && initialReason !== "" ? { endReason: initialReason } : {}),
-  }
 }
 
 export function HistoryPage({ initialFilter, initialIntent, initialReason }: HistoryPageProps = {}) {
@@ -163,9 +185,34 @@ export function HistoryPage({ initialFilter, initialIntent, initialReason }: His
     return { from: subDays(to, 7), to }
   })
 
-  const [filters, setFilters] = useState<Filters>(() =>
-    buildInitialFilters(initialFilter, initialIntent, initialReason),
-  )
+  const [filters, setFilters] = useState<Filters>({
+    search: "",
+    results: [],
+    intent: "",
+    phoneLine: "",
+    direction: "",
+    endReason: "",
+    failureCategory: "",
+    actionClass: "",
+    durationBucket: "",
+    toolUsed: "",
+    toolErrorsOnly: false,
+    tags: [],
+  })
+
+  // Apply initial filter/intent/reason from dashboard deep links (e.g. Needs Attention, Insights)
+  useEffect(() => {
+    if (initialFilter || initialIntent || initialReason) {
+      setFilters((prev) => ({
+        ...prev,
+        ...(initialFilter ? { results: mapInitialLegacyFilterToCanonicalOutcome(initialFilter) } : {}),
+        ...(initialIntent !== undefined && initialIntent !== "" ? { intent: initialIntent } : {}),
+        ...(initialReason !== undefined && initialReason !== ""
+          ? { endReason: initialReason as Filters["endReason"] }
+          : {}),
+      }))
+    }
+  }, [initialFilter, initialIntent, initialReason])
 
   const [selectedCall, setSelectedCall] = useState<CallRecord | null>(null)
   const [drawerOpen, setDrawerOpen] = useState(false)
@@ -287,6 +334,12 @@ export function HistoryPage({ initialFilter, initialIntent, initialReason }: His
 
   const filteredCalls = useMemo(() => {
     return calls.filter((call) => {
+      if (!matchesCanonicalCallFilters(call, {
+        outcomes: filters.results,
+        endReason: filters.endReason,
+        failureCategory: filters.failureCategory,
+        actionClass: filters.actionClass,
+      })) return false
       if (filters.toolUsed && filters.toolUsed !== "all") {
         if (!call.toolsUsed.some((t) => t.name === filters.toolUsed)) return false
       }
@@ -301,13 +354,22 @@ export function HistoryPage({ initialFilter, initialIntent, initialReason }: His
 
       return true
     })
-  }, [calls, filters.toolUsed, filters.toolErrorsOnly, filters.durationBucket])
+  }, [
+    calls,
+    filters.results,
+    filters.endReason,
+    filters.failureCategory,
+    filters.actionClass,
+    filters.toolUsed,
+    filters.toolErrorsOnly,
+    filters.durationBucket,
+  ])
 
   const handleRemoveFilter = (key: keyof Filters, value?: string) => {
     if (key === "results" && value) {
       setFilters({
         ...filters,
-        results: filters.results.filter((r) => r !== value),
+        results: filters.results.filter((r) => r !== (value as Filters["results"][number])),
       })
     } else if (key === "toolErrorsOnly") {
       setFilters({ ...filters, toolErrorsOnly: false })
@@ -329,7 +391,7 @@ export function HistoryPage({ initialFilter, initialIntent, initialReason }: His
 
       if (format === "csv") {
         const csv = [
-          ["Call ID", "Date", "Caller", "Intent", "Direction", "Duration", "Result", "End Reason"].join(","),
+          ["Call ID", "Date", "Caller", "Intent Category", "Direction", "Duration", "Outcome", "End Reason", "Failure Category", "Action Class"].join(","),
           ...dataToExport.map((call) =>
             [
               call.callId,
@@ -338,8 +400,10 @@ export function HistoryPage({ initialFilter, initialIntent, initialReason }: His
               call.intent,
               call.direction,
               call.durationMs,
-              call.result,
-              call.endReason,
+              call.display?.result ?? call.result,
+              call.display?.reason ?? call.endReason ?? "Unknown",
+              call.classification?.failureCategory ?? "unknown",
+              call.classification?.actionClass ?? "no_action",
             ].join(","),
           ),
         ].join("\n")
@@ -621,6 +685,8 @@ export function HistoryPage({ initialFilter, initialIntent, initialReason }: His
                     phoneLine: "",
                     direction: "",
                     endReason: "",
+                    failureCategory: "",
+                    actionClass: "",
                     durationBucket: "",
                     toolUsed: "",
                     toolErrorsOnly: false,

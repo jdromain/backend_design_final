@@ -15,9 +15,11 @@ interface Insight {
 
 interface InsightsCardProps {
   insights: Insight[]
+  /** Explains the data window when it does not follow the page date picker (e.g. fixed rolling 7d from the API). */
+  description?: string
 }
 
-export function InsightsCard({ insights }: InsightsCardProps) {
+export function InsightsCard({ insights, description }: InsightsCardProps) {
   const getIcon = (type: Insight["type"]) => {
     switch (type) {
       case "regression":
@@ -48,13 +50,20 @@ export function InsightsCard({ insights }: InsightsCardProps) {
 
   return (
     <Card>
-      <CardHeader className="flex flex-row items-center gap-2 space-y-0 pb-3">
-        <Lightbulb className="h-5 w-5 text-amber-500" />
-        <CardTitle className="text-base">Insights</CardTitle>
+      <CardHeader className="space-y-1 pb-3">
+        <div className="flex flex-row items-center gap-2">
+          <Lightbulb className="h-5 w-5 text-amber-500" />
+          <CardTitle className="text-base">Insights</CardTitle>
+        </div>
+        {description ? (
+          <p className="text-xs text-muted-foreground pl-7">{description}</p>
+        ) : null}
       </CardHeader>
       <CardContent className="space-y-2">
         {insights.length === 0 ? (
-          <p className="text-sm text-muted-foreground py-4 text-center">No insights for this period</p>
+          <p className="text-sm text-muted-foreground py-4 text-center">
+            {description ? "No insights in that window" : "No insights for this period"}
+          </p>
         ) : (
           insights.map((insight, index) => {
             const Icon = getIcon(insight.type)

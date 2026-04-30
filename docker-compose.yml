@@ -40,6 +40,8 @@ services:
       - ./database/002_ui_tables.sql:/docker-entrypoint-initdb.d/02_ui_tables.sql:ro
       - ./database/004_call_failure_type.sql:/docker-entrypoint-initdb.d/03_call_failure_type.sql:ro
       - ./database/006_org_id_canonical_cutover.sql:/docker-entrypoint-initdb.d/04_org_id_canonical_cutover.sql:ro
+      - ./database/008_canonical_call_labeling.sql:/docker-entrypoint-initdb.d/05_canonical_call_labeling.sql:ro
+      - ./database/009_call_classification.sql:/docker-entrypoint-initdb.d/06_call_classification.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U rezovo"]
       interval: 5s
@@ -88,6 +90,8 @@ services:
       DB_SSL: "false"
       DB_POOL_MAX: "5"
       KAFKA_ENABLED: "false"
+      # Avoid OOM on boot when kb_documents has huge rows; re-enable in .env.docker if needed.
+      KB_RECOVER_STUCK_ON_STARTUP: "false"
       EVENT_BUS_IMPL: redis
       # Shared internal service bearer token (realtime-core -> platform-api).
       # Keep identical between platform-api and realtime-core.
@@ -189,6 +193,7 @@ services:
       LOG_LEVEL: info
       # Must match platform-api INTERNAL_SERVICE_TOKEN for protected internal routes.
       INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-rezovo-local-internal-token}
+      REALTIME_BOOTSTRAP_ORG_ID: org_3BwrvQseDzqwwsLvrisY2DNJwyK
     env_file:
       - .env.docker
     healthcheck:

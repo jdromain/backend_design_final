@@ -1,8 +1,6 @@
 "use client";
 
 import { useState, useEffect, useRef, useMemo } from "react";
-import Link from "next/link";
-import { subDays } from "date-fns";
 import { isClerkConfigured } from "@/lib/clerk-runtime";
 import {
   Phone,
@@ -33,6 +31,7 @@ import { useAppNavigate } from "@/hooks/use-app-navigate";
 import {
   getDashboardOutcomesByRange,
   getDashboardCalls,
+  getDashboardSummary,
   getDashboardActivity,
   getSparklineData,
   getSystemHealth,
@@ -42,8 +41,10 @@ import {
   getTopFailureReasons,
   getOnboardingSteps,
 } from "@/lib/data/dashboard";
+import type { DashboardKpiSummary } from "@/types/dashboard-kpi";
 import { waitForAuthReady } from "@/lib/api-client";
 import { sparklinePercentDelta } from "@/lib/sparkline-delta";
+import { formatAgentSpeechLatencyHeadline } from "@/lib/dashboard-kpi-format";
 
 /**
  * Main UI dashboard body from `Backend-design-mainui` `app/page.tsx`, adapted
@@ -54,8 +55,9 @@ export function DashboardHomePage() {
   const { toast } = useToast();
 
   const [dateRange, setDateRange] = useState<DateRangeValue>(() => {
-    const to = new Date();
-    return { from: subDays(to, 7), to };
+    const now = new Date();
+    now.setHours(0, 0, 0, 0);
+    return { from: now, to: new Date() };
   });
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [outcomesGranularity, setOutcomesGranularity] = useState<"hour" | "day" | "week">("hour");
@@ -68,6 +70,7 @@ export function DashboardHomePage() {
   const [dashboardError, setDashboardError] = useState<string | null>(null);
   const [fetchKey, setFetchKey] = useState(0);
   const clerkRetryRef = useRef(0);
+  const prevDateRangeKeyRef = useRef<string | null>(null);
 
   type OutcomesData = Awaited<ReturnType<typeof getDashboardOutcomesByRange>>;
   type CallsData = Awaited<ReturnType<typeof getDashboardCalls>>;
@@ -86,6 +89,7 @@ export function DashboardHomePage() {
     handoff: [],
     dropped: [],
     latency: [],
+    activeNow: 0,
   });
   const [systemHealth, setSystemHealth] = useState<SystemHealthData | null>(null);
   const [incidents, setIncidents] = useState<Incident[]>([]);
@@ -93,6 +97,7 @@ export function DashboardHomePage() {
   const [topHandoffReasons, setTopHandoffReasons] = useState<InsightItem[]>([]);
   const [topFailureReasons, setTopFailureReasons] = useState<InsightItem[]>([]);
   const [onboardingSteps, setOnboardingSteps] = useState<OnboardingStep[]>([]);
+  const [kpiSummary, setKpiSummary] = useState<DashboardKpiSummary | null>(null);
 
   useEffect(() => {
     const onUnauthorized = () => {
@@ -122,22 +127,22 @@ export function DashboardHomePage() {
     return () => window.removeEventListener("rezovo:unauthorized", onUnauthorized);
   }, []);
 
-  useEffect(() => {
-    const onTemplateMissing = (event: Event) => {
-      const custom = event as CustomEvent<{ template?: string }>;
-      const template = custom.detail?.template ?? "platform-api";
-      toast({
-        title: "Clerk JWT template missing",
-        description: `Create Clerk JWT template "${template}" so API calls can use a scoped token. Using fallback session token for now.`,
-        variant: "destructive",
-      });
-    };
-    window.addEventListener("rezovo:clerk-template-missing", onTemplateMissing);
-    return () => window.removeEventListener("rezovo:clerk-template-missing", onTemplateMissing);
-  }, [toast]);
+  const dateRangeStartIso = dateRange.from?.toISOString();
+  const dateRangeEndIso = dateRange.to?.toISOString();
+  const dateRangeKey = `${dateRangeStartIso ?? ""}\0${dateRangeEndIso ?? ""}`;
 
   useEffect(() => {
     let cancelled = false;
+
+    if (prevDateRangeKeyRef.current !== null && prevDateRangeKeyRef.current !== dateRangeKey) {
+      setDashboardLoading(true);
+    }
+    prevDateRangeKeyRef.current = dateRangeKey;
+
+    const range = {
+      start: dateRangeStartIso,
+      end: dateRangeEndIso,
+    };
 
     waitForAuthReady().then(() => {
       if (cancelled) return;
@@ -148,23 +153,25 @@ export function DashboardHomePage() {
           granularity: outcomesGranularity,
         }),
         getDashboardCalls({
-          from: dateRange.from,
-          to: dateRange.to,
+          start: dateRangeStartIso,
+          end: dateRangeEndIso,
           limit: 500,
         }),
+        getDashboardSummary(range),
         getDashboardActivity(),
-        getSparklineData(),
+        getSparklineData(range),
         getSystemHealth(),
         getIncidents(),
-        getTopIntents(),
-        getTopHandoffReasons(),
-        getTopFailureReasons(),
+        getTopIntents(range),
+        getTopHandoffReasons(range),
+        getTopFailureReasons(range),
         getOnboardingSteps(),
       ])
         .then(
           ([
             outcomes,
             calls,
+            summary,
             activity,
             spark,
             health,
@@ -177,6 +184,7 @@ export function DashboardHomePage() {
             if (cancelled) return;
             setOutcomesData(outcomes);
             setCallsData(calls);
+            setKpiSummary(summary);
             setActivityData(activity);
             setSparklineData(spark);
             setSystemHealth(health);
@@ -186,6 +194,7 @@ export function DashboardHomePage() {
             setTopFailureReasons(failures as InsightItem[]);
             setOnboardingSteps(steps as OnboardingStep[]);
             setDashboardLoading(false);
+            setLastUpdated(new Date());
           }
         )
         .catch((err) => {
@@ -198,41 +207,45 @@ export function DashboardHomePage() {
     return () => {
       cancelled = true;
     };
-  }, [fetchKey, dateRange.from, dateRange.to, outcomesGranularity]);
+  }, [fetchKey, dateRangeKey, dateRangeStartIso, dateRangeEndIso, outcomesGranularity]);
 
   useEffect(() => {
     if (autoRefresh) {
       const interval = setInterval(() => {
-        setLastUpdated(new Date());
         setFetchKey((k) => k + 1);
       }, 30000);
       return () => clearInterval(interval);
     }
   }, [autoRefresh]);
 
+  /** Headline KPIs: `GET /analytics/summary` (not capped). Sparklines still from `/analytics/sparklines`. */
   const analytics = useMemo(() => {
-    const total = callsData.length;
-    const completed = callsData.filter((c) => c.result === "completed").length;
-    const failed = callsData.filter((c) => c.result === "systemFailed").length;
-    const handoff = callsData.filter((c) => c.result === "handoff").length;
-    const dropped = callsData.filter((c) => c.result === "dropped").length;
-    const lastActive = sparklineData.active.length
-      ? sparklineData.active[sparklineData.active.length - 1]
-      : 0;
-    const lastLat = sparklineData.latency.length
-      ? sparklineData.latency[sparklineData.latency.length - 1]
-      : 0;
+    if (!kpiSummary) {
+      return {
+        totalCalls: 0,
+        activeNow: 0,
+        handledRate: 0,
+        failureRate: 0,
+        failedCount: 0,
+        escalationRate: 0,
+        dropRate: 0,
+        avgLatencyLabel: "—" as const,
+        avgLatencyHasData: false,
+      };
+    }
+    const s = kpiSummary;
     return {
-      totalCalls: total,
-      activeNow: lastActive,
-      handledRate: total ? Math.round((completed / total) * 100) : 0,
-      failureRate: total ? Math.round((failed / total) * 100) : 0,
-      failedCount: failed,
-      escalationRate: total ? Math.round((handoff / total) * 100) : 0,
-      dropRate: total ? Math.round((dropped / total) * 100) : 0,
-      p95Latency: Math.round(lastLat),
+      totalCalls: s.totalCalls,
+      activeNow: s.activeNow,
+      handledRate: s.completionRate,
+      failureRate: s.failureRate,
+      failedCount: s.failedCalls,
+      escalationRate: s.handoffRate,
+      dropRate: s.dropRate,
+      avgLatencyLabel: formatAgentSpeechLatencyHeadline(s),
+      avgLatencyHasData: s.avgTimeToAgentSpeechHasData,
     };
-  }, [callsData, sparklineData]);
+  }, [kpiSummary]);
 
   /** % change vs prior hour bucket from sparklines (omitted when fewer than 2 points or prior bucket is 0) */
   const kpiTrendPct = useMemo(
@@ -253,7 +266,7 @@ export function DashboardHomePage() {
     return [{ time: "—", completed: 0, handoff: 0, dropped: 0, systemFailed: 0 }];
   }, [outcomesData]);
 
-  const isNewUser = callsData.length === 0;
+  const isNewUser = (kpiSummary?.totalCalls ?? 0) === 0;
 
   const handleKpiClick = (kpi: string) => {
     setActiveKpi(activeKpi === kpi ? null : kpi);
@@ -291,9 +304,9 @@ export function DashboardHomePage() {
         <p className="text-destructive">{dashboardError}</p>
         <p className="text-sm text-muted-foreground">
           Confirm platform-api is running and you are signed in with Clerk (
-          <Link href="/sign-in" className="underline">
+          <a href="/sign-in" className="underline">
             sign in
-          </Link>
+          </a>
           ).
         </p>
       </div>
@@ -361,7 +374,7 @@ export function DashboardHomePage() {
                 tooltip="Total number of calls handled by your AI agent in the selected period"
               />
               <KpiTile
-                title="Active Now"
+                title="Active now"
                 value={analytics.activeNow}
                 change={kpiTrendPct.active}
                 icon={Users}
@@ -370,7 +383,7 @@ export function DashboardHomePage() {
                 pulse
                 isActive={activeKpi === "active"}
                 onClick={() => handleKpiClick("active")}
-                tooltip="Number of calls currently being handled by your AI agent"
+                tooltip="Non-terminal calls in the last 6h (in_progress / ringing / initiated). The sparkline is ‘in progress’ per hourly bucket, not the same as this live count."
               />
               <KpiTile
                 title="Completion Rate"
@@ -381,7 +394,7 @@ export function DashboardHomePage() {
                 color="success"
                 isActive={activeKpi === "completed"}
                 onClick={() => handleKpiClick("completed")}
-                tooltip="Percentage of calls successfully resolved without human intervention"
+                tooltip="Handled calls as a share of all calls that started in the selected range (not ‘ended in range’). Open or non-handled calls in that range lower this rate."
               />
               <KpiTile
                 title="Handoff Rate"
@@ -421,8 +434,8 @@ export function DashboardHomePage() {
                 tooltip="Percentage of calls that failed due to system errors (API timeouts, tool failures)"
               />
               <KpiTile
-                title="P95 Latency"
-                value={`${analytics.p95Latency}ms`}
+                title="Avg time to agent speech"
+                value={analytics.avgLatencyLabel}
                 change={kpiTrendPct.latency}
                 invertTrendColors
                 icon={Gauge}
@@ -430,7 +443,12 @@ export function DashboardHomePage() {
                 color="default"
                 isActive={activeKpi === "latency"}
                 onClick={() => handleKpiClick("latency")}
-                tooltip="95th percentile response time from your AI agent (lower is better)"
+                tooltip={
+                  "Average milliseconds from call start to the first agent_spoke event, over calls in the selected range that have that event. " +
+                  "The sparkline uses hourly buckets (may differ slightly). " +
+                  "This is not turn-by-turn response latency. Lower is better. " +
+                  (analytics.avgLatencyHasData ? "" : "“—” means no agent_spoke data in this range.")
+                }
               />
             </div>
           )}
@@ -477,12 +495,17 @@ export function DashboardHomePage() {
 
         <ErrorBoundary>
           <div className="grid gap-4 md:grid-cols-3">
+            <p className="text-xs text-muted-foreground md:col-span-3 -mt-1">
+              Top intents, handoff reasons, and failure reasons use the same date range as the controls above. Intent
+              counts only include calls with a stored classified intent (null intent is excluded, not shown as
+              “Unknown” in this card).
+            </p>
             <InsightsCard
               title="Top Intents"
               icon={<MessageSquare className="h-4 w-4" />}
               items={topIntents}
               onItemClick={(item) => handleNavigate("history", { intent: item.label })}
-              emptyMessage="No intent data yet"
+              emptyMessage="No calls with stored intent in this range"
             />
             <InsightsCard
               title="Top Handoff Reasons"
@@ -513,12 +536,19 @@ export function DashboardHomePage() {
           ) : isNewUser ? (
             <OnboardingChecklist steps={onboardingSteps} onAction={handleNavigate} />
           ) : (
-            <CallsTable
-              calls={callsData}
-              activeQuickFilter={quickFilter}
-              onQuickFilterChange={setQuickFilter}
-              onCallClick={handleCallClick}
-            />
+            <div className="space-y-2">
+              <p className="text-xs text-muted-foreground">
+                Recent calls: up to 100 rows (newest first) for the selected range. Use Call History
+                for the full list. Totals in the KPI row come from server aggregates, not this
+                table.
+              </p>
+              <CallsTable
+                calls={callsData}
+                activeQuickFilter={quickFilter}
+                onQuickFilterChange={setQuickFilter}
+                onCallClick={handleCallClick}
+              />
+            </div>
           )}
         </ErrorBoundary>
 

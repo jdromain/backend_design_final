@@ -87,11 +87,13 @@ export function CallInspectorDrawer({
     at_risk: { label: "At Risk", color: "bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400" },
     handoff_requested: { label: "Handoff", color: "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400" },
     error: { label: "Error", color: "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400" },
+    unknown: { label: "Unknown", color: "bg-zinc-100 text-zinc-700 dark:bg-zinc-900/30 dark:text-zinc-400" },
   }
 
   // Recommended intervention logic
   const getRecommendedIntervention = () => {
-    if (call.state === "handoff_requested") {
+    const actionClass = call.classification?.actionClass
+    if (actionClass === "escalate_human" || call.state === "handoff_requested") {
       return {
         type: "handoff",
         title: "Customer Requested Handoff",
@@ -101,7 +103,7 @@ export function CallInspectorDrawer({
         actionFn: onTransfer,
       }
     }
-    if (call.state === "at_risk" || call.riskFlags.includes("silence_detected")) {
+    if (actionClass === "followup_required" || call.state === "at_risk" || call.riskFlags.includes("silence_detected")) {
       return {
         type: "at_risk",
         title: "Long Silence Detected",
@@ -111,7 +113,7 @@ export function CallInspectorDrawer({
         actionFn: onCreateAction,
       }
     }
-    if (call.state === "error" || call.riskFlags.includes("tool_error")) {
+    if (actionClass === "engineering_investigate" || call.state === "error" || call.riskFlags.includes("tool_error")) {
       return {
         type: "error",
         title: "Tool Failure Detected",
@@ -258,6 +260,22 @@ export function CallInspectorDrawer({
               ))}
             </div>
           )}
+        </div>
+
+        <div className="rounded-lg border p-4 space-y-2">
+          <h4 className="text-sm font-medium">Classification Summary</h4>
+          <div className="grid grid-cols-2 gap-2 text-xs text-muted-foreground">
+            <div>Status: <span className="text-foreground">{call.classification?.status ?? call.canonical?.status ?? "unknown"}</span></div>
+            <div>Outcome: <span className="text-foreground">{call.classification?.outcome ?? call.canonical?.outcome ?? "unknown"}</span></div>
+            <div>End Reason: <span className="text-foreground">{call.classification?.endReason ?? call.canonical?.endReason ?? "unknown"}</span></div>
+            <div>Failure Category: <span className="text-foreground">{call.classification?.failureCategory ?? "unknown"}</span></div>
+            <div>Action Class: <span className="text-foreground">{call.classification?.actionClass ?? "no_action"}</span></div>
+            <div>Intent: <span className="text-foreground">{call.classification?.intentCategory ?? call.intent ?? "Unknown"}</span></div>
+            <div>Tools Used: <span className="text-foreground">{call.classification?.toolSummary?.toolsUsedCount ?? call.tools.length}</span></div>
+            <div>Tool Errors: <span className="text-foreground">{call.classification?.toolSummary?.toolErrorsCount ?? call.canonical?.toolErrors ?? 0}</span></div>
+            <div>Source: <span className="text-foreground">{call.classification?.provenance?.terminalStatusSource ?? call.canonical?.terminalStatusSource ?? "unknown"}</span></div>
+            <div>Label Version: <span className="text-foreground">{call.classification?.provenance?.labelVersion ?? 1}</span></div>
+          </div>
         </div>
 
         <Separator />

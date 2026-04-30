@@ -27,7 +27,8 @@ interface DocumentDrawerProps {
   onReprocess: (doc: KbDocument) => void
   onDownload: (doc: KbDocument) => void
   onDelete: (doc: KbDocument) => void
-  allowReprocess?: boolean
+  /** Live API: preview/logs are not wired; reprocess needs re-upload; download is not available */
+  isLiveApi?: boolean
 }
 
 const PROCESSING_STEPS: { status: ProcessingStatus; label: string }[] = [
@@ -68,7 +69,7 @@ export function DocumentDrawer({
   onReprocess,
   onDownload,
   onDelete,
-  allowReprocess = true,
+  isLiveApi = false,
 }: DocumentDrawerProps) {
   if (!document) return null
 
@@ -114,6 +115,16 @@ export function DocumentDrawer({
 
         <ScrollArea className="h-[calc(100vh-120px)] pr-4 mt-6">
           <div className="space-y-6">
+            {isLiveApi && (
+              <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-sm" role="note">
+                <p className="font-medium">What you see in live mode</p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  The processing timeline and chunk stats are approximated in the UI. Your text is still ingested and
+                  usable for retrieval. To replace content, re-upload. File download is not available from the API yet.
+                </p>
+              </div>
+            )}
+
             {/* Overview */}
             <Card>
               <CardHeader className="pb-3">
@@ -208,18 +219,20 @@ export function DocumentDrawer({
                     <span className="text-sm text-muted-foreground">Token Estimate</span>
                     <span className="text-sm font-mono">~{document.tokenEstimate.toLocaleString()}</span>
                   </div>
-                  <div className="flex justify-between">
-                    <span className="text-sm text-muted-foreground">Avg Chunk Size</span>
-                    <span className="text-sm font-mono">
-                      ~{Math.round(document.tokenEstimate / document.chunks)} tokens
-                    </span>
-                  </div>
+                  {document.chunks > 0 && (
+                    <div className="flex justify-between">
+                      <span className="text-sm text-muted-foreground">Avg Chunk Size</span>
+                      <span className="text-sm font-mono">
+                        ~{Math.round((document.tokenEstimate || 0) / document.chunks)} tokens
+                      </span>
+                    </div>
+                  )}
                 </CardContent>
               </Card>
             )}
 
             {/* Text Preview */}
-            {document.status === "ready" && (
+            {document.status === "ready" && !isLiveApi && (
               <Card>
                 <CardHeader className="pb-3">
                   <CardTitle className="text-sm font-medium">Content Preview</CardTitle>
@@ -233,6 +246,7 @@ export function DocumentDrawer({
             )}
 
             {/* Processing Logs */}
+            {!isLiveApi && (
             <Card>
               <CardHeader className="pb-3">
                 <CardTitle className="text-sm font-medium">Processing Logs</CardTitle>
@@ -259,18 +273,27 @@ export function DocumentDrawer({
                 </div>
               </CardContent>
             </Card>
+            )}
 
             <Separator />
 
             {/* Actions */}
             <div className="flex flex-col gap-2">
-              {allowReprocess && (
-                <Button onClick={() => onReprocess(document)} variant="outline">
-                  <RefreshCw className="mr-2 h-4 w-4" />
-                  Reprocess Document
-                </Button>
-              )}
-              <Button onClick={() => onDownload(document)} variant="outline">
+              <Button
+                onClick={() => onReprocess(document)}
+                variant="outline"
+                disabled={isLiveApi}
+                title={isLiveApi ? "Re-upload the file to run ingestion again" : undefined}
+              >
+                <RefreshCw className="mr-2 h-4 w-4" />
+                Reprocess Document
+              </Button>
+              <Button
+                onClick={() => onDownload(document)}
+                variant="outline"
+                disabled={isLiveApi}
+                title={isLiveApi ? "Original file is not available for download from the API" : undefined}
+              >
                 <Download className="mr-2 h-4 w-4" />
                 Download Original
               </Button>

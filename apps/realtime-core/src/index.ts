@@ -8,11 +8,12 @@ import { ConfigChangedPayload, TypedEventEnvelope } from "@rezovo/core-types";
 import { setDefaultOpenAIKey } from "@openai/agents";
 
 import { ConfigCache, makeDefaultSnapshot } from "./config-cache/cache";
-import { fetchConfigSnapshot } from "./config-cache/fetcher";
+import { refreshConfigCacheForOrg } from "./config-cache/refreshConfig";
 import { EventPublisher } from "./events/eventPublisher";
 import { BillingQuotaClient } from "./billingClient";
 import { RtpBridgeClient } from "./media/rtpBridgeClient";
 import { CallController } from "./telephony/callController";
+import { createInboundConcurrencyGate } from "./telephony/inboundConcurrencyGate";
 import { startWebhookServer, WEBHOOK_LISTEN_PORT } from "./webhookServer";
 
 const logger = createLogger({ service: "realtime-core", module: "bootstrap" });
@@ -93,8 +94,7 @@ async function bootstrap(): Promise<void> {
   // Bootstrap cache from platform-api; fall back to default snapshot if unavailable.
   logger.info("hydrating config cache from platform-api...", { url: env.PLATFORM_API_URL });
   try {
-    const snapshot = await fetchConfigSnapshot(env.REALTIME_BOOTSTRAP_ORG_ID, "default");
-    cache.replaceFromSnapshot(snapshot);
+    const snapshot = await refreshConfigCacheForOrg(cache, env.REALTIME_BOOTSTRAP_ORG_ID, "default");
 
     // Log what we got
     const phoneCount = snapshot.phoneNumbers?.length ?? 0;
@@ -105,7 +105,7 @@ async function bootstrap(): Promise<void> {
       agentConfigId: snapshot.agentConfig?.id,
       llmModel: snapshot.agentConfig?.llmProfileId,
       phoneNumbers: phoneCount,
-      phones: snapshot.phoneNumbers?.map((p: any) => p.did) ?? [],
+      phones: snapshot.phoneNumbers?.map((p: { did: string }) => p.did) ?? [],
     });
 
     if (phoneCount === 0) {
@@ -119,8 +119,7 @@ async function bootstrap(): Promise<void> {
   await bus.subscribe("ConfigChanged", async (event: TypedEventEnvelope<"ConfigChanged">) => {
     const payload = event.payload as ConfigChangedPayload;
     try {
-      const snapshot = await fetchConfigSnapshot(event.org_id, payload.lob ?? "default");
-      cache.replaceFromSnapshot(snapshot);
+      const snapshot = await refreshConfigCacheForOrg(cache, event.org_id, payload.lob ?? "default");
       logger.info("refreshed cache from ConfigChanged", {
         event_id: event.event_id,
         lob: snapshot.lob,
@@ -142,7 +141,9 @@ async function bootstrap(): Promise<void> {
     elevenVoiceId: env.ELEVEN_VOICE_ID || undefined,
   });
 
-  await startWebhookServer(callController);
+  const gated = createInboundConcurrencyGate(callController, env.CONCURRENCY_LIMIT) as CallController;
+
+  await startWebhookServer(gated);
 
   logger.info("─── realtime-core READY ───", {
     webhookPort: WEBHOOK_LISTEN_PORT,
