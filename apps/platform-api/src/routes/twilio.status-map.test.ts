@@ -7,7 +7,7 @@ describe("mapTwilioTerminalStatus", () => {
     expect(mapped).toEqual({
       status: "completed",
       outcome: "handled",
-      endReason: "caller_hangup",
+      endReason: "unknown",
     });
   });
 

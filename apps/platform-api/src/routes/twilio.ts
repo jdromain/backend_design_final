@@ -47,9 +47,9 @@ export function mapTwilioTerminalStatus(
       mapped = {
         status: "completed",
         outcome: "handled",
-        // Twilio terminal callback is the strongest caller-side signal we get.
-        // Realtime-core explicit reasons still win via canTwilioEnrichTerminal().
-        endReason: "caller_hangup",
+        // Twilio "completed" confirms terminal completion, but does not reliably
+        // identify who ended the call. Keep canonical-compatible unknown.
+        endReason: "unknown",
       };
       break;
     case "busy":
