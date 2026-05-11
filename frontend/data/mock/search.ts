@@ -9,6 +9,7 @@ export const mockPages = [
   { id: "analytics", label: "Analytics", route: "analytics", icon: "TrendingUp" },
   { id: "agents", label: "AI Agents", route: "agents", icon: "Bot" },
   { id: "knowledge", label: "Knowledge Base", route: "knowledge", icon: "BookOpen" },
+  { id: "calendar", label: "Calendar", route: "calendar", icon: "CalendarDays" },
   { id: "integrations", label: "Integrations", route: "integrations", icon: "Puzzle" },
   { id: "billing", label: "Billing", route: "billing", icon: "CreditCard" },
   { id: "settings", label: "Settings", route: "settings", icon: "Settings" },

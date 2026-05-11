@@ -4,6 +4,7 @@ import { FastifyReply, FastifyRequest } from "fastify";
 import { createEventEnvelope, EventBusClient } from "@rezovo/event-bus";
 import { createLogger } from "@rezovo/logging";
 import { PersistenceStore } from "../persistence/store";
+import { query } from "../persistence/dbClient";
 
 const logger = createLogger({ service: "platform-api", module: "webhooks" });
 const persistence = new PersistenceStore();
@@ -11,7 +12,7 @@ const CALENDLY_SECRET = process.env.CALENDLY_WEBHOOK_SECRET;
 
 type CalendlyWebhook = {
   event: string;
-  payload: {
+  payload: Record<string, unknown> & {
     event_type: string;
     name?: string;
     start_time?: string;
@@ -39,6 +40,14 @@ export async function calendlyWebhookHandler(
   }
 
   const normalized = normalizeCalendlyEvent(body);
+  await applyCalendlyBookingSync(normalized.externalId, normalized.status, body.payload).catch((error) => {
+    logger.warn("calendar webhook sync failed", {
+      externalId: normalized.externalId,
+      status: normalized.status,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
+
   const envelope = createEventEnvelope({
     eventType: "AppointmentUpdated",
     orgId: request.headers["x-org-id"]?.toString() ?? "unknown-organization",
@@ -85,8 +94,13 @@ function normalizeCalendlyEvent(body: CalendlyWebhook): {
   metadata: Record<string, unknown>;
 } {
   const status = mapStatus(body.event);
+  const payload = body.payload as Record<string, unknown>;
+  const eventUri =
+    asString((payload.event as Record<string, unknown> | undefined)?.uri) ??
+    asString((payload.scheduled_event as Record<string, unknown> | undefined)?.uri) ??
+    body.payload.event_type;
   return {
-    externalId: body.payload.event_type,
+    externalId: eventUri,
     status,
     startsAt: body.payload.start_time,
     endsAt: body.payload.end_time,
@@ -108,3 +122,66 @@ function mapStatus(event: string): string {
   return normalized;
 }
 
+function asString(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+async function applyCalendlyBookingSync(
+  providerEventId: string,
+  status: string,
+  payload: Record<string, unknown>,
+): Promise<void> {
+  if (!providerEventId) return;
+
+  const mappedStatus =
+    status === "canceled"
+      ? "canceled"
+      : status === "scheduled" || status === "rescheduled"
+        ? "confirmed"
+        : null;
+  if (!mappedStatus) return;
+
+  const result = await query(
+    `UPDATE calendar_bookings
+     SET status = $2,
+         source = 'provider_synced',
+         metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('calendlyWebhookStatus', $3),
+         updated_at = now()
+     WHERE provider_type = 'calendly'
+       AND provider_event_id = $1
+     RETURNING id, org_id, resource_id`,
+    [providerEventId, mappedStatus, status],
+  );
+
+  for (const row of result.rows as Array<{ id: string; org_id: string; resource_id: string }>) {
+    await query(
+      `INSERT INTO calendar_booking_events (
+         id, booking_id, org_id, resource_id, event_type, provider_type,
+         result, payload
+       ) VALUES (
+         gen_random_uuid(), $1, $2, $3, 'sync', 'calendly', 'success', $4::jsonb
+       )`,
+      [
+        row.id,
+        row.org_id,
+        row.resource_id,
+        JSON.stringify({
+          source: "calendly_webhook",
+          providerEventId,
+          status,
+          payload,
+        }),
+      ],
+    );
+  }
+
+  if (result.rowCount && result.rowCount > 0) {
+    logger.info("calendar booking synced from calendly webhook", {
+      providerEventId,
+      mappedStatus,
+      updated: result.rowCount,
+    });
+  }
+}

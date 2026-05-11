@@ -34,16 +34,23 @@ import { TableSkeleton } from "@/components/loading-skeleton"
 import { EmptyState } from "@/components/empty-state"
 import { toast } from "@/hooks/use-toast"
 import { getUiCapabilities } from "@/lib/data/capabilities"
+import type { CalendarProviderType } from "@/lib/data/calendar"
 import {
   disconnectIntegration,
   getIntegrationLogs,
   getIntegrations,
   saveIntegrationConfig,
+  setActiveCalendarProvider,
+  startIntegrationOAuth,
   testIntegration,
 } from "@/lib/data/integrations"
 
+function isCalendarProviderId(id: string): id is CalendarProviderType {
+  return id === "google_calendar" || id === "calendly"
+}
+
 interface Integration {
-  id: string
+  id: CalendarProviderType | (string & {})
   name: string
   description: string
   icon: string
@@ -51,6 +58,18 @@ interface Integration {
   lastSync?: string
   config?: Record<string, string>
   requiredFields: { key: string; label: string; type: "text" | "password"; placeholder?: string }[]
+  supportsOAuth?: boolean
+  oauth?: {
+    connected: boolean
+    isActive: boolean
+    accountId?: string | null
+    accountEmail?: string | null
+    expiresAt?: string | null
+    scopes?: string[]
+    updatedAt?: string
+  }
+  activeProvider?: boolean
+  activeCalendarProvider?: CalendarProviderType | null
 }
 
 interface LogEntry {
@@ -76,6 +95,7 @@ export function IntegrationsPage() {
   const [showSecrets, setShowSecrets] = useState<Record<string, boolean>>({})
   const [isTesting, setIsTesting] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
+  const [oauthBusyProvider, setOauthBusyProvider] = useState<string | null>(null)
   const [caps, setCaps] = useState({
     liveProbe: false,
     logs: false,
@@ -83,33 +103,27 @@ export function IntegrationsPage() {
     configure: false,
   })
 
-  useEffect(() => {
-    let cancelled = false
-    ;(async () => {
-      setIsLoading(true)
-      try {
-        const data = await getIntegrations()
-        if (!cancelled) {
-          setIntegrations(data)
-        }
-      } catch (e) {
-        console.error(e)
-        if (!cancelled) {
-          toast({
-            title: "Could not load integrations",
-            description: "Try again later or check your connection.",
-            variant: "destructive",
-          })
-          setIntegrations([])
-        }
-      } finally {
-        if (!cancelled) setIsLoading(false)
-      }
-    })()
-    return () => {
-      cancelled = true
+  const loadIntegrations = useCallback(async () => {
+    setIsLoading(true)
+    try {
+      const data = await getIntegrations()
+      setIntegrations(data)
+    } catch (e) {
+      console.error(e)
+      toast({
+        title: "Could not load integrations",
+        description: "Try again later or check your connection.",
+        variant: "destructive",
+      })
+      setIntegrations([])
+    } finally {
+      setIsLoading(false)
     }
   }, [])
+
+  useEffect(() => {
+    void loadIntegrations()
+  }, [loadIntegrations])
 
   useEffect(() => {
     void getUiCapabilities().then((c) =>
@@ -121,6 +135,32 @@ export function IntegrationsPage() {
       }),
     )
   }, [])
+
+  useEffect(() => {
+    const onMessage = (event: MessageEvent) => {
+      const data = event.data as { type?: string; ok?: boolean; provider?: string } | null
+      if (!data || typeof data !== "object") return
+      if (data.type !== "rezovo:oauth:complete") return
+
+      const providerLabel =
+        data.provider === "google_calendar"
+          ? "Google Calendar"
+          : data.provider === "calendly"
+            ? "Calendly"
+            : "Provider"
+      void loadIntegrations()
+      setOauthBusyProvider(null)
+      toast({
+        title: data.ok ? "OAuth connected" : "OAuth failed",
+        description: data.ok
+          ? `${providerLabel} is now connected.`
+          : `${providerLabel} OAuth did not complete successfully.`,
+        variant: data.ok ? "default" : "destructive",
+      })
+    }
+    window.addEventListener("message", onMessage)
+    return () => window.removeEventListener("message", onMessage)
+  }, [loadIntegrations])
 
   const statusConfig = {
     connected: {
@@ -241,6 +281,67 @@ export function IntegrationsPage() {
     toast({ title: "Copied", description: "Value copied to clipboard" })
   }, [])
 
+  const handleOAuthConnect = useCallback(async (integration: Integration) => {
+    if (!isCalendarProviderId(integration.id)) {
+      toast({
+        title: "OAuth not supported",
+        description: "This provider uses API key credentials.",
+      })
+      return
+    }
+
+    const providerId: CalendarProviderType = integration.id
+    setOauthBusyProvider(providerId)
+    try {
+      const result = await startIntegrationOAuth(providerId)
+      const popup = window.open(
+        result.authUrl,
+        "rezovo-calendar-oauth",
+        "width=560,height=760,menubar=no,toolbar=no,location=yes,status=no",
+      )
+      if (!popup) {
+        window.location.href = result.authUrl
+        return
+      }
+
+      const pollId = window.setInterval(() => {
+        if (!popup.closed) return
+        window.clearInterval(pollId)
+        setOauthBusyProvider(null)
+        void loadIntegrations()
+      }, 700)
+    } catch (error) {
+      console.error(error)
+      toast({
+        title: "OAuth start failed",
+        description: "Could not start provider OAuth flow.",
+        variant: "destructive",
+      })
+      setOauthBusyProvider(null)
+    }
+  }, [loadIntegrations])
+
+  const handleSetActiveProvider = useCallback(async (provider: "google_calendar" | "calendly") => {
+    setOauthBusyProvider(provider)
+    try {
+      await setActiveCalendarProvider(provider)
+      await loadIntegrations()
+      toast({
+        title: "Active provider updated",
+        description: `${provider === "google_calendar" ? "Google Calendar" : "Calendly"} is now active.`,
+      })
+    } catch (error) {
+      console.error(error)
+      toast({
+        title: "Provider switch failed",
+        description: "Could not change active calendar provider.",
+        variant: "destructive",
+      })
+    } finally {
+      setOauthBusyProvider(null)
+    }
+  }, [loadIntegrations])
+
   const toggleShowSecret = useCallback((key: string) => {
     setShowSecrets((prev) => ({ ...prev, [key]: !prev[key] }))
   }, [])
@@ -302,22 +403,71 @@ export function IntegrationsPage() {
               </CardHeader>
               <CardContent>
                 <CardDescription className="mb-2">{integration.description}</CardDescription>
+                {integration.supportsOAuth && integration.oauth?.connected ? (
+                  <div className="mb-3 rounded-md border bg-muted/40 p-2 text-xs">
+                    <p className="font-medium">
+                      OAuth: {integration.oauth.isActive ? "Active" : "Connected"}
+                    </p>
+                    {integration.oauth.accountEmail ? (
+                      <p className="text-muted-foreground">{integration.oauth.accountEmail}</p>
+                    ) : null}
+                    {integration.oauth.expiresAt ? (
+                      <p className="text-muted-foreground">
+                        Token expiry: {new Date(integration.oauth.expiresAt).toLocaleString()}
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
                 {integration.lastSync && (
                   <p className="text-xs text-muted-foreground mb-4">
                     Last sync: {new Date(integration.lastSync).toLocaleString()}
                   </p>
                 )}
                 <div className="flex gap-2">
-                  <Button
-                    variant={integration.status === "disconnected" ? "default" : "outline"}
-                    size="sm"
-                    className="flex-1"
-                    onClick={() => handleConfigure(integration)}
-                    disabled={!caps.configure}
-                  >
-                    <Settings className="mr-2 h-4 w-4" />
-                    {integration.status === "disconnected" ? "Connect" : "Configure"}
-                  </Button>
+                  {integration.supportsOAuth ? (
+                    <Button
+                      variant={integration.oauth?.connected ? "outline" : "default"}
+                      size="sm"
+                      className="flex-1"
+                      onClick={() => void handleOAuthConnect(integration)}
+                      disabled={oauthBusyProvider === integration.id}
+                    >
+                      {oauthBusyProvider === integration.id ? (
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      ) : (
+                        <Settings className="mr-2 h-4 w-4" />
+                      )}
+                      {integration.oauth?.connected ? "Reconnect OAuth" : "Connect OAuth"}
+                    </Button>
+                  ) : (
+                    <Button
+                      variant={integration.status === "disconnected" ? "default" : "outline"}
+                      size="sm"
+                      className="flex-1"
+                      onClick={() => handleConfigure(integration)}
+                      disabled={!caps.configure}
+                    >
+                      <Settings className="mr-2 h-4 w-4" />
+                      {integration.status === "disconnected" ? "Connect" : "Configure"}
+                    </Button>
+                  )}
+                  {integration.supportsOAuth &&
+                  integration.oauth?.connected &&
+                  !integration.oauth.isActive &&
+                  isCalendarProviderId(integration.id) ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        if (isCalendarProviderId(integration.id)) {
+                          void handleSetActiveProvider(integration.id)
+                        }
+                      }}
+                      disabled={oauthBusyProvider === integration.id}
+                    >
+                      Set Active
+                    </Button>
+                  ) : null}
                   {integration.status !== "disconnected" && (
                     <>
                       <Button

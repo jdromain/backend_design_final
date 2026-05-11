@@ -105,11 +105,26 @@ export const env = {
   RTP_BRIDGE_PUBLIC_URL: optional("RTP_BRIDGE_PUBLIC_URL", ""),
   REALTIME_CORE_URL: optional("REALTIME_CORE_URL", "http://localhost:3002"),
   PLATFORM_API_URL: optional("PLATFORM_API_URL", "http://localhost:3001"),
+  DASHBOARD_UI_URL: optional("DASHBOARD_UI_URL", "http://localhost:3000"),
 
   // Calendly
   CALENDLY_ACCESS_TOKEN: optional("CALENDLY_ACCESS_TOKEN", ""),
   CALENDLY_EVENT_TYPE_URI: optional("CALENDLY_EVENT_TYPE_URI", ""),
   CALENDLY_TIMEZONE: optional("CALENDLY_TIMEZONE", "America/New_York"),
+
+  // Calendar backbone / OAuth
+  CALENDAR_OAUTH_ENCRYPTION_KEY: optional("CALENDAR_OAUTH_ENCRYPTION_KEY", ""),
+  GOOGLE_OAUTH_CLIENT_ID: optional("GOOGLE_OAUTH_CLIENT_ID", ""),
+  GOOGLE_OAUTH_CLIENT_SECRET: optional("GOOGLE_OAUTH_CLIENT_SECRET", ""),
+  GOOGLE_OAUTH_REDIRECT_URI: optional("GOOGLE_OAUTH_REDIRECT_URI", ""),
+  GOOGLE_OAUTH_SCOPES: optional(
+    "GOOGLE_OAUTH_SCOPES",
+    "https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/calendar.readonly",
+  ),
+  CALENDLY_OAUTH_CLIENT_ID: optional("CALENDLY_OAUTH_CLIENT_ID", ""),
+  CALENDLY_OAUTH_CLIENT_SECRET: optional("CALENDLY_OAUTH_CLIENT_SECRET", ""),
+  CALENDLY_OAUTH_REDIRECT_URI: optional("CALENDLY_OAUTH_REDIRECT_URI", ""),
+  CALENDLY_OAUTH_SCOPES: optional("CALENDLY_OAUTH_SCOPES", "default"),
 } as const;
 
 if (env.REDIS_ENABLED && !env.REDIS_URL) {

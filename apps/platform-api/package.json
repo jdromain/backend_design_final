@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "build": "tsc -b",
+    "typecheck": "tsc --noEmit",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
     "lint": "echo \"lint not yet configured\"",

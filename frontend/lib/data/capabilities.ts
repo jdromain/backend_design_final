@@ -17,12 +17,20 @@ export type UiCapabilities = {
     disconnect: boolean
     configure: boolean
   }
+  calendar: {
+    page: boolean
+    bookingCreate: boolean
+    bookingEdit: boolean
+    bookingCancel: boolean
+    providerSwitch: boolean
+  }
 }
 
 const FALLBACK_CAPABILITIES: UiCapabilities = {
   knowledge: { documentDelete: true, documentUpdate: true, reprocess: false },
   calls: { transcriptDownload: false, recordingPlayback: false, historyBulkMutations: false },
   integrations: { liveProbe: false, logs: false, disconnect: false, configure: false },
+  calendar: { page: true, bookingCreate: true, bookingEdit: true, bookingCancel: true, providerSwitch: true },
 }
 
 export async function getUiCapabilities(): Promise<UiCapabilities> {

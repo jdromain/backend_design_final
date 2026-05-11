@@ -48,6 +48,7 @@ import { registerKnowledgeRoutes } from "./routes/knowledge";
 import { registerSearchRoutes } from "./routes/search";
 import { registerUiCapabilitiesRoutes } from "./routes/uiCapabilities";
 import { registerIntegrationsRoutes } from "./routes/integrations";
+import { registerCalendarRoutes } from "./routes/calendar";
 import { clerkSyncHandler } from "./webhooks/clerkSync";
 import { calendlyWebhookHandler } from "./webhooks/calendly";
 import { registerHttpAccessLogging, registerHttpErrorLogging } from "./logging/httpAccessLog";
@@ -361,6 +362,7 @@ export function buildServer(eventBus: EventBusClient): FastifyInstance<any, any,
   registerSearchRoutes(app as any);
   registerUiCapabilitiesRoutes(app as any);
   registerIntegrationsRoutes(app as any);
+  registerCalendarRoutes(app as any);
 
   registerHttpErrorLogging(app);
 

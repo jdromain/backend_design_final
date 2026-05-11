@@ -12,6 +12,7 @@ export const APP_PAGE_ROUTES: Record<string, string> = {
   analytics: "/analytics",
   agents: "/agents",
   knowledge: "/knowledge",
+  calendar: "/calendar",
   integrations: "/integrations",
   billing: "/billing",
   settings: "/settings",

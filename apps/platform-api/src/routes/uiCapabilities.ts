@@ -19,6 +19,13 @@ type UiCapabilities = {
     disconnect: boolean;
     configure: boolean;
   };
+  calendar: {
+    page: boolean;
+    bookingCreate: boolean;
+    bookingEdit: boolean;
+    bookingCancel: boolean;
+    providerSwitch: boolean;
+  };
 };
 
 const DEFAULT_CAPABILITIES: UiCapabilities = {
@@ -37,6 +44,13 @@ const DEFAULT_CAPABILITIES: UiCapabilities = {
     logs: true,
     disconnect: true,
     configure: true,
+  },
+  calendar: {
+    page: true,
+    bookingCreate: true,
+    bookingEdit: true,
+    bookingCancel: true,
+    providerSwitch: true,
   },
 };
 

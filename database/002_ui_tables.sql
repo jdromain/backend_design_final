@@ -160,8 +160,18 @@ CREATE INDEX IF NOT EXISTS idx_api_keys_org ON public.api_keys(org_id);
 -- SEED DATA
 -- ================================================================
 
+-- Canonicalize any prior admin seed row keyed by org/email but with a different id.
+DELETE FROM public.users
+WHERE org_id = 'org_localdemo'
+  AND email = 'admin@example.com'
+  AND id <> 'user-admin';
+
 INSERT INTO public.users (id, org_id, email, roles, name, status)
 VALUES ('user-admin', 'org_localdemo', 'admin@example.com', '{admin}', 'Admin User', 'active')
-ON CONFLICT (email) DO UPDATE SET
+ON CONFLICT (id) DO UPDATE SET
+  email = EXCLUDED.email,
   roles = '{admin}',
-  org_id = 'org_localdemo';
+  org_id = 'org_localdemo',
+  name = EXCLUDED.name,
+  status = EXCLUDED.status,
+  updated_at = now();

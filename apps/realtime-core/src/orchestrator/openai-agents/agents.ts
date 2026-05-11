@@ -11,7 +11,14 @@ import type { RunContext } from "@openai/agents";
 import { z } from "zod";
 import { createLogger } from "@rezovo/logging";
 import { callTool } from "../../toolClient";
-import * as calendly from "../../calendlyClient";
+import {
+  cancelBooking as cancelCalendarBooking,
+  createBooking as createCalendarBooking,
+  getAvailability as getCalendarAvailability,
+  listResources as listCalendarResources,
+  lookupBookings as lookupCalendarBookings,
+  updateBooking as updateCalendarBooking,
+} from "../../calendarClient";
 import { env } from "../../env";
 import { resolveModelSettingsForModel } from "./modelGuardrails";
 
@@ -77,6 +84,9 @@ const MAX_SLOT_PROMPT_FIELDS = Math.max(1, env.AGENT_MAX_SLOT_PROMPT_FIELDS);
 const MAX_SLOT_PROMPT_CHARS = Math.max(12, env.AGENT_MAX_SLOT_PROMPT_CHARS);
 
 const STATE_CHANGING_TOOLS = new Set<string>([
+  "CREATE_BOOKING",
+  "MODIFY_BOOKING",
+  "CANCEL_BOOKING",
   "calendly_create_booking",
   "calendly_cancel_booking",
   "create_reservation",
@@ -313,234 +323,589 @@ function withContext(basePrompt: string) {
   };
 }
 
-// ---- Calendly tool schemas ----
-const calendlySearchSchema = z.object({
-  start_date: z.string().describe("ISO 8601 date to start searching, e.g. '2026-03-07'"),
+function toIsoDate(value: string): string {
+  const trimmed = value.trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed;
+  const parsed = new Date(trimmed);
+  if (!Number.isFinite(parsed.getTime())) {
+    throw new Error("Invalid date format. Use YYYY-MM-DD.");
+  }
+  return parsed.toISOString().slice(0, 10);
+}
+
+function toIsoDateTime(value: string): string {
+  const parsed = new Date(value);
+  if (!Number.isFinite(parsed.getTime())) {
+    throw new Error("Invalid datetime format.");
+  }
+  return parsed.toISOString();
+}
+
+function composeDateTime(date: string, time: string): string {
+  return toIsoDateTime(`${date}T${time}:00`);
+}
+
+function plusMinutes(iso: string, minutes: number): string {
+  return new Date(new Date(iso).getTime() + minutes * 60_000).toISOString();
+}
+
+function matchTimePreference(iso: string, preference?: string | null): boolean {
+  if (!preference) return true;
+  const p = preference.trim().toLowerCase();
+  if (!p) return true;
+  const h = new Date(iso).getUTCHours();
+  if (p.includes("morning")) return h >= 5 && h < 12;
+  if (p.includes("afternoon")) return h >= 12 && h < 17;
+  if (p.includes("evening") || p.includes("night")) return h >= 17 || h < 2;
+  if (/^\d{1,2}:\d{2}$/.test(p)) {
+    const [hh, mm] = p.split(":").map((x) => Number.parseInt(x, 10));
+    const d = new Date(iso);
+    return d.getUTCHours() === hh && d.getUTCMinutes() === mm;
+  }
+  return true;
+}
+
+async function pickResourceId(
+  orgId: string,
+  requestedCourse?: string | null,
+  requestedResourceId?: string | null,
+): Promise<string | undefined> {
+  if (requestedResourceId && requestedResourceId.trim().length > 0) {
+    return requestedResourceId.trim();
+  }
+  const resources = await listCalendarResources(orgId);
+  if (resources.length === 0) return undefined;
+  if (requestedCourse && requestedCourse.trim().length > 0) {
+    const q = requestedCourse.trim().toLowerCase();
+    const match = resources.find((resource) => resource.name.toLowerCase().includes(q));
+    if (match) return match.id;
+  }
+  return (resources.find((resource) => resource.isActive) ?? resources[0])?.id;
+}
+
+const lookupAvailabilitySchema = z.object({
+  date: z.string().describe("Date to search, YYYY-MM-DD"),
+  players: z.number().int().min(1).max(12).optional().nullable(),
+  time_preference: z.string().optional().nullable(),
+  course: z.string().optional().nullable(),
+  resource_id: z.string().optional().nullable(),
+  duration_min: z.number().int().min(5).max(240).optional().nullable(),
 });
 
-const calendlyCreateSchema = z.object({
-  start_time: z.string().describe("UTC ISO 8601 start time from availability search"),
-  invitee_name: z.string().describe("Full name of the caller"),
-  invitee_email: z.string().describe("Email address of the caller"),
+const createBookingSchema = z.object({
+  details: z.record(z.string(), z.any()).optional().nullable(),
+  resource_id: z.string().optional().nullable(),
+  course: z.string().optional().nullable(),
+  starts_at: z.string().optional().nullable(),
+  start_time: z.string().optional().nullable(),
+  ends_at: z.string().optional().nullable(),
+  duration_min: z.number().int().min(5).max(240).optional().nullable(),
+  customer_name: z.string().optional().nullable(),
+  customer_phone: z.string().optional().nullable(),
+  customer_email: z.string().optional().nullable(),
+  invitee_name: z.string().optional().nullable(),
+  invitee_email: z.string().optional().nullable(),
+  party_size: z.number().int().min(1).max(20).optional().nullable(),
+  players: z.number().int().min(1).max(20).optional().nullable(),
+  notes: z.string().optional().nullable(),
 });
 
-const calendlyCancelSchema = z.object({
-  event_uri: z.string().describe("Calendly event URI to cancel"),
-  reason: z.string().nullable().optional().describe("Reason for cancellation"),
+const modifyBookingSchema = z.object({
+  booking_id: z.string().optional().nullable(),
+  reservation_id: z.string().optional().nullable(),
+  changes: z.record(z.string(), z.any()).optional().nullable(),
+  starts_at: z.string().optional().nullable(),
+  ends_at: z.string().optional().nullable(),
+  new_date: z.string().optional().nullable(),
+  new_time: z.string().optional().nullable(),
+  new_party_size: z.number().int().min(1).max(20).optional().nullable(),
+  notes: z.string().optional().nullable(),
 });
 
-// ---- OpenTable tool schemas ----
-const otSearchSchema = z.object({
-  date: z.string().describe("ISO 8601 date, e.g. '2026-02-18'"),
-  party_size: z.number().int().min(1).max(20).describe("Number of guests"),
-  time_preference: z
-    .string()
-    .nullable()
-    .optional()
-    .describe("Preferred time in 24h format, e.g. '19:00'"),
+const cancelBookingSchema = z.object({
+  booking_id: z.string().optional().nullable(),
+  reservation_id: z.string().optional().nullable(),
+  provider_event_id: z.string().optional().nullable(),
+  event_uri: z.string().optional().nullable(),
+  reason: z.string().optional().nullable(),
+  customer_name: z.string().optional().nullable(),
+  customer_phone: z.string().optional().nullable(),
+  date: z.string().optional().nullable(),
 });
 
-const otCreateSchema = z.object({
-  date: z.string().describe("ISO 8601 date"),
-  time: z.string().describe("Time in 24h format, e.g. '19:00'"),
-  party_size: z.number().int().min(1).max(20).describe("Number of guests"),
-  customer_name: z.string().describe("Full name for the reservation"),
-  customer_phone: z.string().describe("Phone number for confirmation"),
-  customer_email: z.string().nullable().optional().describe("Optional email for confirmation"),
+const lookupBookingSchema = z.object({
+  booking_id: z.string().optional().nullable(),
+  reservation_id: z.string().optional().nullable(),
+  provider_event_id: z.string().optional().nullable(),
+  name: z.string().optional().nullable(),
+  customer_name: z.string().optional().nullable(),
+  phone: z.string().optional().nullable(),
+  customer_phone: z.string().optional().nullable(),
+  date: z.string().optional().nullable(),
+  resource_id: z.string().optional().nullable(),
+  limit: z.number().int().min(1).max(20).optional().nullable(),
 });
 
-const otModifySchema = z.object({
-  reservation_id: z.string().describe("Reservation identifier"),
-  new_date: z.string().nullable().optional(),
-  new_time: z.string().nullable().optional(),
-  new_party_size: z.number().int().min(1).max(20).nullable().optional(),
-  new_special_requests: z.string().nullable().optional(),
-});
+async function runLookupAvailability(
+  cc: CallContext,
+  args: {
+    date: string;
+    players?: number | null;
+    time_preference?: string | null;
+    course?: string | null;
+    resource_id?: string | null;
+    duration_min?: number | null;
+  },
+): Promise<string> {
+  rememberSlotMemory(cc, args);
+  const date = toIsoDate(args.date);
+  const resourceId = await pickResourceId(cc.orgId, args.course, args.resource_id);
+  const availability = await getCalendarAvailability(cc.orgId, {
+    date,
+    resourceId,
+    durationMin: Math.max(5, Math.floor(args.duration_min ?? 30)),
+    partySize: Math.max(1, Math.floor(args.players ?? 1)),
+  });
 
-const otCancelSchema = z.object({
-  reservation_id: z.string().describe("Reservation identifier"),
-});
+  const flattened = availability
+    .flatMap((bucket) =>
+      bucket.slots.map((slot) => ({
+        resource_id: bucket.resource.id,
+        resource_name: bucket.resource.name,
+        starts_at: slot.startsAt,
+        ends_at: slot.endsAt,
+        remaining_capacity: slot.remainingCapacity,
+      })),
+    )
+    .filter((slot) => matchTimePreference(slot.starts_at, args.time_preference))
+    .slice(0, 8);
 
-const otDetailsSchema = z.object({
-  reservation_id: z.string().nullable().optional(),
-  customer_name: z.string().nullable().optional(),
-  customer_phone: z.string().nullable().optional(),
-});
+  return JSON.stringify({
+    status: "ok",
+    options: flattened.map((slot) => ({
+      ...slot,
+      display: new Date(slot.starts_at).toLocaleString("en-US", {
+        weekday: "short",
+        month: "short",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+      }),
+    })),
+    total_found: flattened.length,
+  });
+}
 
-const logComplaintSchema = z.object({
-  issue_summary: z.string().describe("Brief description of the complaint"),
-  customer_name: z.string().describe("Caller's name"),
-  customer_phone: z.string().nullable().optional().describe("Callback phone number"),
-});
+async function runCreateBooking(
+  cc: CallContext,
+  args: z.infer<typeof createBookingSchema>,
+): Promise<string> {
+  rememberSlotMemory(cc, args);
+  const details = (args.details ?? {}) as Record<string, unknown>;
+  const startInput =
+    (typeof args.starts_at === "string" && args.starts_at) ||
+    (typeof args.start_time === "string" && args.start_time) ||
+    (typeof details.starts_at === "string" ? details.starts_at : "") ||
+    (typeof details.start_time === "string" ? details.start_time : "");
+  if (!startInput) {
+    return "I need the exact tee time to complete the booking.";
+  }
+  const startsAt = toIsoDateTime(startInput);
+  const durationMinRaw =
+    (typeof args.duration_min === "number" ? args.duration_min : undefined) ??
+    (typeof details.duration_min === "number" ? Number(details.duration_min) : undefined) ??
+    30;
+  const durationMin = Math.max(5, Math.floor(durationMinRaw));
+  const endsAt =
+    (typeof args.ends_at === "string" && args.ends_at.length > 0)
+      ? toIsoDateTime(args.ends_at)
+      : plusMinutes(startsAt, durationMin);
+  const resourceId = await pickResourceId(
+    cc.orgId,
+    args.course ?? (typeof details.course === "string" ? details.course : null),
+    args.resource_id ?? (typeof details.resource_id === "string" ? details.resource_id : null),
+  );
+  const partySizeRaw =
+    args.party_size ??
+    args.players ??
+    (typeof details.party_size === "number" ? Number(details.party_size) : undefined) ??
+    (typeof details.players === "number" ? Number(details.players) : undefined) ??
+    1;
+  const created = await createCalendarBooking(cc.orgId, {
+    resourceId,
+    startsAt,
+    endsAt,
+    customerName:
+      args.customer_name ??
+      args.invitee_name ??
+      (typeof details.customer_name === "string" ? details.customer_name : null),
+    customerPhone:
+      args.customer_phone ??
+      (typeof details.customer_phone === "string" ? details.customer_phone : null),
+    customerEmail:
+      args.customer_email ??
+      args.invitee_email ??
+      (typeof details.customer_email === "string" ? details.customer_email : null),
+    partySize: Math.max(1, Math.floor(Number(partySizeRaw))),
+    notes: args.notes ?? (typeof details.notes === "string" ? details.notes : null),
+    source: "voice_agent",
+    metadata: { callId: cc.callId, via: "openai-agent" },
+  });
 
-const calendlySearchAvailability = tool<typeof calendlySearchSchema, CallContext>({
-  name: "calendly_search_availability",
-  description:
-    "Search for available appointment time slots on Calendly. Returns open slots for the next 7 days from the given start date.",
-  parameters: calendlySearchSchema,
+  clearPendingApproval(cc);
+  return JSON.stringify({
+    status: "ok",
+    success: true,
+    booking_id: created.id,
+    starts_at: created.startsAt,
+    ends_at: created.endsAt,
+    provider_event_id: created.providerEventId ?? null,
+    message: "Booking confirmed.",
+  });
+}
+
+async function resolveBookingIdForCancellation(
+  cc: CallContext,
+  args: z.infer<typeof cancelBookingSchema>,
+): Promise<string | null> {
+  const explicit = args.booking_id ?? args.reservation_id;
+  if (explicit && explicit.trim().length > 0) return explicit.trim();
+
+  const lookup = await lookupCalendarBookings(cc.orgId, {
+    providerEventId: args.provider_event_id ?? args.event_uri ?? undefined,
+    name: args.customer_name ?? undefined,
+    phone: args.customer_phone ?? undefined,
+    date: args.date ?? undefined,
+    limit: 1,
+  });
+  return lookup[0]?.id ?? null;
+}
+
+async function runModifyBooking(
+  cc: CallContext,
+  args: z.infer<typeof modifyBookingSchema>,
+): Promise<string> {
+  rememberSlotMemory(cc, args);
+  const bookingId = args.booking_id ?? args.reservation_id;
+  if (!bookingId) {
+    return "I need the booking reference before I can modify it.";
+  }
+
+  const changes = (args.changes ?? {}) as Record<string, unknown>;
+  let startsAt: string | undefined;
+  if (typeof args.starts_at === "string" && args.starts_at.length > 0) {
+    startsAt = toIsoDateTime(args.starts_at);
+  } else if (typeof args.new_date === "string" && typeof args.new_time === "string") {
+    startsAt = composeDateTime(args.new_date, args.new_time);
+  } else if (typeof changes.starts_at === "string") {
+    startsAt = toIsoDateTime(changes.starts_at);
+  }
+
+  const endsAt =
+    typeof args.ends_at === "string" && args.ends_at.length > 0
+      ? toIsoDateTime(args.ends_at)
+      : startsAt
+        ? plusMinutes(startsAt, 30)
+        : undefined;
+
+  const updated = await updateCalendarBooking(cc.orgId, bookingId, {
+    startsAt,
+    endsAt,
+    partySize:
+      args.new_party_size ??
+      (typeof changes.party_size === "number" ? Number(changes.party_size) : undefined),
+    notes:
+      args.notes ??
+      (typeof changes.notes === "string" ? changes.notes : undefined),
+  });
+
+  clearPendingApproval(cc);
+  return JSON.stringify({
+    status: "ok",
+    success: true,
+    booking_id: updated.id,
+    starts_at: updated.startsAt,
+    ends_at: updated.endsAt,
+    message: "Booking updated.",
+  });
+}
+
+async function runCancelBooking(
+  cc: CallContext,
+  args: z.infer<typeof cancelBookingSchema>,
+): Promise<string> {
+  rememberSlotMemory(cc, args);
+  const bookingId = await resolveBookingIdForCancellation(cc, args);
+  if (!bookingId) {
+    return "I couldn't find that booking to cancel.";
+  }
+  const canceled = await cancelCalendarBooking(cc.orgId, bookingId, args.reason ?? undefined);
+  clearPendingApproval(cc);
+  return JSON.stringify({
+    status: "ok",
+    success: true,
+    booking_id: canceled.id,
+    message: "The booking has been cancelled.",
+  });
+}
+
+async function runLookupBooking(
+  cc: CallContext,
+  args: z.infer<typeof lookupBookingSchema>,
+): Promise<string> {
+  rememberSlotMemory(cc, args);
+  const explicit = args.booking_id ?? args.reservation_id;
+  const rows = await lookupCalendarBookings(cc.orgId, {
+    providerEventId: args.provider_event_id ?? undefined,
+    name: args.name ?? args.customer_name ?? undefined,
+    phone: args.phone ?? args.customer_phone ?? undefined,
+    date: args.date ?? undefined,
+    resourceId: args.resource_id ?? undefined,
+    limit: args.limit ?? 5,
+  });
+
+  const filtered = explicit ? rows.filter((row) => row.id === explicit) : rows;
+  return JSON.stringify({
+    status: "ok",
+    bookings: filtered.map((row) => ({
+      booking_id: row.id,
+      starts_at: row.startsAt,
+      ends_at: row.endsAt,
+      status: row.status,
+      customer_name: row.customerName ?? null,
+      customer_phone: row.customerPhone ?? null,
+      provider_event_id: row.providerEventId ?? null,
+    })),
+  });
+}
+
+const lookupAvailabilityTool = tool<typeof lookupAvailabilitySchema, CallContext>({
+  name: "LOOKUP_AVAILABILITY",
+  description: "Find available tee times for a given date and optional preference.",
+  parameters: lookupAvailabilitySchema,
   async execute(args, ctx) {
     const cc = ctx?.context;
     if (!cc) return "Missing call context.";
-    if (!cc.calendlyAccessToken) return "Calendly is not configured for this business.";
-    rememberSlotMemory(cc, args);
+    logger.info("tool: LOOKUP_AVAILABILITY", { callId: cc.callId, args });
+    try {
+      return await runLookupAvailability(cc, args);
+    } catch (err) {
+      logger.error("LOOKUP_AVAILABILITY failed", {
+        callId: cc.callId,
+        error: (err as Error).message,
+      });
+      return "Unable to check availability right now.";
+    }
+  },
+});
 
-    logger.info("tool: calendly_search_availability", { callId: cc.callId, args });
+const createBookingTool = tool<typeof createBookingSchema, CallContext>({
+  name: "CREATE_BOOKING",
+  description: "Create a booking. Requires exact start time and customer details.",
+  parameters: createBookingSchema,
+  async execute(args, ctx) {
+    const cc = ctx?.context;
+    if (!cc) return "Missing call context.";
+    const gate = enforceApprovalGate(cc, "CREATE_BOOKING", args as Record<string, unknown>);
+    if (!gate.allowed) return gate.outputIfBlocked ?? "Confirmation required.";
+
+    logger.info("tool: CREATE_BOOKING", {
+      callId: cc.callId,
+      actionHash: gate.actionHash,
+    });
 
     try {
-      const eventTypeUri =
-        cc.calendlyEventTypeUri || (await calendly.resolveEventTypeUri(cc.calendlyAccessToken));
-      const startTime = `${args.start_date}T00:00:00Z`;
-      const endDate = new Date(new Date(args.start_date).getTime() + 7 * 86_400_000)
-        .toISOString()
-        .split("T")[0];
-      const endTime = `${endDate}T23:59:59Z`;
-
-      const slots = await calendly.getAvailableTimes(
-        cc.calendlyAccessToken,
-        eventTypeUri,
-        startTime,
-        endTime,
-      );
-
-      const formatted = slots.slice(0, 10).map((s) => {
-        const d = new Date(s.start_time);
-        return {
-          start_time: s.start_time,
-          display: d.toLocaleString("en-US", {
-            weekday: "long",
-            month: "short",
-            day: "numeric",
-            hour: "numeric",
-            minute: "2-digit",
-            timeZone: cc.calendlyTimezone || "America/New_York",
-          }),
-        };
+      return await runCreateBooking(cc, args);
+    } catch (err) {
+      logger.error("CREATE_BOOKING failed", {
+        callId: cc.callId,
+        error: (err as Error).message,
       });
+      return "Unable to complete the booking right now.";
+    }
+  },
+});
 
-      return JSON.stringify({
-        status: "ok",
-        available_slots: formatted,
-        total_found: slots.length,
+const modifyBookingTool = tool<typeof modifyBookingSchema, CallContext>({
+  name: "MODIFY_BOOKING",
+  description: "Modify an existing booking after explicit confirmation.",
+  parameters: modifyBookingSchema,
+  async execute(args, ctx) {
+    const cc = ctx?.context;
+    if (!cc) return "Missing call context.";
+    const gate = enforceApprovalGate(cc, "MODIFY_BOOKING", args as Record<string, unknown>);
+    if (!gate.allowed) return gate.outputIfBlocked ?? "Confirmation required.";
+
+    logger.info("tool: MODIFY_BOOKING", {
+      callId: cc.callId,
+      actionHash: gate.actionHash,
+    });
+
+    try {
+      return await runModifyBooking(cc, args);
+    } catch (err) {
+      logger.error("MODIFY_BOOKING failed", {
+        callId: cc.callId,
+        error: (err as Error).message,
       });
+      return "Unable to modify that booking right now.";
+    }
+  },
+});
+
+const cancelBookingTool = tool<typeof cancelBookingSchema, CallContext>({
+  name: "CANCEL_BOOKING",
+  description: "Cancel an existing booking after explicit confirmation.",
+  parameters: cancelBookingSchema,
+  async execute(args, ctx) {
+    const cc = ctx?.context;
+    if (!cc) return "Missing call context.";
+    const gate = enforceApprovalGate(cc, "CANCEL_BOOKING", args as Record<string, unknown>);
+    if (!gate.allowed) return gate.outputIfBlocked ?? "Confirmation required.";
+
+    logger.info("tool: CANCEL_BOOKING", {
+      callId: cc.callId,
+      actionHash: gate.actionHash,
+    });
+
+    try {
+      return await runCancelBooking(cc, args);
+    } catch (err) {
+      logger.error("CANCEL_BOOKING failed", {
+        callId: cc.callId,
+        error: (err as Error).message,
+      });
+      return "Unable to cancel that booking right now.";
+    }
+  },
+});
+
+const lookupBookingTool = tool<typeof lookupBookingSchema, CallContext>({
+  name: "LOOKUP_BOOKING",
+  description: "Look up existing bookings by reference, contact, or date.",
+  parameters: lookupBookingSchema,
+  async execute(args, ctx) {
+    const cc = ctx?.context;
+    if (!cc) return "Missing call context.";
+    logger.info("tool: LOOKUP_BOOKING", { callId: cc.callId, args });
+    try {
+      return await runLookupBooking(cc, args);
+    } catch (err) {
+      logger.error("LOOKUP_BOOKING failed", {
+        callId: cc.callId,
+        error: (err as Error).message,
+      });
+      return "Unable to look up booking details right now.";
+    }
+  },
+});
+
+// Backward-compatible aliases while legacy tool names are still in circulation.
+const calendlySearchAvailability = tool<z.ZodObject<{ start_date: z.ZodString }>, CallContext>({
+  name: "calendly_search_availability",
+  description: "Legacy alias for LOOKUP_AVAILABILITY.",
+  parameters: z.object({
+    start_date: z.string().describe("ISO 8601 date to start searching, e.g. '2026-03-07'"),
+  }),
+  async execute(args, ctx) {
+    const cc = ctx?.context;
+    if (!cc) return "Missing call context.";
+    try {
+      return await runLookupAvailability(cc, { date: args.start_date });
     } catch (err) {
       logger.error("calendly_search_availability failed", {
         callId: cc.callId,
         error: (err as Error).message,
       });
-      return "Unable to check availability right now. Please try again in a moment.";
+      return "Unable to check availability right now.";
     }
   },
 });
 
-const calendlyCreateBooking = tool<typeof calendlyCreateSchema, CallContext>({
+const calendlyCreateBooking = tool<z.ZodObject<{
+  start_time: z.ZodString;
+  invitee_name: z.ZodString;
+  invitee_email: z.ZodString;
+}>, CallContext>({
   name: "calendly_create_booking",
-  description:
-    "Book an appointment on Calendly. Requires name, email, and a start_time from availability search.",
-  parameters: calendlyCreateSchema,
+  description: "Legacy alias for CREATE_BOOKING.",
+  parameters: z.object({
+    start_time: z.string().describe("UTC ISO 8601 start time from availability search"),
+    invitee_name: z.string().describe("Full name of the caller"),
+    invitee_email: z.string().describe("Email address of the caller"),
+  }),
   async execute(args, ctx) {
     const cc = ctx?.context;
     if (!cc) return "Missing call context.";
-    if (!cc.calendlyAccessToken) return "Calendly is not configured for this business.";
-    rememberSlotMemory(cc, args);
-
-    const gate = enforceApprovalGate(cc, "calendly_create_booking", args);
-    if (!gate.allowed) {
-      return gate.outputIfBlocked ?? "Confirmation required.";
-    }
-
-    logger.info("tool: calendly_create_booking", {
-      callId: cc.callId,
-      name: args.invitee_name,
-      actionHash: gate.actionHash,
-    });
-
+    const gate = enforceApprovalGate(cc, "CREATE_BOOKING", args as Record<string, unknown>);
+    if (!gate.allowed) return gate.outputIfBlocked ?? "Confirmation required.";
     try {
-      const eventTypeUri =
-        cc.calendlyEventTypeUri || (await calendly.resolveEventTypeUri(cc.calendlyAccessToken));
-      const invitee = await calendly.createInvitee(cc.calendlyAccessToken, {
-        eventTypeUri,
-        startTime: args.start_time,
-        inviteeName: args.invitee_name,
-        inviteeEmail: args.invitee_email,
-        inviteeTimezone: cc.calendlyTimezone || "America/New_York",
-      });
-
-      clearPendingApproval(cc);
-
-      return JSON.stringify({
-        status: "ok",
-        success: true,
-        message: `Appointment confirmed for ${args.invitee_name}.`,
-        event_uri: invitee.event,
+      return await runCreateBooking(cc, {
+        start_time: args.start_time,
+        invitee_name: args.invitee_name,
+        invitee_email: args.invitee_email,
       });
     } catch (err) {
       logger.error("calendly_create_booking failed", {
         callId: cc.callId,
         error: (err as Error).message,
       });
-      return "Unable to complete the booking. Let me connect you with someone who can help.";
+      return "Unable to complete the booking right now.";
     }
   },
 });
 
-const calendlyCancelBooking = tool<typeof calendlyCancelSchema, CallContext>({
+const calendlyCancelBooking = tool<z.ZodObject<{
+  event_uri: z.ZodString;
+  reason: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+}>, CallContext>({
   name: "calendly_cancel_booking",
-  description:
-    "Cancel an existing Calendly appointment. Requires event URI and explicit confirmation.",
-  parameters: calendlyCancelSchema,
+  description: "Legacy alias for CANCEL_BOOKING.",
+  parameters: z.object({
+    event_uri: z.string().describe("Calendly event URI to cancel"),
+    reason: z.string().nullable().optional().describe("Reason for cancellation"),
+  }),
   async execute(args, ctx) {
     const cc = ctx?.context;
     if (!cc) return "Missing call context.";
-    if (!cc.calendlyAccessToken) return "Calendly is not configured for this business.";
-
-    const gate = enforceApprovalGate(cc, "calendly_cancel_booking", args);
-    if (!gate.allowed) {
-      return gate.outputIfBlocked ?? "Confirmation required.";
-    }
-
-    logger.info("tool: calendly_cancel_booking", {
-      callId: cc.callId,
-      actionHash: gate.actionHash,
-    });
-
+    const gate = enforceApprovalGate(cc, "CANCEL_BOOKING", args as Record<string, unknown>);
+    if (!gate.allowed) return gate.outputIfBlocked ?? "Confirmation required.";
     try {
-      await calendly.cancelEvent(
-        cc.calendlyAccessToken,
-        args.event_uri,
-        args.reason ?? undefined,
-      );
-
-      clearPendingApproval(cc);
-      return JSON.stringify({ status: "ok", success: true, message: "The appointment has been cancelled." });
+      return await runCancelBooking(cc, {
+        event_uri: args.event_uri,
+        reason: args.reason ?? undefined,
+      });
     } catch (err) {
       logger.error("calendly_cancel_booking failed", {
         callId: cc.callId,
         error: (err as Error).message,
       });
-      return "Unable to cancel that appointment right now.";
+      return "Unable to cancel that booking right now.";
     }
   },
 });
 
-const otSearchAvailability = tool<typeof otSearchSchema, CallContext>({
+const otSearchAvailability = tool<z.ZodObject<{
+  date: z.ZodString;
+  party_size: z.ZodNumber;
+  time_preference: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+}>, CallContext>({
   name: "search_availability",
-  description: "Search for available restaurant reservation time slots on OpenTable.",
-  parameters: otSearchSchema,
+  description: "Legacy alias for LOOKUP_AVAILABILITY.",
+  parameters: z.object({
+    date: z.string().describe("ISO 8601 date, e.g. '2026-02-18'"),
+    party_size: z.number().int().min(1).max(20).describe("Number of guests"),
+    time_preference: z.string().nullable().optional().describe("Preferred time in 24h format"),
+  }),
   async execute(args, ctx) {
     const cc = ctx?.context;
     if (!cc) return "Missing call context.";
-    if (!cc.restaurantId) return "OpenTable is not configured for this business.";
-    rememberSlotMemory(cc, args);
-
-    logger.info("tool: search_availability", { callId: cc.callId, args });
-
     try {
-      const result = await callTool({
-        orgId: cc.orgId,
-        toolName: "search_availability",
-        args: { restaurant_id: cc.restaurantId, ...args },
+      return await runLookupAvailability(cc, {
+        date: args.date,
+        players: args.party_size,
+        time_preference: args.time_preference,
       });
-      return JSON.stringify(result);
     } catch (err) {
       logger.error("search_availability failed", {
         callId: cc.callId,
@@ -551,72 +916,76 @@ const otSearchAvailability = tool<typeof otSearchSchema, CallContext>({
   },
 });
 
-const otCreateReservation = tool<typeof otCreateSchema, CallContext>({
+const otCreateReservation = tool<z.ZodObject<{
+  date: z.ZodString;
+  time: z.ZodString;
+  party_size: z.ZodNumber;
+  customer_name: z.ZodString;
+  customer_phone: z.ZodString;
+  customer_email: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+}>, CallContext>({
   name: "create_reservation",
-  description: "Create a new OpenTable reservation after explicit confirmation.",
-  parameters: otCreateSchema,
+  description: "Legacy alias for CREATE_BOOKING.",
+  parameters: z.object({
+    date: z.string().describe("ISO 8601 date"),
+    time: z.string().describe("Time in 24h format, e.g. '19:00'"),
+    party_size: z.number().int().min(1).max(20),
+    customer_name: z.string(),
+    customer_phone: z.string(),
+    customer_email: z.string().nullable().optional(),
+  }),
   async execute(args, ctx) {
     const cc = ctx?.context;
     if (!cc) return "Missing call context.";
-    if (!cc.restaurantId) return "OpenTable is not configured for this business.";
-    rememberSlotMemory(cc, args);
-
-    const gate = enforceApprovalGate(cc, "create_reservation", args);
-    if (!gate.allowed) {
-      return gate.outputIfBlocked ?? "Confirmation required.";
-    }
-
-    logger.info("tool: create_reservation", {
-      callId: cc.callId,
-      actionHash: gate.actionHash,
-    });
-
+    const gate = enforceApprovalGate(cc, "CREATE_BOOKING", args as Record<string, unknown>);
+    if (!gate.allowed) return gate.outputIfBlocked ?? "Confirmation required.";
     try {
-      const result = await callTool({
-        orgId: cc.orgId,
-        toolName: "create_reservation",
-        args: { restaurant_id: cc.restaurantId, ...args },
+      return await runCreateBooking(cc, {
+        starts_at: composeDateTime(args.date, args.time),
+        customer_name: args.customer_name,
+        customer_phone: args.customer_phone,
+        customer_email: args.customer_email ?? undefined,
+        party_size: args.party_size,
       });
-      clearPendingApproval(cc);
-      return JSON.stringify(result);
     } catch (err) {
       logger.error("create_reservation failed", {
         callId: cc.callId,
         error: (err as Error).message,
       });
-      return "Unable to complete the reservation. Let me connect you with someone who can help.";
+      return "Unable to complete the reservation right now.";
     }
   },
 });
 
-const otModifyReservation = tool<typeof otModifySchema, CallContext>({
+const otModifyReservation = tool<z.ZodObject<{
+  reservation_id: z.ZodString;
+  new_date: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+  new_time: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+  new_party_size: z.ZodOptional<z.ZodNullable<z.ZodNumber>>;
+  new_special_requests: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+}>, CallContext>({
   name: "modify_reservation",
-  description: "Modify an existing OpenTable reservation after explicit confirmation.",
-  parameters: otModifySchema,
+  description: "Legacy alias for MODIFY_BOOKING.",
+  parameters: z.object({
+    reservation_id: z.string(),
+    new_date: z.string().nullable().optional(),
+    new_time: z.string().nullable().optional(),
+    new_party_size: z.number().int().min(1).max(20).nullable().optional(),
+    new_special_requests: z.string().nullable().optional(),
+  }),
   async execute(args, ctx) {
     const cc = ctx?.context;
     if (!cc) return "Missing call context.";
-    if (!cc.restaurantId) return "OpenTable is not configured for this business.";
-    rememberSlotMemory(cc, args);
-
-    const gate = enforceApprovalGate(cc, "modify_reservation", args);
-    if (!gate.allowed) {
-      return gate.outputIfBlocked ?? "Confirmation required.";
-    }
-
-    logger.info("tool: modify_reservation", {
-      callId: cc.callId,
-      actionHash: gate.actionHash,
-    });
-
+    const gate = enforceApprovalGate(cc, "MODIFY_BOOKING", args as Record<string, unknown>);
+    if (!gate.allowed) return gate.outputIfBlocked ?? "Confirmation required.";
     try {
-      const result = await callTool({
-        orgId: cc.orgId,
-        toolName: "modify_reservation",
-        args: { restaurant_id: cc.restaurantId, ...args },
+      return await runModifyBooking(cc, {
+        booking_id: args.reservation_id,
+        new_date: args.new_date ?? undefined,
+        new_time: args.new_time ?? undefined,
+        new_party_size: args.new_party_size ?? undefined,
+        notes: args.new_special_requests ?? undefined,
       });
-      clearPendingApproval(cc);
-      return JSON.stringify(result);
     } catch (err) {
       logger.error("modify_reservation failed", {
         callId: cc.callId,
@@ -627,34 +996,21 @@ const otModifyReservation = tool<typeof otModifySchema, CallContext>({
   },
 });
 
-const otCancelReservation = tool<typeof otCancelSchema, CallContext>({
+const otCancelReservation = tool<z.ZodObject<{ reservation_id: z.ZodString }>, CallContext>({
   name: "cancel_reservation",
-  description: "Cancel an OpenTable reservation after explicit confirmation.",
-  parameters: otCancelSchema,
+  description: "Legacy alias for CANCEL_BOOKING.",
+  parameters: z.object({
+    reservation_id: z.string().describe("Reservation identifier"),
+  }),
   async execute(args, ctx) {
     const cc = ctx?.context;
     if (!cc) return "Missing call context.";
-    if (!cc.restaurantId) return "OpenTable is not configured for this business.";
-    rememberSlotMemory(cc, args);
-
-    const gate = enforceApprovalGate(cc, "cancel_reservation", args);
-    if (!gate.allowed) {
-      return gate.outputIfBlocked ?? "Confirmation required.";
-    }
-
-    logger.info("tool: cancel_reservation", {
-      callId: cc.callId,
-      actionHash: gate.actionHash,
-    });
-
+    const gate = enforceApprovalGate(cc, "CANCEL_BOOKING", args as Record<string, unknown>);
+    if (!gate.allowed) return gate.outputIfBlocked ?? "Confirmation required.";
     try {
-      const result = await callTool({
-        orgId: cc.orgId,
-        toolName: "cancel_reservation",
-        args: { restaurant_id: cc.restaurantId, ...args },
+      return await runCancelBooking(cc, {
+        booking_id: args.reservation_id,
       });
-      clearPendingApproval(cc);
-      return JSON.stringify(result);
     } catch (err) {
       logger.error("cancel_reservation failed", {
         callId: cc.callId,
@@ -665,25 +1021,27 @@ const otCancelReservation = tool<typeof otCancelSchema, CallContext>({
   },
 });
 
-const otGetReservationDetails = tool<typeof otDetailsSchema, CallContext>({
+const otGetReservationDetails = tool<z.ZodObject<{
+  reservation_id: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+  customer_name: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+  customer_phone: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+}>, CallContext>({
   name: "get_reservation_details",
-  description: "Look up reservation details by reservation ID or customer details.",
-  parameters: otDetailsSchema,
+  description: "Legacy alias for LOOKUP_BOOKING.",
+  parameters: z.object({
+    reservation_id: z.string().nullable().optional(),
+    customer_name: z.string().nullable().optional(),
+    customer_phone: z.string().nullable().optional(),
+  }),
   async execute(args, ctx) {
     const cc = ctx?.context;
     if (!cc) return "Missing call context.";
-    if (!cc.restaurantId) return "OpenTable is not configured for this business.";
-    rememberSlotMemory(cc, args);
-
-    logger.info("tool: get_reservation_details", { callId: cc.callId, args });
-
     try {
-      const result = await callTool({
-        orgId: cc.orgId,
-        toolName: "get_reservation_details",
-        args: { restaurant_id: cc.restaurantId, ...args },
+      return await runLookupBooking(cc, {
+        booking_id: args.reservation_id ?? undefined,
+        customer_name: args.customer_name ?? undefined,
+        customer_phone: args.customer_phone ?? undefined,
       });
-      return JSON.stringify(result);
     } catch (err) {
       logger.error("get_reservation_details failed", {
         callId: cc.callId,
@@ -692,6 +1050,12 @@ const otGetReservationDetails = tool<typeof otDetailsSchema, CallContext>({
       return "Unable to look up reservation details right now.";
     }
   },
+});
+
+const logComplaintSchema = z.object({
+  issue_summary: z.string().describe("Brief description of the complaint"),
+  customer_name: z.string().describe("Caller's name"),
+  customer_phone: z.string().nullable().optional().describe("Callback phone number"),
 });
 
 const logComplaint = tool<typeof logComplaintSchema, CallContext>({
@@ -1330,6 +1694,11 @@ const assistantAgent: Agent<CallContext> = new Agent({
   instructions: withContext(SINGLE_AGENT_INSTRUCTIONS),
   model: env.LLM_MODEL,
   tools: [
+    lookupAvailabilityTool,
+    createBookingTool,
+    modifyBookingTool,
+    cancelBookingTool,
+    lookupBookingTool,
     calendlySearchAvailability,
     calendlyCreateBooking,
     calendlyCancelBooking,

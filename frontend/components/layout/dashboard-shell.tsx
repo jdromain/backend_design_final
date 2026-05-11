@@ -9,6 +9,7 @@ import {
   BarChart3,
   BookOpen,
   Bot,
+  CalendarDays,
   ChevronLeft,
   ChevronRight,
   CreditCard,
@@ -54,7 +55,7 @@ type NavItem = {
   pageId: string;
   label: string;
   icon: typeof BarChart3;
-  shortcut: number;
+  shortcut?: number;
 };
 
 const PRIMARY_NAV: NavItem[] = [
@@ -65,6 +66,7 @@ const PRIMARY_NAV: NavItem[] = [
   { href: "/analytics", pageId: "analytics", label: "Analytics", icon: TrendingUp, shortcut: 5 },
   { href: "/agents", pageId: "agents", label: "Agent", icon: Bot, shortcut: 6 },
   { href: "/knowledge", pageId: "knowledge", label: "Knowledge Base", icon: BookOpen, shortcut: 7 },
+  { href: "/calendar", pageId: "calendar", label: "Calendar", icon: CalendarDays },
   { href: "/integrations", pageId: "integrations", label: "Integrations", icon: Puzzle, shortcut: 8 },
   { href: "/billing", pageId: "billing", label: "Billing", icon: CreditCard, shortcut: 9 },
 ];
@@ -158,14 +160,16 @@ export function DashboardShell({ children }: { children: ReactNode }) {
   const renderNavLink = (item: NavItem) => {
     const isActive =
       pathname === item.href || (item.href !== "/" && pathname.startsWith(item.href));
-    const shortcutLabel = `⌘${item.shortcut}`;
+    const shortcutLabel = item.shortcut ? `⌘${item.shortcut}` : undefined;
     const link = (
       <Link href={item.href} className={navLinkClass(isActive)} title={sidebarCollapsed ? item.label : undefined}>
         <item.icon className="h-5 w-5 shrink-0" />
         {!sidebarCollapsed && (
           <span className="flex flex-1 items-center justify-between gap-2 truncate">
             <span className="truncate">{item.label}</span>
-            <span className="hidden text-[10px] font-normal opacity-60 lg:inline">{shortcutLabel}</span>
+            {shortcutLabel ? (
+              <span className="hidden text-[10px] font-normal opacity-60 lg:inline">{shortcutLabel}</span>
+            ) : null}
           </span>
         )}
       </Link>
@@ -177,7 +181,7 @@ export function DashboardShell({ children }: { children: ReactNode }) {
       <Tooltip key={item.href}>
         <TooltipTrigger asChild>{link}</TooltipTrigger>
         <TooltipContent side="right">
-          {item.label} ({shortcutLabel})
+          {shortcutLabel ? `${item.label} (${shortcutLabel})` : item.label}
         </TooltipContent>
       </Tooltip>
     );

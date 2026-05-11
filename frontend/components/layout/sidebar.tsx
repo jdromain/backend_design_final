@@ -9,6 +9,7 @@ import {
   BarChart3,
   Bot,
   BookOpen,
+  Calendar,
   Puzzle,
   CreditCard,
   Settings,
@@ -26,6 +27,7 @@ const navigation = [
   { name: "Analytics", href: "/analytics", icon: BarChart3 },
   { name: "AI Agents", href: "/agents", icon: Bot },
   { name: "Knowledge Base", href: "/knowledge", icon: BookOpen },
+  { name: "Calendar", href: "/calendar", icon: Calendar },
   { name: "Integrations", href: "/integrations", icon: Puzzle },
   { name: "Billing", href: "/billing", icon: CreditCard },
 ];

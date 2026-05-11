@@ -4,6 +4,7 @@ import { createLogger } from "@rezovo/logging";
 import { registerKbReembedWorker } from "./kbReembedWorker";
 import { startBillingReconciliation } from "./billingReconciliation";
 import { startStaleCallReconciler } from "./staleCallReconciler";
+import { startCalendarMaintenance } from "./calendarMaintenance";
 
 const logger = createLogger({ service: "jobs", module: "bootstrap" });
 
@@ -32,6 +33,7 @@ async function bootstrap(): Promise<void> {
   await registerKbReembedWorker(bus);
   startBillingReconciliation();
   startStaleCallReconciler();
+  startCalendarMaintenance();
 
   logger.info("jobs runtime initialized", { eventBusImpl: impl });
 }
