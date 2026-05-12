@@ -235,6 +235,13 @@ CREATE TABLE IF NOT EXISTS public.calls (
   tts_chars         INT DEFAULT 0,
   stt_seconds       REAL DEFAULT 0,
 
+  -- Agentic intelligence (v2)
+  classification_v2 JSONB,
+  classification_v2_phase TEXT NOT NULL DEFAULT 'provisional'
+                      CHECK (classification_v2_phase IN ('provisional', 'pending_context', 'final', 'failed')),
+  classification_v2_updated_at TIMESTAMPTZ,
+  call_intelligence_manual_lock BOOLEAN NOT NULL DEFAULT false,
+
   created_at        TIMESTAMPTZ DEFAULT now()
 );
 
@@ -245,6 +252,8 @@ CREATE INDEX IF NOT EXISTS idx_calls_started        ON public.calls(started_at D
 CREATE INDEX IF NOT EXISTS idx_calls_org_started ON public.calls(org_id, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_calls_status         ON public.calls(status);
 CREATE INDEX IF NOT EXISTS idx_calls_failure_type   ON public.calls(failure_type);
+CREATE INDEX IF NOT EXISTS idx_calls_intel_phase ON public.calls(classification_v2_phase);
+CREATE INDEX IF NOT EXISTS idx_calls_intel_updated ON public.calls(classification_v2_updated_at DESC);
 
 -- ═══════════════════════════════════════════════════════════════
 -- 9. CALL TRANSCRIPT — per-utterance with timestamps

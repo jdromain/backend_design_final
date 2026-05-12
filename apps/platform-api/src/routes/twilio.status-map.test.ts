@@ -7,7 +7,7 @@ describe("mapTwilioTerminalStatus", () => {
     expect(mapped).toEqual({
       status: "completed",
       outcome: "handled",
-      endReason: "unknown",
+      endReason: "agent_end",
     });
   });
 

@@ -86,7 +86,7 @@ services:
       REDIS_ENABLED: "true"
       REALTIME_CORE_URL: http://realtime-core:3002
       PLATFORM_API_URL: http://platform-api:3001
-      CORS_ORIGINS: http://localhost:3000
+      CORS_ORIGINS: http://localhost:3000,http://localhost:3005
       DB_SSL: "false"
       DB_POOL_MAX: "5"
       KAFKA_ENABLED: "false"

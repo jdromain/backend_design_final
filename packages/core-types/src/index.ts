@@ -533,6 +533,162 @@ export type VoicemailReferenceCreatedPayload = {
   receivedAt: string;
 };
 
+export type CallIntelligencePhase = "provisional" | "pending_context" | "final" | "failed";
+export type CallIntelligenceRiskLevel = "low" | "medium" | "high";
+export type CallIntelligenceSeverity = "info" | "warn" | "error";
+export type CallIntelligenceRecommendationPriority = "low" | "medium" | "high";
+export type CallIntelligenceResolutionState = "resolved" | "partially_resolved" | "unresolved" | "unknown";
+export type CallIntelligenceEvidenceKind = "transcript" | "tool_event" | "call_event" | "derived_signal";
+export type CallIntelligenceFollowupReasonCode =
+  | "unknown_intent"
+  | "customer_request"
+  | "handoff"
+  | "failure_recovery"
+  | "policy"
+  | "none";
+export type CallIntelligenceSlaClass = "low" | "medium" | "high";
+export type CallIntelligenceRecommendedOwner = "agent" | "ops" | "engineering" | "human_supervisor";
+export type CallIntelligenceTopicSource =
+  | "semantic_transcript"
+  | "intent_context"
+  | "deterministic_context"
+  | "fallback";
+export type CallIntelligenceTopicState =
+  | "final"
+  | "provisional"
+  | "pending_analysis"
+  | "insufficient_evidence"
+  | "classification_failed"
+  | "true_unknown";
+export type CallIntelligenceWarningCode =
+  | "missing_transcript_timestamp"
+  | "null_event_timestamp"
+  | "invalid_confidence"
+  | "stale_revision"
+  | "context_incomplete";
+
+export type CallIntelligenceWarning = {
+  code: CallIntelligenceWarningCode;
+  severity: CallIntelligenceSeverity;
+  field: string;
+  message: string;
+  count: number;
+  sampleIds: string[];
+  detectedAt: string;
+};
+
+export type CallIntelligenceEvidence = {
+  kind: CallIntelligenceEvidenceKind;
+  note: string;
+  snippet?: string;
+  timestampMs?: number;
+  sourceId?: string;
+};
+
+export type CallIntelligenceRecommendation = {
+  action: string;
+  reason: string;
+  priority: CallIntelligenceRecommendationPriority;
+};
+
+export type CallIntelligenceConfidence = {
+  primaryIntent?: number | null;
+  resolutionState?: number | null;
+  failureCategory?: number | null;
+  actionClass?: number | null;
+  recommendations?: number | null;
+};
+
+export type CallIntelligenceDecision = {
+  intents: {
+    primary: CanonicalIntentCategory;
+    secondary: CanonicalIntentCategory[];
+    callerGoal: string;
+  };
+  followup: {
+    needed: boolean;
+    reasonCode: CallIntelligenceFollowupReasonCode;
+    slaClass: CallIntelligenceSlaClass;
+    recommendedOwner: CallIntelligenceRecommendedOwner;
+    reviewRecommended: boolean;
+  };
+  resolutionState: CallIntelligenceResolutionState;
+  failureCategory: CanonicalFailureCategory;
+  actionClass: CanonicalActionClass;
+  riskLevel: CallIntelligenceRiskLevel;
+};
+
+export type CallIntelligenceSignals = {
+  toolsUsedCount?: number;
+  toolErrorsCount?: number;
+  transferRequested?: boolean;
+  silenceRisk?: boolean;
+  tokenUsage?: number;
+  durationSec?: number;
+  evidenceScore?: number;
+  evidenceGrade?: "strong" | "moderate" | "weak";
+  interpreterMode?: "shadow" | "active";
+  interpreterEnabled?: boolean;
+  interpreterModel?: string;
+  interpreterTopicCandidate?: string;
+  interpreterTopicConfidence?: number | null;
+  shadowAgreement?: boolean | null;
+};
+
+export type CallIntelligenceScalarSnapshot = {
+  failureCategory: CanonicalFailureCategory;
+  actionClass: CanonicalActionClass;
+  intentCategory: CanonicalIntentCategory;
+};
+
+export type CallIntelligenceProvenance = {
+  source: "rules" | "hybrid_llm";
+  model?: string;
+  author?: string;
+  mode?: "shadow" | "active";
+  generatedAt: string;
+  classificationVersion: number;
+  enrichmentRevision: string;
+  preRefinement: CallIntelligenceScalarSnapshot;
+  postRefinement: CallIntelligenceScalarSnapshot;
+  warnings: CallIntelligenceWarning[];
+};
+
+export type CallIntelligenceDisplay = {
+  summary: string;
+  shortReason: string;
+  recommendedBadge?: string;
+  topic?: string;
+  topicSource?: CallIntelligenceTopicSource;
+  topicState?: CallIntelligenceTopicState;
+  topicConfidence?: number | null;
+  resolutionLabel?: string;
+  nextStepLabel?: string;
+  riskLabel?: "Low" | "Medium" | "High";
+};
+
+export type CallIntelligenceV2 = {
+  version: 2;
+  phase: CallIntelligencePhase;
+  operational: {
+    status: CanonicalCallStatus;
+    outcome: CanonicalOutcome;
+    endReason: CanonicalEndReason;
+    failureCategory: CanonicalFailureCategory;
+    actionClass: CanonicalActionClass;
+  };
+  decision: CallIntelligenceDecision;
+  explanation: {
+    rationale: string;
+    evidence: CallIntelligenceEvidence[];
+  };
+  recommendations: CallIntelligenceRecommendation[];
+  signals: CallIntelligenceSignals;
+  confidence: CallIntelligenceConfidence;
+  provenance: CallIntelligenceProvenance;
+  display: CallIntelligenceDisplay;
+};
+
 export type EventPayloadByType = {
   CallStarted: CallStartedPayload;
   CallEnded: CallEndedPayload;

@@ -89,6 +89,70 @@ describe("canonical call list mapping", () => {
     expect(mapped.display.result).toBe("Unknown");
     expect(mapped.classification.failureCategory).toBe("unknown");
   });
+
+  it("does not downgrade failed outcome to unknown when evidence is sparse", () => {
+    const mapped = mapCallListItem(
+      buildCall({
+        status: "failed",
+        outcome: "failed",
+        endReason: "unknown",
+        failureType: undefined,
+      }),
+      [],
+    );
+
+    expect(mapped.canonical.status).toBe("failed");
+    expect(mapped.canonical.outcome).toBe("failed");
+    expect(mapped.result).toBe("systemFailed");
+  });
+
+  it("recovers terminal failed end reason from failure type when tuple input is incomplete", () => {
+    const mapped = mapCallListItem(
+      buildCall({
+        status: "failed",
+        outcome: undefined,
+        endReason: undefined,
+        failureType: "carrier timeout",
+      }),
+      [],
+    );
+
+    expect(mapped.canonical.status).toBe("failed");
+    expect(mapped.canonical.outcome).toBe("failed");
+    expect(mapped.canonical.endReason).toBe("timeout");
+  });
+
+  it("normalizes completed+unknown end reason to agent_end for user-facing consistency", () => {
+    const mapped = mapCallListItem(
+      buildCall({
+        status: "completed",
+        outcome: "handled",
+        endReason: "unknown",
+      }),
+      [],
+    );
+
+    expect(mapped.canonical.status).toBe("completed");
+    expect(mapped.canonical.outcome).toBe("handled");
+    expect(mapped.canonical.endReason).toBe("agent_end");
+    expect(mapped.display.reason).toBe("Agent Ended");
+  });
+
+  it("normalizes transferred+unknown end reason to transfer", () => {
+    const mapped = mapCallListItem(
+      buildCall({
+        status: "transferred",
+        outcome: "transferred",
+        endReason: "unknown",
+      }),
+      [],
+    );
+
+    expect(mapped.canonical.status).toBe("transferred");
+    expect(mapped.canonical.outcome).toBe("transferred");
+    expect(mapped.canonical.endReason).toBe("transfer");
+    expect(mapped.display.reason).toBe("Transfer");
+  });
 });
 
 describe("timeline mapping", () => {

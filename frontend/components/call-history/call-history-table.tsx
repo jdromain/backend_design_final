@@ -15,6 +15,13 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import type { CallRecord } from "@/types/api"
+import {
+  selectCallEndedByDisplay,
+  selectCallNextStepDisplay,
+  selectCallResolutionDisplay,
+  selectCallRiskDisplay,
+  selectCallTopicDisplay,
+} from "@/lib/call-labels"
 
 interface CallHistoryTableProps {
   calls: CallRecord[]
@@ -30,16 +37,22 @@ type SortDirection = "asc" | "desc"
 const defaultColumns = {
   dateTime: true,
   caller: true,
-  intent: true,
+  reasonForCall: true,
   direction: true,
   duration: true,
-  result: true,
-  endReason: true,
-  failureCategory: true,
-  actionClass: true,
+  outcome: true,
+  ownerOrSystem: true,
+  recommendedAction: true,
+  priority: true,
+  result: false,
+  endReason: false,
+  failureCategory: false,
+  actionClass: false,
   phoneLine: false,
   turns: false,
   tools: false,
+  confidence: false,
+  warnings: false,
 }
 
 export function CallHistoryTable({ calls, isLoading, onRowClick, selectedIds, onSelectRow }: CallHistoryTableProps) {
@@ -77,7 +90,7 @@ export function CallHistoryTable({ calls, isLoading, onRowClick, selectedIds, on
   const paginatedCalls = sortedCalls.slice((currentPage - 1) * pageSize, currentPage * pageSize)
   const totalPages = Math.ceil(calls.length / pageSize)
 
-  const SortIcon = ({ column }: { column: SortKey }) => {
+  const renderSortIcon = (column: SortKey) => {
     if (sortKey !== column) return <ArrowUpDown className="ml-1 h-4 w-4 opacity-50" />
     return sortDirection === "asc" ? <ArrowUp className="ml-1 h-4 w-4" /> : <ArrowDown className="ml-1 h-4 w-4" />
   }
@@ -106,6 +119,35 @@ export function CallHistoryTable({ calls, isLoading, onRowClick, selectedIds, on
         {reason.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}
       </Badge>
     )
+  }
+
+  const getToneClass = (tone: "success" | "warning" | "danger" | "neutral") => {
+    if (tone === "success") return "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20"
+    if (tone === "warning") return "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20"
+    if (tone === "danger") return "bg-red-500/10 text-red-600 dark:text-red-400 border-red-500/20"
+    return "bg-muted text-muted-foreground border-muted"
+  }
+
+  const getRiskClass = (level: "low" | "medium" | "high") => {
+    if (level === "high") return "bg-red-500/10 text-red-600 dark:text-red-400 border-red-500/20"
+    if (level === "medium") return "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20"
+    return "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20"
+  }
+
+  const getTopicBadgeClass = (
+    state:
+      | "final"
+      | "provisional"
+      | "pending_analysis"
+      | "insufficient_evidence"
+      | "classification_failed"
+      | "true_unknown",
+  ) => {
+    if (state === "classification_failed") return "bg-red-500/10 text-red-600 dark:text-red-400 border-red-500/20"
+    if (state === "insufficient_evidence") return "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20"
+    if (state === "pending_analysis" || state === "provisional") return "bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/20"
+    if (state === "true_unknown") return "bg-muted text-muted-foreground border-muted"
+    return "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20"
   }
 
   const formatDuration = (ms: number) => {
@@ -178,31 +220,37 @@ export function CallHistoryTable({ calls, isLoading, onRowClick, selectedIds, on
                 <TableHead>
                   <button className="flex items-center hover:text-foreground" onClick={() => handleSort("startedAt")}>
                     Date & Time
-                    <SortIcon column="startedAt" />
+                    {renderSortIcon("startedAt")}
                   </button>
                 </TableHead>
               )}
               {visibleColumns.caller && <TableHead>Caller</TableHead>}
-              {visibleColumns.intent && <TableHead>Intent Category</TableHead>}
+              {visibleColumns.reasonForCall && <TableHead>Reason for Call</TableHead>}
               {visibleColumns.direction && <TableHead>Direction</TableHead>}
               {visibleColumns.duration && (
                 <TableHead>
                   <button className="flex items-center hover:text-foreground" onClick={() => handleSort("duration")}>
                     Duration
-                    <SortIcon column="duration" />
+                    {renderSortIcon("duration")}
                   </button>
                 </TableHead>
               )}
+              {visibleColumns.outcome && <TableHead>Outcome</TableHead>}
+              {visibleColumns.ownerOrSystem && <TableHead>Ended by</TableHead>}
+              {visibleColumns.recommendedAction && <TableHead>Recommended Action</TableHead>}
+              {visibleColumns.priority && <TableHead>Priority</TableHead>}
               {visibleColumns.result && <TableHead>Outcome</TableHead>}
               {visibleColumns.endReason && <TableHead>End Reason</TableHead>}
               {visibleColumns.failureCategory && <TableHead>Failure Category</TableHead>}
               {visibleColumns.actionClass && <TableHead>Action Class</TableHead>}
+              {visibleColumns.confidence && <TableHead>Confidence</TableHead>}
+              {visibleColumns.warnings && <TableHead>Warnings</TableHead>}
               {visibleColumns.phoneLine && <TableHead>Phone Line</TableHead>}
               {visibleColumns.turns && (
                 <TableHead>
                   <button className="flex items-center hover:text-foreground" onClick={() => handleSort("turns")}>
                     Turns
-                    <SortIcon column="turns" />
+                    {renderSortIcon("turns")}
                   </button>
                 </TableHead>
               )}
@@ -210,7 +258,7 @@ export function CallHistoryTable({ calls, isLoading, onRowClick, selectedIds, on
                 <TableHead>
                   <button className="flex items-center hover:text-foreground" onClick={() => handleSort("tools")}>
                     Tools
-                    <SortIcon column="tools" />
+                    {renderSortIcon("tools")}
                   </button>
                 </TableHead>
               )}
@@ -219,6 +267,11 @@ export function CallHistoryTable({ calls, isLoading, onRowClick, selectedIds, on
           <TableBody>
             {paginatedCalls.map((call) => {
               const hasToolErrors = call.toolsUsed.some((t) => !t.success)
+              const topic = selectCallTopicDisplay(call)
+              const resolution = selectCallResolutionDisplay(call)
+              const endedBy = selectCallEndedByDisplay(call)
+              const nextStep = selectCallNextStepDisplay(call)
+              const risk = selectCallRiskDisplay(call)
               return (
                 <TableRow
                   key={call.callId}
@@ -257,11 +310,24 @@ export function CallHistoryTable({ calls, isLoading, onRowClick, selectedIds, on
                       </div>
                     </TableCell>
                   )}
-                  {visibleColumns.intent && (
+                  {visibleColumns.reasonForCall && (
                     <TableCell>
-                      <Badge variant="outline" className="font-normal">
-                        {call.intent ?? "Unknown"}
-                      </Badge>
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-medium">{topic.text}</span>
+                          {topic.badge && (
+                            <Badge
+                              variant="outline"
+                              className={`text-[10px] uppercase tracking-wide ${getTopicBadgeClass(topic.state)}`}
+                            >
+                              {topic.badge}
+                            </Badge>
+                          )}
+                        </div>
+                        {topic.warning && topic.state !== "final" && (
+                          <p className="text-[11px] text-muted-foreground line-clamp-1">{topic.warning}</p>
+                        )}
+                      </div>
                     </TableCell>
                   )}
                   {visibleColumns.direction && (
@@ -282,6 +348,34 @@ export function CallHistoryTable({ calls, isLoading, onRowClick, selectedIds, on
                   {visibleColumns.duration && (
                     <TableCell className="font-mono">{formatDuration(call.durationMs)}</TableCell>
                   )}
+                  {visibleColumns.outcome && (
+                    <TableCell>
+                      <Badge variant="outline" className={getToneClass(resolution.tone)}>
+                        {resolution.label}
+                      </Badge>
+                    </TableCell>
+                  )}
+                  {visibleColumns.ownerOrSystem && (
+                    <TableCell>
+                      <Badge variant="outline" className={getToneClass(endedBy.tone)}>
+                        {endedBy.label}
+                      </Badge>
+                    </TableCell>
+                  )}
+                  {visibleColumns.recommendedAction && (
+                    <TableCell>
+                      <Badge variant="outline" className={getToneClass(nextStep.tone)}>
+                        {nextStep.label}
+                      </Badge>
+                    </TableCell>
+                  )}
+                  {visibleColumns.priority && (
+                    <TableCell>
+                      <Badge variant="outline" className={getRiskClass(risk.level)}>
+                        {risk.level === "high" ? "High Priority" : risk.level === "medium" ? "Medium Priority" : "Low Priority"}
+                      </Badge>
+                    </TableCell>
+                  )}
                   {visibleColumns.result && <TableCell>{getResultBadge(call.result)}</TableCell>}
                   {visibleColumns.endReason && <TableCell>{getEndReasonBadge(call.endReason ?? "—")}</TableCell>}
                   {visibleColumns.failureCategory && (
@@ -289,6 +383,20 @@ export function CallHistoryTable({ calls, isLoading, onRowClick, selectedIds, on
                   )}
                   {visibleColumns.actionClass && (
                     <TableCell>{getEndReasonBadge(call.classification?.actionClass ?? "no_action")}</TableCell>
+                  )}
+                  {visibleColumns.confidence && (
+                    <TableCell>
+                      {typeof topic.confidence === "number" ? (
+                        <span className="font-mono text-xs">{Math.round(topic.confidence * 100)}%</span>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">—</span>
+                      )}
+                    </TableCell>
+                  )}
+                  {visibleColumns.warnings && (
+                    <TableCell>
+                      <span className="text-xs">{call.intelligence?.warnings.length ?? 0}</span>
+                    </TableCell>
                   )}
                   {visibleColumns.phoneLine && (
                     <TableCell className="font-mono text-sm">{call.phoneLineNumber}</TableCell>

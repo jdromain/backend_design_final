@@ -32,6 +32,8 @@ import {
   normalizeEndReasonKey,
   uiResultToOutcome,
 } from "../lib/callTaxonomy";
+import { buildCompactIntelligence, parseStoredIntelligence } from "../intelligence/callIntelligence";
+import { getCallIntelligence, upsertCallIntelligence } from "../intelligence/service";
 
 const logger = createLogger({ service: "platform-api", module: "callRoutes" });
 const resolvedAuthOrInternalHook = authOrInternalHook;
@@ -159,7 +161,8 @@ function parseResultFilter(raw: unknown): string[] {
       entry === "handoff" ||
       entry === "dropped" ||
       entry === "systemFailed" ||
-      entry === "pending");
+      entry === "pending" ||
+      entry === "unknown");
 }
 
 function expandEndReasonFilterKeys(normalizedReason: string): string[] {
@@ -356,42 +359,61 @@ function deriveToolFailureClass(tools: DerivedTool[]): CanonicalFailureCategory 
 
 function deriveClassification(
   canonical: CanonicalCallView,
-  call: Pick<CallRecord, "failureType" | "classifiedIntent" | "labelVersion">,
+  call: Pick<CallRecord, "failureType" | "classifiedIntent" | "labelVersion" | "failureCategory" | "actionClass">,
   tools: DerivedTool[]
 ): CanonicalClassificationView {
   const toolErrorsCount = tools.filter((tool) => !tool.success).length;
   const primaryFailedTool = tools.find((tool) => !tool.success)?.name ?? "unknown";
   const toolFailureClass = deriveToolFailureClass(tools);
 
-  const failureCategory = deriveCanonicalFailureCategory({
+  const derivedFailureCategory = deriveCanonicalFailureCategory({
     outcome: canonical.outcome,
     failureType: call.failureType,
     toolErrorsCount,
     endReason: canonical.endReason,
     toolFailureClass,
   });
+  const persistedFailureCategory =
+    call.failureCategory === "carrier_error" ||
+    call.failureCategory === "stt_error" ||
+    call.failureCategory === "tts_error" ||
+    call.failureCategory === "llm_error" ||
+    call.failureCategory === "tool_error" ||
+    call.failureCategory === "config_error" ||
+    call.failureCategory === "auth_error" ||
+    call.failureCategory === "quota_error" ||
+    call.failureCategory === "unknown"
+      ? call.failureCategory
+      : undefined;
+  const failureCategory: CanonicalFailureCategory =
+    persistedFailureCategory && persistedFailureCategory !== "unknown"
+      ? persistedFailureCategory
+      : derivedFailureCategory;
 
   const intentCategory = normalizeCanonicalIntentCategory(capitalizeFirst(call.classifiedIntent) ?? "Unknown");
-  const ambiguousFailed =
-    canonical.outcome === "failed" &&
-    failureCategory === "unknown" &&
-    canonical.endReason === "unknown" &&
-    !call.failureType &&
-    toolErrorsCount === 0;
-
-  const effectiveOutcome: CanonicalOutcome = ambiguousFailed ? "unknown" : canonical.outcome;
-
-  const actionClass = deriveCanonicalActionClass({
-    outcome: effectiveOutcome,
+  const derivedActionClass = deriveCanonicalActionClass({
+    outcome: canonical.outcome,
     endReason: canonical.endReason,
     failureCategory,
     intentCategory,
     toolErrorsCount,
   });
+  const persistedActionClass =
+    call.actionClass === "no_action" ||
+    call.actionClass === "review_required" ||
+    call.actionClass === "followup_required" ||
+    call.actionClass === "escalate_human" ||
+    call.actionClass === "engineering_investigate"
+      ? call.actionClass
+      : undefined;
+  const actionClass: CanonicalActionClass =
+    persistedActionClass && persistedActionClass !== "no_action"
+      ? persistedActionClass
+      : derivedActionClass;
 
   return {
     status: canonical.status,
-    outcome: effectiveOutcome,
+    outcome: canonical.outcome,
     endReason: canonical.endReason,
     failureCategory,
     intentCategory,
@@ -411,9 +433,116 @@ function deriveClassification(
   };
 }
 
+function normalizeCanonicalEndReasonInput(rawEndReason: string | null | undefined): CanonicalEndReason | undefined {
+  const key = normalizeEndReasonKey(rawEndReason);
+  if (!key) return undefined;
+  if (key === "normal_completion") return "unknown";
+  if (key === "agent_end" || key === "caller_hangup" || key === "transfer" || key === "timeout" || key === "error" || key === "quota_denied" || key === "unknown") {
+    return key;
+  }
+  return undefined;
+}
+
+function inferFailedEndReasonFromFailureType(failureType: string | null | undefined): CanonicalEndReason {
+  const token = String(failureType ?? "").toLowerCase();
+  if (!token) return "error";
+  if (token.includes("quota")) return "quota_denied";
+  if (token.includes("timeout") || token.includes("no-answer") || token.includes("silence")) return "timeout";
+  return "error";
+}
+
+function recoverTerminalTupleFromSignals(input: {
+  status: CanonicalCallStatus;
+  outcome?: string | null;
+  endReason?: string | null;
+  failureType?: string | null;
+}): CanonicalTerminalTuple | null {
+  if (!isCanonicalTerminalStatus(input.status)) return null;
+
+  const normalizedEndReason = normalizeCanonicalEndReasonInput(input.endReason);
+  const normalizedOutcome =
+    input.outcome === "handled" || input.outcome === "transferred" || input.outcome === "abandoned" || input.outcome === "failed"
+      ? input.outcome
+      : undefined;
+
+  switch (input.status) {
+    case "completed": {
+      const endReason: CanonicalEndReason = "agent_end";
+      return { status: "completed", outcome: "handled", endReason };
+    }
+    case "transferred": {
+      const endReason: CanonicalEndReason = "transfer";
+      return { status: "transferred", outcome: "transferred", endReason };
+    }
+    case "abandoned": {
+      const endReason =
+        normalizedEndReason === "timeout" || normalizedEndReason === "caller_hangup"
+          ? normalizedEndReason
+          : normalizedOutcome === "abandoned"
+            ? "caller_hangup"
+            : "caller_hangup";
+      return { status: "abandoned", outcome: "abandoned", endReason };
+    }
+    case "failed": {
+      const endReason =
+        normalizedEndReason === "timeout" || normalizedEndReason === "quota_denied" || normalizedEndReason === "error"
+          ? normalizedEndReason
+          : inferFailedEndReasonFromFailureType(input.failureType);
+      return { status: "failed", outcome: "failed", endReason };
+    }
+    default:
+      return null;
+  }
+}
+
+function refineTerminalTupleFromSignals(
+  tuple: CanonicalTerminalTuple,
+  failureType?: string | null
+): CanonicalTerminalTuple {
+  if (tuple.status === "completed" && tuple.endReason === "unknown") {
+    const validated = validateCanonicalTerminalTuple({
+      status: tuple.status,
+      outcome: tuple.outcome,
+      endReason: "agent_end",
+    });
+    if (validated.valid) return validated.normalized;
+  }
+
+  if (tuple.status === "failed" && tuple.endReason === "unknown") {
+    const endReason = inferFailedEndReasonFromFailureType(failureType);
+    const validated = validateCanonicalTerminalTuple({
+      status: tuple.status,
+      outcome: tuple.outcome,
+      endReason,
+    });
+    if (validated.valid) return validated.normalized;
+  }
+
+  if (tuple.status === "transferred" && tuple.endReason === "unknown") {
+    const validated = validateCanonicalTerminalTuple({
+      status: tuple.status,
+      outcome: tuple.outcome,
+      endReason: "transfer",
+    });
+    if (validated.valid) return validated.normalized;
+  }
+
+  if (tuple.status === "abandoned" && tuple.endReason === "unknown") {
+    const inferred = inferFailedEndReasonFromFailureType(failureType) === "timeout" ? "timeout" : "caller_hangup";
+    const validated = validateCanonicalTerminalTuple({
+      status: tuple.status,
+      outcome: tuple.outcome,
+      endReason: inferred,
+    });
+    if (validated.valid) return validated.normalized;
+  }
+
+  return tuple;
+}
+
 export function deriveCanonicalCallView(call: Pick<
   CallRecord,
-  "status" | "outcome" | "endReason" | "terminalStatusSource" | "intentSource" | "intentConfidenceBand" | "intentConfidence"
+  "status" | "outcome" | "endReason" | "failureType" | "terminalStatusSource" | "intentSource" | "intentConfidenceBand" | "intentConfidence"
 >): CanonicalCallView {
   const status = normalizeCanonicalCallStatus(call.status);
 
@@ -425,10 +554,34 @@ export function deriveCanonicalCallView(call: Pick<
     });
 
     if (validated.valid) {
+      const refined = refineTerminalTupleFromSignals(validated.normalized, call.failureType);
       return {
-        status: validated.normalized.status,
-        outcome: validated.normalized.outcome,
-        endReason: validated.normalized.endReason,
+        status: refined.status,
+        outcome: refined.outcome,
+        endReason: refined.endReason,
+        terminalStatusSource: normalizeTerminalStatusSource(call.terminalStatusSource),
+        intentSource: normalizeIntentSource(call.intentSource),
+        intentConfidenceBand:
+          call.intentConfidenceBand === "high" ||
+          call.intentConfidenceBand === "medium" ||
+          call.intentConfidenceBand === "low" ||
+          call.intentConfidenceBand === "unknown"
+            ? call.intentConfidenceBand
+            : toCanonicalConfidenceBand(call.intentConfidence),
+      };
+    }
+
+    const recovered = recoverTerminalTupleFromSignals({
+      status,
+      outcome: call.outcome,
+      endReason: call.endReason,
+      failureType: call.failureType,
+    });
+    if (recovered) {
+      return {
+        status: recovered.status,
+        outcome: recovered.outcome,
+        endReason: recovered.endReason,
         terminalStatusSource: normalizeTerminalStatusSource(call.terminalStatusSource),
         intentSource: normalizeIntentSource(call.intentSource),
         intentConfidenceBand:
@@ -572,6 +725,10 @@ export function mapCallListItem(c: CallRecord, tools: DerivedTool[]) {
       tools: displayBase.toolsLabel,
       failureType: displayBase.failureTypeLabel,
     },
+    intelligence:
+      "classificationV2" in c
+        ? buildCompactIntelligence(parseStoredIntelligence((c as CallRecord & { classificationV2?: unknown }).classificationV2))
+        : null,
   };
 }
 
@@ -580,6 +737,7 @@ export function mapLiveCallItem(row: any, eventRows: any[], transcriptRows: any[
     status: row.status,
     outcome: row.outcome,
     endReason: row.end_reason,
+    failureType: row.failure_type,
     terminalStatusSource: row.terminal_status_source,
     intentSource: row.intent_source,
     intentConfidenceBand: row.intent_confidence_band,
@@ -591,6 +749,8 @@ export function mapLiveCallItem(row: any, eventRows: any[], transcriptRows: any[
     canonical,
     {
       failureType: row.failure_type,
+      failureCategory: row.failure_category,
+      actionClass: row.action_class,
       classifiedIntent: row.classified_intent,
       labelVersion: row.label_version,
     },
@@ -666,12 +826,30 @@ export function mapLiveCallItem(row: any, eventRows: any[], transcriptRows: any[
       tools: displayBase.toolsLabel,
       failureType: displayBase.failureTypeLabel,
     },
+    intelligence: buildCompactIntelligence(parseStoredIntelligence(row.classification_v2)),
   };
 }
 
 async function resolveCallOrgId(callId: string): Promise<string | null> {
   const result = await query("SELECT org_id FROM calls WHERE call_id = $1", [callId]);
   return result.rows[0]?.org_id ?? null;
+}
+
+function resolveOrgIdForInternalAwareRequest(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  bodyOrgId: unknown,
+): string | null {
+  const providedOrgId =
+    typeof bodyOrgId === "string" && bodyOrgId.trim().length > 0 ? bodyOrgId.trim() : undefined;
+  if (request.internalServiceAuth) {
+    if (!providedOrgId) {
+      sendError(reply, 400, "missing_org", "orgId is required for internal intelligence writes");
+      return null;
+    }
+    return providedOrgId;
+  }
+  return requireOrgForRequest(request, reply, providedOrgId);
 }
 
 export function registerCallRoutes(app: FastifyInstance) {
@@ -731,11 +909,15 @@ export function registerCallRoutes(app: FastifyInstance) {
       return reply.status(400).send({ error: "missing required fields: callId, orgId" });
     }
 
+    const normalizedIncomingEndReason = normalizeEndReasonKey(body.endReason);
     const resolvedEndReason =
       typeof body.endReason === "string" && body.endReason.trim().length > 0
-        ? body.endReason.trim()
+        ? body.outcome === "handled" &&
+          (normalizedIncomingEndReason === "unknown" || normalizedIncomingEndReason === "normal_completion")
+            ? "agent_end"
+            : body.endReason.trim()
         : body.outcome === "handled"
-          ? "normal_completion"
+          ? "agent_end"
           : undefined;
 
     const terminal = resolveCanonicalTerminalTuple({
@@ -899,6 +1081,99 @@ export function registerCallRoutes(app: FastifyInstance) {
     return reply.send({ ok: true });
   });
 
+  app.get("/calls/facets", {
+    preHandler: resolvedAuthHook(["admin", "editor", "viewer"]),
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const queryInput = (request.query ?? {}) as { orgId?: string; from?: string; to?: string };
+    const orgId = requireOrgForRequest(request, reply, queryInput.orgId);
+    if (!orgId) return;
+
+    const filters: string[] = ["c.org_id = $1"];
+    const values: string[] = [orgId];
+    let index = 2;
+
+    const fromDate = parseDateOrNull(queryInput.from);
+    const toDate = parseDateOrNull(queryInput.to);
+    if (fromDate) {
+      filters.push(`c.started_at >= $${index}::timestamptz`);
+      values.push(fromDate.toISOString());
+      index += 1;
+    }
+    if (toDate) {
+      filters.push(`c.started_at <= $${index}::timestamptz`);
+      values.push(toDate.toISOString());
+      index += 1;
+    }
+    const whereSql = `WHERE ${filters.join(" AND ")}`;
+
+    const [intentRows, reasonRows, directionRows, phoneRows, toolRows] = await Promise.all([
+      query(
+        `SELECT DISTINCT c.classified_intent AS intent
+         FROM calls c
+         ${whereSql}
+         AND c.classified_intent IS NOT NULL
+         ORDER BY c.classified_intent ASC`,
+        values,
+      ),
+      query(
+        `SELECT DISTINCT c.end_reason
+         FROM calls c
+         ${whereSql}
+         AND c.end_reason IS NOT NULL`,
+        values,
+      ),
+      query(
+        `SELECT DISTINCT c.direction
+         FROM calls c
+         ${whereSql}
+         AND c.direction IS NOT NULL
+         ORDER BY c.direction ASC`,
+        values,
+      ),
+      query(
+        `SELECT DISTINCT c.phone_number
+         FROM calls c
+         ${whereSql}
+         AND c.phone_number IS NOT NULL
+         ORDER BY c.phone_number ASC`,
+        values,
+      ),
+      query(
+        `SELECT DISTINCT COALESCE(payload->>'toolName', payload->>'tool_name') AS tool_name
+         FROM call_events
+         WHERE org_id = $1
+           AND event_type = 'tool_called'
+           AND COALESCE(payload->>'toolName', payload->>'tool_name') IS NOT NULL
+         ORDER BY tool_name ASC`,
+        [orgId],
+      ),
+    ]);
+
+    const reasonSet = new Set<string>();
+    for (const row of reasonRows.rows as Array<{ end_reason?: string | null }>) {
+      const normalized = normalizeEndReasonKey(row.end_reason);
+      if (normalized) reasonSet.add(normalized);
+    }
+
+    sendData(reply, {
+      intents: (intentRows.rows as Array<{ intent?: string | null }>)
+        .map((row) => capitalizeFirst(row.intent))
+        .filter((value): value is string => typeof value === "string" && value.length > 0),
+      endReasons: Array.from(reasonSet).sort((a, b) => a.localeCompare(b)),
+      directions: (directionRows.rows as Array<{ direction?: string | null }>)
+        .map((row) => row.direction)
+        .filter((value): value is string => value === "inbound" || value === "outbound"),
+      phoneLines: (phoneRows.rows as Array<{ phone_number?: string | null }>)
+        .map((row) => row.phone_number?.trim())
+        .filter((value): value is string => !!value)
+        .map((number) => ({ id: number, number, name: number })),
+      tools: (toolRows.rows as Array<{ tool_name?: string | null }>)
+        .map((row) => row.tool_name?.trim())
+        .filter((value): value is string => !!value),
+      results: ["completed", "handoff", "dropped", "systemFailed", "pending"],
+    });
+  });
+
   // ----------------------------------------------------------------
   // UI read routes (auth'd, { data } envelope)
   // ----------------------------------------------------------------
@@ -965,6 +1240,12 @@ export function registerCallRoutes(app: FastifyInstance) {
         .map((result) => {
           if (result === "pending") {
             return `(c.outcome IS NULL AND c.status = ANY('{${LIVE_STATUSES.join(",")}}'::text[]))`;
+          }
+          if (result === "unknown") {
+            return `(
+              (c.outcome = 'unknown' OR c.end_reason = 'unknown')
+              AND c.status <> ALL('{${LIVE_STATUSES.join(",")}}'::text[])
+            )`;
           }
           const outcome = uiResultToOutcome(result);
           if (!outcome) return null;
@@ -1071,6 +1352,7 @@ export function registerCallRoutes(app: FastifyInstance) {
     );
     const calls = callsResult.rows.map((row: any) => ({
       callId: row.call_id,
+      orgId: row.org_id,
       startedAt: row.started_at,
       endedAt: row.ended_at,
       callerNumber: row.caller_number,
@@ -1083,7 +1365,15 @@ export function registerCallRoutes(app: FastifyInstance) {
       status: row.status,
       endReason: row.end_reason,
       failureType: row.failure_type,
+      failureCategory: row.failure_category,
+      actionClass: row.action_class,
+      terminalStatusSource: row.terminal_status_source,
+      intentSource: row.intent_source,
+      intentConfidenceBand: row.intent_confidence_band,
+      intentConfidence: row.intent_confidence,
+      labelVersion: row.label_version,
       turnCount: row.turn_count,
+      classificationV2: row.classification_v2,
     }));
 
     const callIds = calls.map((c) => c.callId);
@@ -1236,5 +1526,112 @@ export function registerCallRoutes(app: FastifyInstance) {
     }));
 
     sendData(reply, mapped);
+  });
+
+  app.get("/calls/:id/intelligence", {
+    preHandler: resolvedAuthHook(["admin", "editor", "viewer"]),
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const { id } = request.params as { id: string };
+
+    const intelligence = await getCallIntelligence(id);
+    if (!intelligence) {
+      return sendError(reply, 404, "not_found", "Call not found");
+    }
+    if (intelligence.orgId !== request.auth!.org_id) {
+      return sendError(reply, 404, "not_found", "Call not found");
+    }
+
+    sendData(reply, {
+      callId: intelligence.callId,
+      phase: intelligence.phase,
+      updatedAt: intelligence.updatedAt,
+      classificationVersion: intelligence.classificationVersion,
+      enrichmentRevision: intelligence.enrichmentRevision,
+      intelligence: intelligence.intelligence,
+      compact: intelligence.compact,
+      warnings: intelligence.warnings,
+    });
+  });
+
+  app.post("/calls/intelligence/enrich", {
+    preHandler: resolvedAuthOrInternalHook(["admin", "editor"]),
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const body = (request.body ?? {}) as {
+      callId?: string;
+      orgId?: string;
+      source?: "rules" | "hybrid_llm";
+      model?: string;
+      author?: string;
+      enrichmentRevision?: string;
+      phase?: "provisional" | "pending_context" | "final" | "failed";
+      interpreterMode?: "shadow" | "active";
+      interpreterEnabled?: boolean;
+      intelligence?: unknown;
+      warnings?: unknown;
+    };
+
+    if (!body.callId || typeof body.callId !== "string") {
+      return sendError(reply, 400, "missing_call_id", "callId is required");
+    }
+
+    const orgId = resolveOrgIdForInternalAwareRequest(request, reply, body.orgId);
+    if (!orgId) return;
+
+    if (!body.enrichmentRevision || typeof body.enrichmentRevision !== "string") {
+      return sendError(
+        reply,
+        400,
+        "missing_enrichment_revision",
+        "enrichmentRevision is required",
+      );
+    }
+
+    const source = body.source === "hybrid_llm" ? "hybrid_llm" : "rules";
+    const result = await upsertCallIntelligence({
+      callId: body.callId,
+      orgId,
+      source,
+      model: typeof body.model === "string" ? body.model : undefined,
+      author: typeof body.author === "string" ? body.author : undefined,
+      enrichmentRevision: body.enrichmentRevision,
+      phase: body.phase,
+      interpreterMode: body.interpreterMode,
+      interpreterEnabled:
+        typeof body.interpreterEnabled === "boolean" ? body.interpreterEnabled : undefined,
+      intelligence: body.intelligence ?? body,
+      warnings: Array.isArray(body.warnings) ? (body.warnings as any) : undefined,
+    });
+
+    if (!result.applied) {
+      const status =
+        result.reason === "missing_call"
+          ? 404
+          : result.reason === "invalid_terminal"
+            ? 409
+            : 200;
+      return reply.status(status).send({
+        data: {
+          applied: false,
+          reason: result.reason,
+          callId: result.callId,
+          orgId: result.orgId,
+          phase: result.phase,
+          warnings: result.warnings,
+          compact: result.compact,
+        },
+      });
+    }
+
+    reply.status(201).send({
+      data: {
+        applied: true,
+        reason: result.reason,
+        callId: result.callId,
+        orgId: result.orgId,
+        phase: result.phase,
+        warnings: result.warnings,
+        compact: result.compact,
+      },
+    });
   });
 }

@@ -38,7 +38,7 @@ fi
 
 # 007_kb_documents_last_error.sql was referenced by tooling before it existed in-repo; keep it for
 # environments that created DBs from older setup_complete.sql without last_error.
-for f in setup_complete.sql 002_ui_tables.sql 004_call_failure_type.sql 006_org_id_canonical_cutover.sql 007_kb_documents_last_error.sql 007_plan_b_indexes.sql 008_canonical_call_labeling.sql; do
+for f in setup_complete.sql 002_ui_tables.sql 004_call_failure_type.sql 006_org_id_canonical_cutover.sql 007_kb_documents_last_error.sql 007_plan_b_indexes.sql 008_canonical_call_labeling.sql 009_call_classification.sql 010_call_intelligence_v2.sql; do
   echo "==> Applying database/$f"
   psql "$PGURL" -v ON_ERROR_STOP=1 -f "$ROOT/database/$f"
 done

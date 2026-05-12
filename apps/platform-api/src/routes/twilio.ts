@@ -5,7 +5,7 @@ import { validateCanonicalTerminalTuple, type CanonicalTerminalTuple } from "@re
 import { env } from "../env";
 import { callStore, PhoneNumberRecord } from "../persistence/callStore";
 import { createHmac, randomUUID } from "crypto";
-import { isDefaultCompletionReason } from "../lib/callTaxonomy";
+import { isDefaultCompletionReason, normalizeEndReasonKey } from "../lib/callTaxonomy";
 
 const logger = createLogger({ service: "platform-api", module: "twilioRoutes" });
 
@@ -47,9 +47,9 @@ export function mapTwilioTerminalStatus(
       mapped = {
         status: "completed",
         outcome: "handled",
-        // Twilio "completed" confirms terminal completion, but does not reliably
-        // identify who ended the call. Keep canonical-compatible unknown.
-        endReason: "unknown",
+        // Twilio "completed" confirms terminal completion. For canonical compatibility
+        // and user-facing clarity, default to agent_end when no richer terminal signal exists.
+        endReason: "agent_end",
       };
       break;
     case "busy":
@@ -119,8 +119,35 @@ function hasTerminalLifecycleState(call: {
 }
 
 function hasExplicitRealtimeEndReason(call: { endReason?: string }): boolean {
-  if (!call.endReason) return false;
-  return !isDefaultCompletionReason(call.endReason);
+  const normalized = normalizeEndReasonKey(call.endReason);
+  if (!normalized || normalized === "unknown") return false;
+  return !isDefaultCompletionReason(normalized);
+}
+
+function isTerminalUpdateMoreInformative(
+  call: {
+    status?: string;
+    outcome?: string;
+    endReason?: string;
+  },
+  incoming: TerminalUpdate
+): boolean {
+  const existingReason = normalizeEndReasonKey(call.endReason);
+  if (existingReason && existingReason !== "unknown" && incoming.endReason === "unknown") {
+    return false;
+  }
+
+  if (call.outcome === "failed" || call.outcome === "abandoned" || call.outcome === "transferred") {
+    // Keep stronger existing failure/transfer semantics.
+    if (incoming.outcome === "handled") return false;
+  }
+
+  const sameStatus = call.status === incoming.status;
+  const sameOutcome = call.outcome === incoming.outcome;
+  const sameReason = existingReason === incoming.endReason;
+  if (sameStatus && sameOutcome && sameReason) return false;
+
+  return true;
 }
 
 function canTwilioEnrichTerminal(call: {
@@ -129,10 +156,20 @@ function canTwilioEnrichTerminal(call: {
   endedAt?: string;
   endReason?: string;
   failureType?: string;
-}): boolean {
+  terminalStatusSource?: string;
+}, incoming: TerminalUpdate): boolean {
   // Not finalized yet: Twilio can finalize.
   if (!hasTerminalLifecycleState(call) && !call.endReason) {
     return true;
+  }
+
+  if (!isTerminalUpdateMoreInformative(call, incoming)) {
+    return false;
+  }
+
+  // Preserve realtime finalization whenever it already carries explicit terminal semantics.
+  if (call.terminalStatusSource === "realtime" && hasExplicitRealtimeEndReason(call)) {
+    return false;
   }
 
   // Always preserve richer explicit realtime semantics.
@@ -318,7 +355,7 @@ export function registerTwilioRoutes(app: FastifyInstance): void {
         return;
       }
 
-      if (!canTwilioEnrichTerminal(call)) {
+      if (!canTwilioEnrichTerminal(call, terminal)) {
         // Avoid overwriting richer realtime-core finalization (intent, transcript, outcomes).
         if (!call.failureType && terminal.failureType) {
           const updatedFailureType = await callStore.upsertCall({

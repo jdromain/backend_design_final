@@ -47,6 +47,20 @@ function optionalBool(name: string, fallback: boolean): boolean {
   return v === "true";
 }
 
+function optionalInt(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function optionalFloat(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const parsed = Number.parseFloat(raw);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
 export const env = {
   PORT: parseInt(optional("PORT", "3001"), 10),
   NODE_ENV: optional("NODE_ENV", "development") as "development" | "production" | "test",
@@ -123,6 +137,28 @@ export const env = {
    * still process new ingests. Set to true in .env to enable.
    */
   KB_RECOVER_STUCK_ON_STARTUP: optionalBool("KB_RECOVER_STUCK_ON_STARTUP", true),
+
+  // Agentic call intelligence (v2)
+  INTEL_INTENT_REFINE_DELTA: optionalFloat(
+    "INTENT_REFINE_DELTA",
+    optionalFloat("INTEL_INTENT_REFINE_DELTA", 0.10),
+  ),
+  INTEL_ACTION_REFINE_THRESHOLD: optionalFloat(
+    "ACTION_REFINE_THRESHOLD",
+    optionalFloat("INTEL_ACTION_REFINE_THRESHOLD", 0.80),
+  ),
+  INTEL_FAILURE_REWRITE_THRESHOLD: optionalFloat(
+    "FAILURE_REWRITE_THRESHOLD",
+    optionalFloat("INTEL_FAILURE_REWRITE_THRESHOLD", 0.85),
+  ),
+  INTEL_REVIEW_CONFIDENCE_FLOOR: optionalFloat(
+    "REVIEW_CONFIDENCE_FLOOR",
+    optionalFloat("INTEL_REVIEW_CONFIDENCE_FLOOR", 0.55),
+  ),
+  INTEL_RECOMPUTE_RETENTION_DAYS: optionalInt("INTEL_RECOMPUTE_RETENTION_DAYS", 30),
+  INTEL_INTERPRETER_ENABLED: optionalBool("INTEL_INTERPRETER_ENABLED", false),
+  INTEL_INTERPRETER_MODE:
+    optional("INTEL_INTERPRETER_MODE", "shadow").toLowerCase() === "active" ? "active" : "shadow",
 } as const;
 
 if (env.REDIS_ENABLED && !env.REDIS_URL) {

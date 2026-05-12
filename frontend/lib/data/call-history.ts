@@ -32,11 +32,31 @@ export type CallHistoryFacets = {
   results: string[]
 }
 
+function mapOutcomeToApiResult(outcome: string): string | null {
+  if (outcome === "handled") return "completed"
+  if (outcome === "transferred") return "handoff"
+  if (outcome === "abandoned") return "dropped"
+  if (outcome === "failed") return "systemFailed"
+  if (outcome === "unknown") return "unknown"
+  return null
+}
+
 function toQueryString(input: CallHistoryQuery): string {
   const qs = new URLSearchParams()
   if (input.from) qs.set("from", input.from.toISOString())
   if (input.to) qs.set("to", input.to.toISOString())
-  if (input.result && input.result.length > 0) qs.set("result", input.result.join(","))
+  if (input.result && input.result.length > 0) {
+    const mappedResults = Array.from(
+      new Set(
+        input.result
+          .map((outcome) => mapOutcomeToApiResult(outcome))
+          .filter((value): value is string => typeof value === "string" && value.length > 0),
+      ),
+    )
+    if (mappedResults.length > 0) {
+      qs.set("result", mappedResults.join(","))
+    }
+  }
   if (input.intent && input.intent !== "all") qs.set("intent", input.intent)
   if (input.endReason && input.endReason !== "all") qs.set("endReason", input.endReason)
   if (input.phoneLine && input.phoneLine !== "all") qs.set("phoneLine", input.phoneLine)

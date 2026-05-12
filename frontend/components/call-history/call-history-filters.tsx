@@ -155,10 +155,10 @@ export function CallHistoryFilters({
 
         <Select value={filters.intent || "all"} onValueChange={(v) => updateFilter("intent", v === "all" ? "" : v)}>
           <SelectTrigger className="w-[140px]">
-            <SelectValue placeholder="Intent Category" />
+            <SelectValue placeholder="Call Reason" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">All intent categories</SelectItem>
+            <SelectItem value="all">All call reasons</SelectItem>
             {intents.map((intent) => (
               <SelectItem key={intent} value={intent}>
                 {intent}
@@ -191,7 +191,7 @@ export function CallHistoryFilters({
             onCheckedChange={(v) => updateFilter("toolErrorsOnly", v)}
           />
           <Label htmlFor="tool-errors-main" className="text-sm">
-            Has tool errors
+            System/tool issues only
           </Label>
         </div>
 
@@ -208,7 +208,7 @@ export function CallHistoryFilters({
         <CollapsibleTrigger asChild>
           <Button variant="ghost" size="sm" className="text-muted-foreground">
             {moreFiltersOpen ? <ChevronUp className="mr-1 h-4 w-4" /> : <ChevronDown className="mr-1 h-4 w-4" />}
-            More Filters
+            Advanced Filters
           </Button>
         </CollapsibleTrigger>
         <CollapsibleContent className="pt-3">
@@ -235,7 +235,7 @@ export function CallHistoryFilters({
               onValueChange={(v) => updateFilter("endReason", v === "all" ? "" : (v as CanonicalEndReason))}
             >
               <SelectTrigger className="w-[200px]">
-                <SelectValue placeholder="End Reason" />
+                <SelectValue placeholder="How Call Ended" />
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All</SelectItem>
@@ -249,7 +249,7 @@ export function CallHistoryFilters({
 
             <Select value={filters.toolUsed} onValueChange={(v) => updateFilter("toolUsed", v)}>
               <SelectTrigger className="w-[180px]">
-                <SelectValue placeholder="Tool Used" />
+                <SelectValue placeholder="System Tool Used" />
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All Tools</SelectItem>
@@ -266,10 +266,10 @@ export function CallHistoryFilters({
               onValueChange={(v) => updateFilter("failureCategory", v === "all" ? "" : (v as CanonicalFailureCategory))}
             >
               <SelectTrigger className="w-[210px]">
-                <SelectValue placeholder="Failure Category" />
+                <SelectValue placeholder="Failure Type" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">All failure categories</SelectItem>
+                <SelectItem value="all">All failure types</SelectItem>
                 {CANONICAL_FAILURE_CATEGORY_FILTER_OPTIONS.map((category) => (
                   <SelectItem key={category.value} value={category.value}>
                     {category.label}
@@ -283,10 +283,10 @@ export function CallHistoryFilters({
               onValueChange={(v) => updateFilter("actionClass", v === "all" ? "" : (v as CanonicalActionClass))}
             >
               <SelectTrigger className="w-[220px]">
-                <SelectValue placeholder="Action Class" />
+                <SelectValue placeholder="Recommended Action Type" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">All action classes</SelectItem>
+                <SelectItem value="all">All recommended action types</SelectItem>
                 {CANONICAL_ACTION_CLASS_FILTER_OPTIONS.map((action) => (
                   <SelectItem key={action.value} value={action.value}>
                     {action.label}

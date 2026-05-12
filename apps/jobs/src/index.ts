@@ -2,6 +2,7 @@ import { createInMemoryEventBus, createRedisEventBus } from "@rezovo/event-bus";
 import { createLogger } from "@rezovo/logging";
 
 import { registerKbReembedWorker } from "./kbReembedWorker";
+import { registerCallIntelligenceWorker } from "./callIntelligenceWorker";
 import { startBillingReconciliation } from "./billingReconciliation";
 import { startStaleCallReconciler } from "./staleCallReconciler";
 
@@ -30,6 +31,7 @@ async function bootstrap(): Promise<void> {
   const bus = impl === "redis" ? createRedisEventBus(redisUrl) : createInMemoryEventBus();
 
   await registerKbReembedWorker(bus);
+  await registerCallIntelligenceWorker(bus);
   startBillingReconciliation();
   startStaleCallReconciler();
 

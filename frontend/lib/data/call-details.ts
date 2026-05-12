@@ -1,4 +1,4 @@
-import type { TimelineEvent, TranscriptLine, ToolActivity } from "@/types/api"
+import type { CallIntelligenceDetail, TimelineEvent, TranscriptLine, ToolActivity } from "@/types/api"
 import { assertMockSafety } from "./_env-check"
 import { getMockTimelineForCall, getMockTranscriptLines, getMockToolActivities } from "@/data/mock/call-details"
 import { get } from "@/lib/api-client"
@@ -21,4 +21,9 @@ export async function getTranscriptLines(callId: string): Promise<TranscriptLine
 export async function getToolActivities(callId: string): Promise<ToolActivity[]> {
   if (useMocks) return getMockToolActivities()
   return get<ToolActivity[]>(`/calls/${callId}/tools`)
+}
+
+export async function getCallIntelligence(callId: string): Promise<CallIntelligenceDetail | null> {
+  if (useMocks) return null
+  return get<CallIntelligenceDetail>(`/calls/${callId}/intelligence`)
 }

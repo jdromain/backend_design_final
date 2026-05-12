@@ -14,7 +14,7 @@ function baseCall(overrides: Partial<CallRecord> = {}): CallRecord {
 }
 
 describe("normalizeCallRecordForPersistence", () => {
-  it("accepts valid terminal tuple and preserves explicit unknown reason", () => {
+  it("normalizes failed unknown terminal reason to a deterministic failure reason", () => {
     const normalized = normalizeCallRecordForPersistence(
       baseCall({
         status: "failed",
@@ -26,8 +26,22 @@ describe("normalizeCallRecordForPersistence", () => {
 
     expect(normalized.status).toBe("failed");
     expect(normalized.outcome).toBe("failed");
-    expect(normalized.endReason).toBe("unknown");
+    expect(normalized.endReason).toBe("error");
     expect(normalized.terminalStatusSource).toBe("system");
+  });
+
+  it("normalizes handled terminal rows to agent_end when end reason is missing", () => {
+    const normalized = normalizeCallRecordForPersistence(
+      baseCall({
+        status: "completed",
+        outcome: "handled",
+        terminalStatusSource: "realtime",
+      })
+    );
+
+    expect(normalized.status).toBe("completed");
+    expect(normalized.outcome).toBe("handled");
+    expect(normalized.endReason).toBe("agent_end");
   });
 
   it("rejects impossible terminal tuples", () => {

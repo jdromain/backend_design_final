@@ -329,6 +329,7 @@ export function KnowledgeBasePage() {
         processingProgress: 0,
         chunks: 0,
         tokenEstimate: 0,
+        isActive: true,
         usedByAgents: [],
         uploadedAt: new Date(),
         updatedAt: new Date(),

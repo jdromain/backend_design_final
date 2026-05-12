@@ -36,6 +36,202 @@ export type CanonicalActionClass =
   | "escalate_human"
   | "engineering_investigate"
 
+export type CallTopicDisplay = {
+  text: string
+  state:
+    | "final"
+    | "provisional"
+    | "pending_analysis"
+    | "insufficient_evidence"
+    | "classification_failed"
+    | "true_unknown"
+  source:
+    | "intelligence_final"
+    | "canonical_intent"
+    | "deterministic_context"
+    | "intelligence_provisional"
+    | "fallback"
+  confidence?: number | null
+  badge?: string
+  warning?: string
+}
+
+export type CallResolutionDisplay = {
+  label: string
+  tone: "success" | "warning" | "danger" | "neutral"
+}
+
+export type CallNextStepDisplay = {
+  label: string
+  tone: "success" | "warning" | "danger" | "neutral"
+}
+
+export type CallRiskDisplay = {
+  label: "Low" | "Medium" | "High"
+  level: "low" | "medium" | "high"
+  source: "intelligence" | "deterministic"
+}
+
+export type CallEndedByDisplay = {
+  label: "Caller End" | "Agent End" | "Carrier Dropped" | "Unknown"
+  tone: "success" | "warning" | "danger" | "neutral"
+}
+
+const FINAL_TOPIC_CONFIDENCE_FLOOR = 0.7
+const PROVISIONAL_TOPIC_CONFIDENCE_FLOOR = 0.6
+
+const TOPIC_GENERIC_VALUES = new Set([
+  "unknown",
+  "support",
+  "billing",
+  "sales",
+  "booking",
+  "general inquiry",
+  "other",
+  "review required",
+  "failed call",
+  "call ended",
+  "system failed",
+  "high risk call requires review",
+  "call may need follow up",
+  "call resolved with low risk",
+  "call intelligence deferred context incomplete",
+])
+
+const INTENT_TOPIC_PHRASES: Record<"Billing" | "Support" | "Sales" | "Booking", string> = {
+  Billing: "Billing Question",
+  Support: "Support Request",
+  Sales: "Sales Inquiry",
+  Booking: "Appointment Booking",
+}
+
+function normalizeTopicText(value: string): string {
+  return value.trim().replace(/\s+/g, " ")
+}
+
+function normalizeTopicToken(value: string): string {
+  return normalizeTopicText(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+}
+
+function isGenericTopicText(value: string | undefined | null): boolean {
+  if (!value) return true
+  const token = normalizeTopicToken(value)
+  if (!token) return true
+  if (TOPIC_GENERIC_VALUES.has(token)) return true
+
+  // Common non-topic diagnostics that should not win title selection.
+  if (
+    token.includes("requires review") ||
+    token.includes("may need follow up") ||
+    token.includes("operationally stable completion") ||
+    token.includes("no summary")
+  ) {
+    return true
+  }
+  return false
+}
+
+function numberOrNull(value: number | null | undefined): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null
+}
+
+function topicConfidenceFromCompact(compact: CallRecord["intelligence"]): number | null {
+  if (!compact) return null
+  return (
+    numberOrNull(compact.topicConfidence) ??
+    numberOrNull(compact.confidence?.primaryIntent) ??
+    numberOrNull(compact.confidence?.recommendations)
+  )
+}
+
+function intelligenceTopicCandidate(compact: CallRecord["intelligence"]): string | null {
+  if (!compact) return null
+  if (typeof compact.topic !== "string") return null
+  const topic = normalizeTopicText(compact.topic)
+  return topic.length > 0 ? topic : null
+}
+
+function isPendingState(call: Pick<CallRecord, "result" | "canonical" | "intelligence">): boolean {
+  if (call.result === "pending") return true
+  if (call.intelligence?.phase === "pending_context" || call.intelligence?.phase === "provisional") return true
+  const status = call.canonical?.status
+  return status === "initiated" || status === "ringing" || status === "in_progress"
+}
+
+function deterministicIntentTopic(
+  call: Pick<CallRecord, "classification" | "intent" | "display">
+): string | null {
+  const intent = normalizeIntent(call.classification?.intentCategory ?? call.display?.intent ?? call.intent)
+  if (intent === "Unknown") return null
+  return INTENT_TOPIC_PHRASES[intent]
+}
+
+function deterministicContextTopic(
+  call: Pick<CallRecord, "classification" | "canonical" | "direction" | "intelligence">,
+  intentTopic: string | null,
+): string | null {
+  const failureCategory = normalizeFailureCategory(call.classification?.failureCategory)
+  const actionClass = normalizeActionClass(call.classification?.actionClass)
+  const endReason = normalizeEndReason(call.classification?.endReason ?? call.canonical?.endReason)
+  const outcome = normalizeOutcome(call.classification?.outcome ?? call.canonical?.outcome)
+  const directionWord = call.direction === "outbound" ? "Outbound" : "Inbound"
+  const baseTopic = intentTopic ?? `${directionWord} Call`
+
+  if (failureCategory === "tool_error") return `${baseTopic} - Tool Failure`
+  if (failureCategory === "auth_error") return `${baseTopic} - Authentication Blocked`
+  if (failureCategory === "quota_error" || endReason === "quota_denied") return `${baseTopic} - Quota Limit Reached`
+  if (failureCategory === "carrier_error") return `${baseTopic} - Carrier Disconnect`
+  if (failureCategory === "stt_error") return `${baseTopic} - Speech Recognition Failure`
+  if (failureCategory === "tts_error") return `${baseTopic} - Voice Response Failure`
+  if (failureCategory === "llm_error") return `${baseTopic} - AI Response Failure`
+  if (failureCategory === "config_error") return `${baseTopic} - Configuration Failure`
+
+  if (actionClass === "escalate_human" || outcome === "transferred" || endReason === "transfer") {
+    return `${baseTopic} - Transferred to Human`
+  }
+  if (endReason === "caller_hangup" && outcome !== "handled") {
+    return `${baseTopic} - Caller Disconnected`
+  }
+  if (outcome === "abandoned") {
+    return `${baseTopic} - Caller Disconnected`
+  }
+  if (outcome === "failed") {
+    return `${baseTopic} - Unresolved Failure`
+  }
+  if (actionClass === "followup_required") {
+    return `${baseTopic} - Follow-up Needed`
+  }
+
+  return null
+}
+
+function hasInsufficientEvidenceSignals(call: Pick<CallRecord, "intelligence">): boolean {
+  const warnings = call.intelligence?.warnings ?? []
+  return warnings.some((warning) =>
+    warning.code === "missing_transcript_timestamp" ||
+    warning.code === "null_event_timestamp" ||
+    warning.code === "context_incomplete",
+  )
+}
+
+function pickDeterministicTopic(
+  call: Pick<CallRecord, "classification" | "canonical" | "intent" | "display" | "direction" | "intelligence">,
+): { text: string; source: "canonical_intent" | "deterministic_context" } | null {
+  const intentTopic = deterministicIntentTopic(call)
+  const contextTopic = deterministicContextTopic(call, intentTopic)
+
+  if (contextTopic && !isGenericTopicText(contextTopic)) {
+    return { text: contextTopic, source: "deterministic_context" }
+  }
+  if (intentTopic && !isGenericTopicText(intentTopic)) {
+    return { text: intentTopic, source: "canonical_intent" }
+  }
+  return null
+}
+
 export const CANONICAL_OUTCOME_FILTER_OPTIONS: Array<{ value: CanonicalOutcome; label: string }> = [
   { value: "handled", label: "Handled" },
   { value: "transferred", label: "Handoff" },
@@ -217,7 +413,7 @@ export function toDisplayResult(outcome: CanonicalOutcome): string {
   }
 }
 
-export function toDisplayReason(endReason: CanonicalEndReason): string {
+export function toDisplayReason(endReason: CanonicalEndReason, outcome?: CanonicalOutcome): string {
   switch (endReason) {
     case "agent_end":
       return "Agent Ended"
@@ -232,6 +428,10 @@ export function toDisplayReason(endReason: CanonicalEndReason): string {
     case "quota_denied":
       return "Quota Denied"
     default:
+      if (outcome === "handled") return "Completed (end party unknown)"
+      if (outcome === "abandoned") return "Caller Ended or Disconnected"
+      if (outcome === "transferred") return "Transfer Completed"
+      if (outcome === "failed") return "Failure (end party unknown)"
       return "Unknown"
   }
 }
@@ -285,7 +485,7 @@ export function normalizeCallRecordLabels(input: CallRecord): CallRecord {
 
   const result = mapCanonicalOutcomeToResult(canonicalOutcome, canonicalStatus)
 
-  return {
+  const normalized: CallRecord = {
     ...input,
     result,
     endReason: canonicalEndReason,
@@ -314,11 +514,15 @@ export function normalizeCallRecordLabels(input: CallRecord): CallRecord {
     display: {
       status: input.display?.status ?? "Unknown",
       result: toDisplayResult(canonicalOutcome),
-      reason: toDisplayReason(canonicalEndReason),
+      reason: toDisplayReason(canonicalEndReason, canonicalOutcome),
       intent: input.display?.intent ?? input.intent ?? "Unknown",
       tools: input.display?.tools ?? String(input.toolsUsed?.length ?? 0),
       failureType: input.display?.failureType ?? input.failureType ?? "Unknown",
     },
+  }
+  return {
+    ...normalized,
+    topicDisplay: selectCallTopicDisplay(normalized),
   }
 }
 
@@ -364,12 +568,266 @@ export function normalizeLiveCallLabels(input: LiveCall): LiveCall {
     display: {
       status: input.display?.status ?? "Unknown",
       result: input.display?.result ?? toDisplayResult(canonicalOutcome),
-      reason: input.display?.reason ?? toDisplayReason(canonicalEndReason),
+      reason: input.display?.reason ?? toDisplayReason(canonicalEndReason, canonicalOutcome),
       intent: input.display?.intent ?? input.intent ?? "Unknown",
       tools: input.display?.tools ?? String(input.tools.length),
       failureType: input.display?.failureType ?? input.canonical?.failureType ?? "Unknown",
     },
   }
+}
+
+export function selectCallTopicDisplay(
+  call: Pick<CallRecord, "classification" | "canonical" | "direction" | "display" | "intent" | "intelligence" | "result">,
+): CallTopicDisplay {
+  const compact = call.intelligence ?? null
+  const phase = compact?.phase
+  const topicStateHint = compact?.topicState
+  const topicSourceHint = compact?.topicSource
+  const topicCandidate = intelligenceTopicCandidate(compact)
+  const topicConfidence = topicConfidenceFromCompact(compact)
+  const deterministic = pickDeterministicTopic(call)
+  const sourceFromHint = (() => {
+    if (topicSourceHint === "deterministic_context") return "deterministic_context" as const
+    if (topicSourceHint === "intent_context") return "intelligence_provisional" as const
+    if (topicSourceHint === "semantic_transcript") return "intelligence_final" as const
+    return "fallback" as const
+  })()
+
+  if (topicStateHint === "classification_failed" || phase === "failed") {
+    if (deterministic) {
+      return {
+        text: deterministic.text,
+        state: "classification_failed",
+        source: deterministic.source,
+        confidence: topicConfidence,
+        badge: "Classification Failed",
+        warning: "AI classification failed; using deterministic topic.",
+      }
+    }
+    return {
+      text: "Classification Failed",
+      state: "classification_failed",
+      source: "fallback",
+      confidence: topicConfidence,
+      badge: "Classification Failed",
+      warning: "No trustworthy topic candidate was available.",
+    }
+  }
+
+  if (topicStateHint === "pending_analysis") {
+    return {
+      text: "Pending Analysis",
+      state: "pending_analysis",
+      source: "fallback",
+      confidence: topicConfidence,
+      badge: "Pending",
+      warning: "Classification is waiting for final transcript/event context.",
+    }
+  }
+
+  if (topicStateHint === "insufficient_evidence") {
+    return {
+      text: "Insufficient Evidence",
+      state: "insufficient_evidence",
+      source: "fallback",
+      confidence: topicConfidence,
+      badge: "Insufficient Evidence",
+      warning: "Available signals were not strong enough for a trustworthy topic.",
+    }
+  }
+
+  if (
+    (phase === "final" || topicStateHint === "final") &&
+    topicCandidate &&
+    !isGenericTopicText(topicCandidate) &&
+    typeof topicConfidence === "number" &&
+    topicConfidence >= FINAL_TOPIC_CONFIDENCE_FLOOR
+  ) {
+    return {
+      text: topicCandidate,
+      state: "final",
+      source: sourceFromHint === "deterministic_context" ? "deterministic_context" : "intelligence_final",
+      confidence: topicConfidence,
+      warning: topicConfidence < 0.78 ? "Lower-confidence semantic topic; verify in call detail." : undefined,
+    }
+  }
+
+  if (deterministic) {
+    return {
+      text: deterministic.text,
+      state: "final",
+      source: deterministic.source,
+      confidence: topicConfidence,
+      warning:
+        typeof topicConfidence === "number" && topicConfidence < FINAL_TOPIC_CONFIDENCE_FLOOR
+          ? "Deterministic topic retained because semantic confidence was low."
+          : undefined,
+    }
+  }
+
+  if (
+    (phase === "provisional" ||
+      phase === "pending_context" ||
+      topicStateHint === "provisional") &&
+    topicCandidate &&
+    !isGenericTopicText(topicCandidate) &&
+    typeof topicConfidence === "number" &&
+    topicConfidence >= PROVISIONAL_TOPIC_CONFIDENCE_FLOOR
+  ) {
+    return {
+      text: topicCandidate,
+      state: "provisional",
+      source: "intelligence_provisional",
+      confidence: topicConfidence,
+      badge: "Provisional",
+      warning: "Topic is provisional and may change when more evidence arrives.",
+    }
+  }
+
+  if (isPendingState(call)) {
+    return {
+      text: "Pending Analysis",
+      state: "pending_analysis",
+      source: "fallback",
+      confidence: topicConfidence,
+      badge: "Pending",
+      warning: "Classification is waiting for final transcript/event context.",
+    }
+  }
+
+  if (phase === "final" && hasInsufficientEvidenceSignals(call)) {
+    return {
+      text: "Insufficient Evidence",
+      state: "insufficient_evidence",
+      source: "fallback",
+      confidence: topicConfidence,
+      badge: "Insufficient Evidence",
+      warning: "Classification completed with insufficient evidence quality.",
+    }
+  }
+
+  return {
+    text: "Unknown",
+    state: "true_unknown",
+    source: "fallback",
+    confidence: topicConfidence,
+    badge: "Unknown",
+    warning: "No trustworthy topic signal was available for this call.",
+  }
+}
+
+export function selectCallResolutionDisplay(
+  call: Pick<CallRecord, "classification" | "canonical" | "result" | "intelligence">,
+): CallResolutionDisplay {
+  const intelligenceLabel = call.intelligence?.resolutionLabel
+  if (intelligenceLabel === "Resolved") return { label: "Resolved", tone: "success" }
+  if (intelligenceLabel === "Partially Resolved") return { label: "Partially Resolved", tone: "warning" }
+  if (intelligenceLabel === "Unresolved") return { label: "Unresolved", tone: "warning" }
+
+  const outcome = normalizeOutcome(call.classification?.outcome ?? call.canonical?.outcome)
+  if (outcome === "handled") return { label: "Resolved", tone: "success" }
+  if (outcome === "transferred") return { label: "Transferred", tone: "warning" }
+  if (outcome === "abandoned") return { label: "Unresolved", tone: "warning" }
+  if (outcome === "failed") return { label: "Failed", tone: "danger" }
+  if (isPendingState(call)) return { label: "In Analysis", tone: "neutral" }
+  return { label: "Unknown", tone: "neutral" }
+}
+
+export function selectCallNextStepDisplay(
+  call: Pick<CallRecord, "classification" | "intelligence">,
+): CallNextStepDisplay {
+  const intelligenceLabel = call.intelligence?.nextStepLabel
+  if (intelligenceLabel) {
+    if (intelligenceLabel === "Engineering Investigation") return { label: intelligenceLabel, tone: "danger" }
+    if (
+      intelligenceLabel === "Escalate to Human" ||
+      intelligenceLabel === "Follow-up Required" ||
+      intelligenceLabel === "Manual Review"
+    ) {
+      return { label: intelligenceLabel, tone: "warning" }
+    }
+    if (intelligenceLabel === "No Action") return { label: intelligenceLabel, tone: "success" }
+  }
+
+  const actionClass = normalizeActionClass(call.classification?.actionClass)
+  if (actionClass === "engineering_investigate") return { label: "Engineering Investigation", tone: "danger" }
+  if (actionClass === "escalate_human") return { label: "Escalate to Human", tone: "warning" }
+  if (actionClass === "followup_required") return { label: "Follow-up Required", tone: "warning" }
+  if (actionClass === "review_required") return { label: "Manual Review", tone: "warning" }
+  if (call.intelligence?.reviewRecommended) return { label: "Manual Review", tone: "warning" }
+  if (call.intelligence?.followupNeeded) return { label: "Follow-up Recommended", tone: "warning" }
+  return { label: "No Action", tone: "success" }
+}
+
+export function selectCallRiskDisplay(
+  call: Pick<CallRecord, "classification" | "intelligence">,
+): CallRiskDisplay {
+  if (call.intelligence?.riskLabel === "High") return { label: "High", level: "high", source: "intelligence" }
+  if (call.intelligence?.riskLabel === "Medium") return { label: "Medium", level: "medium", source: "intelligence" }
+  if (call.intelligence?.riskLabel === "Low") return { label: "Low", level: "low", source: "intelligence" }
+
+  const riskLevel = call.intelligence?.riskLevel
+  if (riskLevel === "high") return { label: "High", level: "high", source: "intelligence" }
+  if (riskLevel === "medium") return { label: "Medium", level: "medium", source: "intelligence" }
+  if (riskLevel === "low") return { label: "Low", level: "low", source: "intelligence" }
+
+  const actionClass = normalizeActionClass(call.classification?.actionClass)
+  const failureCategory = normalizeFailureCategory(call.classification?.failureCategory)
+  if (actionClass === "engineering_investigate") {
+    return { label: "High", level: "high", source: "deterministic" }
+  }
+  if (
+    failureCategory === "tool_error" ||
+    failureCategory === "config_error" ||
+    failureCategory === "llm_error" ||
+    failureCategory === "auth_error" ||
+    failureCategory === "quota_error"
+  ) {
+    return { label: "High", level: "high", source: "deterministic" }
+  }
+  if (failureCategory !== "unknown") {
+    return { label: "Medium", level: "medium", source: "deterministic" }
+  }
+  if (
+    actionClass === "review_required" ||
+    actionClass === "followup_required" ||
+    actionClass === "escalate_human"
+  ) {
+    return { label: "Medium", level: "medium", source: "deterministic" }
+  }
+  return { label: "Low", level: "low", source: "deterministic" }
+}
+
+export function selectCallEndedByDisplay(
+  call: Pick<CallRecord, "classification" | "canonical">,
+): CallEndedByDisplay {
+  const endReason = normalizeEndReason(call.classification?.endReason ?? call.canonical?.endReason)
+  const outcome = normalizeOutcome(call.classification?.outcome ?? call.canonical?.outcome)
+  const status = normalizeCallStatus(call.classification?.status ?? call.canonical?.status)
+  const terminalSource = call.canonical?.terminalStatusSource ?? call.classification?.provenance?.terminalStatusSource
+  const failureCategory = normalizeFailureCategory(call.classification?.failureCategory)
+
+  if (
+    endReason === "caller_hangup" ||
+    ((outcome === "abandoned" || status === "abandoned") && terminalSource !== "carrier" && failureCategory !== "carrier_error")
+  ) {
+    return { label: "Caller End", tone: "warning" }
+  }
+  if (endReason === "agent_end" || outcome === "handled" || status === "completed") {
+    return { label: "Agent End", tone: "success" }
+  }
+  if (
+    terminalSource === "carrier" ||
+    failureCategory === "carrier_error" ||
+    endReason === "timeout" ||
+    endReason === "error" ||
+    endReason === "quota_denied" ||
+    outcome === "failed" ||
+    status === "failed"
+  ) {
+    return { label: "Carrier Dropped", tone: "danger" }
+  }
+  return { label: "Unknown", tone: "neutral" }
 }
 
 export function mapInitialLegacyFilterToCanonicalOutcome(filter: string): CanonicalOutcome[] {

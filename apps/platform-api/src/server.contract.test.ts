@@ -445,6 +445,18 @@ describe("platform-api HTTP contract (inject)", () => {
     expect(usageArgs[1]).toBe("call-end-existing-duration");
     expect(usageArgs[2]).toBe("+18005550999");
     expect(usageArgs[3]).toBe(321);
+
+    const callEndedEventInsert = vi
+      .mocked(query)
+      .mock.calls.find(
+        (call) =>
+          String(call[0]).toLowerCase().includes("insert into call_events") &&
+          (call[1] as unknown[] | undefined)?.[2] === "call_ended",
+      );
+    expect(callEndedEventInsert).toBeDefined();
+    const callEndedParams = callEndedEventInsert?.[1] as unknown[];
+    const callEndedPayload = JSON.parse(String(callEndedParams[3] ?? "{}")) as Record<string, unknown>;
+    expect(callEndedPayload.endReason).toBe("agent_end");
   });
 
   it("DELETE /knowledge/documents/:docId deletes KB doc for the authenticated org", async () => {

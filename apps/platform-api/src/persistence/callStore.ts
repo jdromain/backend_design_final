@@ -145,12 +145,66 @@ function normalizeConfidenceBand(
   return toCanonicalConfidenceBand(fallbackConfidence);
 }
 
+function normalizeKnownEndReason(value: string | undefined | null): CanonicalEndReason | undefined {
+  if (!value) return undefined;
+  if (
+    value === "caller_hangup" ||
+    value === "agent_end" ||
+    value === "transfer" ||
+    value === "timeout" ||
+    value === "error" ||
+    value === "quota_denied" ||
+    value === "unknown"
+  ) {
+    return value;
+  }
+  return undefined;
+}
+
+function inferTerminalEndReason(input: {
+  status: CanonicalCallStatus | string;
+  outcome?: CanonicalOutcome | string;
+  endReason?: CanonicalEndReason | string;
+  failureType?: string;
+}): CanonicalEndReason | undefined {
+  const existingReason = normalizeKnownEndReason(input.endReason ?? null);
+  if (existingReason && existingReason !== "unknown") return existingReason;
+
+  const failureToken = String(input.failureType ?? "").toLowerCase();
+  const hasTimeoutLikeFailure =
+    failureToken.includes("timeout") ||
+    failureToken.includes("no-answer") ||
+    failureToken.includes("no_answer") ||
+    failureToken.includes("silence");
+
+  if (input.status === "completed" || input.outcome === "handled") return "agent_end";
+  if (input.status === "transferred" || input.outcome === "transferred") return "transfer";
+  if (input.status === "abandoned" || input.outcome === "abandoned") {
+    return hasTimeoutLikeFailure ? "timeout" : "caller_hangup";
+  }
+  if (input.status === "failed" || input.outcome === "failed") {
+    if (failureToken.includes("quota")) return "quota_denied";
+    if (hasTimeoutLikeFailure) return "timeout";
+    return "error";
+  }
+
+  return existingReason;
+}
+
 export function normalizeCallRecordForPersistence(call: CallRecord): CallRecord {
   const terminalLikeStatus = isCanonicalTerminalStatus(call.status);
+  const normalizedTerminalEndReason = terminalLikeStatus
+    ? inferTerminalEndReason({
+        status: call.status,
+        outcome: call.outcome,
+        endReason: call.endReason,
+        failureType: call.failureType,
+      })
+    : undefined;
   const derivedFailureCategory = deriveCanonicalFailureCategory({
     outcome: call.outcome,
     failureType: call.failureType,
-    endReason: call.endReason,
+    endReason: normalizedTerminalEndReason ?? call.endReason,
   });
   const normalized: CallRecord = {
     ...call,
@@ -179,14 +233,14 @@ export function normalizeCallRecordForPersistence(call: CallRecord): CallRecord 
                   ? call.outcome
                   : "unknown",
               endReason:
-                call.endReason === "caller_hangup" ||
-                call.endReason === "agent_end" ||
-                call.endReason === "transfer" ||
-                call.endReason === "timeout" ||
-                call.endReason === "error" ||
-                call.endReason === "quota_denied" ||
-                call.endReason === "unknown"
-                  ? call.endReason
+                normalizedTerminalEndReason === "caller_hangup" ||
+                normalizedTerminalEndReason === "agent_end" ||
+                normalizedTerminalEndReason === "transfer" ||
+                normalizedTerminalEndReason === "timeout" ||
+                normalizedTerminalEndReason === "error" ||
+                normalizedTerminalEndReason === "quota_denied" ||
+                normalizedTerminalEndReason === "unknown"
+                  ? normalizedTerminalEndReason
                   : "unknown",
               failureCategory:
                 call.failureCategory && FAILURE_CATEGORY_VALUES.has(call.failureCategory)
@@ -196,6 +250,10 @@ export function normalizeCallRecordForPersistence(call: CallRecord): CallRecord 
             })
           : "no_action",
   };
+
+  if (terminalLikeStatus && normalizedTerminalEndReason) {
+    normalized.endReason = normalizedTerminalEndReason;
+  }
 
   if (isCanonicalTerminalStatus(normalized.status)) {
     const validated = validateCanonicalTerminalTuple({

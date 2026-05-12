@@ -36,7 +36,15 @@ import { Label } from "@/components/ui/label"
 import { CreateFollowUpModal } from "@/components/actions/create-follow-up-modal"
 import type { Contact } from "@/lib/actions-store"
 import { subDays } from "date-fns"
-import { mapInitialLegacyFilterToCanonicalOutcome, matchesCanonicalCallFilters } from "@/lib/call-labels"
+import {
+  mapInitialLegacyFilterToCanonicalOutcome,
+  matchesCanonicalCallFilters,
+  selectCallEndedByDisplay,
+  selectCallNextStepDisplay,
+  selectCallResolutionDisplay,
+  selectCallRiskDisplay,
+  selectCallTopicDisplay,
+} from "@/lib/call-labels"
 
 import {
   getCallHistory,
@@ -391,21 +399,30 @@ export function HistoryPage({ initialFilter, initialIntent, initialReason }: His
 
       if (format === "csv") {
         const csv = [
-          ["Call ID", "Date", "Caller", "Intent Category", "Direction", "Duration", "Outcome", "End Reason", "Failure Category", "Action Class"].join(","),
-          ...dataToExport.map((call) =>
-            [
+          ["Call ID", "Date", "Caller", "Reason for Call", "Direction", "Duration (ms)", "Business Outcome", "Ended By", "Recommended Action", "Priority", "System Result", "How Call Ended", "Failure Type", "Recommended Action Type"].join(","),
+          ...dataToExport.map((call) => {
+            const topic = selectCallTopicDisplay(call)
+            const resolution = selectCallResolutionDisplay(call)
+            const endedBy = selectCallEndedByDisplay(call)
+            const nextStep = selectCallNextStepDisplay(call)
+            const risk = selectCallRiskDisplay(call)
+            return [
               call.callId,
               call.startedAt,
               call.callerNumber,
-              call.intent,
+              topic.text,
               call.direction,
               call.durationMs,
+              resolution.label,
+              endedBy.label,
+              nextStep.label,
+              risk.level === "high" ? "High Priority" : risk.level === "medium" ? "Medium Priority" : "Low Priority",
               call.display?.result ?? call.result,
               call.display?.reason ?? call.endReason ?? "Unknown",
               call.classification?.failureCategory ?? "unknown",
               call.classification?.actionClass ?? "no_action",
-            ].join(","),
-          ),
+            ].join(",")
+          }),
         ].join("\n")
 
         const blob = new Blob([csv], { type: "text/csv" })

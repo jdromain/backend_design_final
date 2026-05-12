@@ -274,6 +274,13 @@ export class CallController {
       );
       if (realtimeStop) {
         terminalTuple = toValidTerminalTuple(mapRealtimeStopToCallEnd(realtimeStop));
+      } else {
+        // Legacy dialogue path should always emit a stop reason; if missing, treat as bridge-close.
+        terminalTuple = toValidTerminalTuple(mapRealtimeStopToCallEnd("bridge_closed"));
+        logger.warn("dialogue exited without stop reason; defaulting terminal tuple", {
+          callId: session.id,
+          fallbackStopReason: "bridge_closed",
+        });
       }
     } catch (err) {
       const error = err as Error;
@@ -310,7 +317,7 @@ export class CallController {
     initialUtterance: string,
     mediaSession: MediaSession,
     signal?: AbortSignal,
-  ): Promise<ConversationStopReason | undefined> {
+  ): Promise<ConversationStopReason> {
     const tts =
       this.deps.elevenApiKey && this.deps.elevenVoiceId
         ? createTtsProvider({
@@ -322,6 +329,8 @@ export class CallController {
 
     // Connect to RTP bridge for audio streaming
     let bridgeConnection: RtpBridgeConnection | null = null;
+    let stopReason: ConversationStopReason = "bridge_closed";
+
     try {
       bridgeConnection = await this.deps.media.connect(session.id);
       logger.info("connected to RTP bridge", { callId: session.id });
@@ -885,6 +894,7 @@ export class CallController {
         }
 
         if (response.type === "end") {
+          stopReason = "end";
           callEnded = true;
           sttStreamRef.close();
         }
@@ -987,10 +997,10 @@ export class CallController {
     };
 
     // 2b. Process initial utterance if provided (e.g. from IVR text input)
-    if (initialUtterance && initialUtterance.trim().length > 0 && initialUtterance !== "I need to book an appointment") {
-      this.throwIfAborted(signal);
-      const response = await session.receiveUserStreaming(
-        initialUtterance,
+      if (initialUtterance && initialUtterance.trim().length > 0 && initialUtterance !== "I need to book an appointment") {
+        this.throwIfAborted(signal);
+        const response = await session.receiveUserStreaming(
+          initialUtterance,
         async (sentence: string) => {
           appendSentence("initial", sentence);
         },
@@ -1003,9 +1013,10 @@ export class CallController {
       clearAssemblerState("initial");
       void pumpTtsQueue();
       if (response.type === "end") {
+        stopReason = "end";
         await session.cleanup();
         if (bridgeConnection) bridgeConnection.close();
-        return;
+        return stopReason;
       }
     }
 
@@ -1094,6 +1105,7 @@ export class CallController {
       if (bridgeConnection) {
         bridgeConnection.onClose(() => {
           logger.info("RTP bridge closed, ending STT", { callId: session.id });
+          stopReason = "bridge_closed";
           callEnded = true;
           sttStream.close();
         });
@@ -1117,6 +1129,7 @@ export class CallController {
 
         if (silencePromptCount >= MAX_SILENCE_PROMPTS) {
           logger.info("max silence prompts reached, ending call", { callId: session.id });
+          stopReason = "timeout";
           callEnded = true;
           sttStream.close();
           return;
@@ -1148,6 +1161,7 @@ export class CallController {
           }
         }
         if (silencePromptCount >= MAX_SILENCE_PROMPTS) {
+          stopReason = "timeout";
           callEnded = true;
           sttStream.close();
         }
@@ -1168,6 +1182,7 @@ export class CallController {
           (session.context.agentConfig.maxCallDurationSec ?? env.LEGACY_DEFAULT_MAX_CALL_DURATION_SEC) * 1000;
         const timeout = setTimeout(() => {
           logger.warn("call timeout reached", { callId: session.id, maxCallDuration });
+          stopReason = "timeout";
           callEnded = true;
           clearSilenceTimer();
           clearPendingFinalTimer();
@@ -1178,6 +1193,7 @@ export class CallController {
         if (signal) {
           signal.addEventListener("abort", () => {
             logger.info("call aborted by signal", { callId: session.id });
+            stopReason = "signal_abort";
             clearTimeout(timeout);
             callEnded = true;
             clearSilenceTimer();
@@ -1199,6 +1215,7 @@ export class CallController {
         }, Math.max(50, env.LEGACY_CALL_END_POLL_INTERVAL_MS));
       });
     } catch (error) {
+      stopReason = "error";
       clearSilenceTimer();
       logger.error("dialogue loop error", {
         callId: session.id,
@@ -1233,7 +1250,7 @@ export class CallController {
       await session.cleanup();
       logger.info("dialogue loop ended", { callId: session.id, turns: session.getTranscript().length });
     }
-    return undefined;
+    return stopReason;
   }
 
   private async handleDialogueRealtime(

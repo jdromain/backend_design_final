@@ -4,6 +4,30 @@
 
 // ─── Call / History ─────────────────────────────────────────────────────────
 
+export type CallTopicDisplayState =
+  | "final"
+  | "provisional"
+  | "pending_analysis"
+  | "insufficient_evidence"
+  | "classification_failed"
+  | "true_unknown"
+
+export type CallTopicDisplaySource =
+  | "intelligence_final"
+  | "canonical_intent"
+  | "deterministic_context"
+  | "intelligence_provisional"
+  | "fallback"
+
+export interface CallTopicDisplay {
+  text: string
+  state: CallTopicDisplayState
+  source: CallTopicDisplaySource
+  confidence?: number | null
+  badge?: string
+  warning?: string
+}
+
 export interface CallRecord {
   callId: string
   startedAt: string
@@ -59,6 +83,8 @@ export interface CallRecord {
     tools: string
     failureType: string
   }
+  topicDisplay?: CallTopicDisplay
+  intelligence?: CallIntelligenceCompact | null
 }
 
 // ─── Call Detail (timeline, transcript, tools) ──────────────────────────────
@@ -104,6 +130,52 @@ export interface ToolActivity {
   input?: Record<string, unknown>
   output?: Record<string, unknown>
   error?: string
+}
+
+export interface CallIntelligenceWarning {
+  code: "missing_transcript_timestamp" | "null_event_timestamp" | "invalid_confidence" | "stale_revision" | "context_incomplete"
+  severity: "info" | "warn" | "error"
+  field: string
+  message: string
+  count: number
+  sampleIds: string[]
+  detectedAt: string
+}
+
+export interface CallIntelligenceCompact {
+  phase: "provisional" | "pending_context" | "final" | "failed"
+  riskLevel: "low" | "medium" | "high"
+  followupNeeded: boolean
+  reviewRecommended: boolean
+  interpreterMode?: "shadow" | "active"
+  summary: string
+  shortReason: string
+  topic?: string
+  topicSource?: "semantic_transcript" | "intent_context" | "deterministic_context" | "fallback"
+  topicState?: CallTopicDisplayState
+  topicConfidence?: number | null
+  resolutionLabel?: string
+  nextStepLabel?: string
+  riskLabel?: "Low" | "Medium" | "High"
+  confidence: {
+    primaryIntent?: number | null
+    resolutionState?: number | null
+    failureCategory?: number | null
+    actionClass?: number | null
+    recommendations?: number | null
+  }
+  warnings: CallIntelligenceWarning[]
+}
+
+export interface CallIntelligenceDetail {
+  callId: string
+  phase: "provisional" | "pending_context" | "final" | "failed"
+  updatedAt: string | null
+  classificationVersion: number
+  enrichmentRevision: string
+  intelligence: Record<string, unknown> | null
+  compact: CallIntelligenceCompact | null
+  warnings: CallIntelligenceWarning[]
 }
 
 // ─── Live Calls ─────────────────────────────────────────────────────────────
