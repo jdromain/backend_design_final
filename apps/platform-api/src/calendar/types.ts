@@ -57,6 +57,19 @@ export type CalendarOAuthAccountRecord = {
   updatedAt: string;
 };
 
+/**
+ * Same shape as CalendarOAuthAccountRecord but `accessToken` and
+ * `refreshToken` are the plaintext values decrypted from at-rest storage.
+ * Adapters should depend on this type, never on the encrypted record.
+ */
+export type CalendarOAuthAccountAuthorized = Omit<
+  CalendarOAuthAccountRecord,
+  "encryptedAccessToken" | "encryptedRefreshToken"
+> & {
+  accessToken: string;
+  refreshToken: string | null;
+};
+
 export type CalendarAvailabilitySlot = {
   startsAt: string;
   endsAt: string;

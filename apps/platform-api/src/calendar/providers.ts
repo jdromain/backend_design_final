@@ -2,7 +2,7 @@ import { createHash } from "crypto";
 import { createLogger } from "@rezovo/logging";
 import { env } from "../env";
 import {
-  CalendarOAuthAccountRecord,
+  CalendarOAuthAccountAuthorized,
   CalendarProviderType,
   ProviderBookingPayload,
   ProviderBookingResult,
@@ -86,7 +86,7 @@ function providerError(provider: CalendarProviderType, status: number, body: unk
 
 function resolveGoogleCalendarId(
   binding: Record<string, unknown>,
-  account: CalendarOAuthAccountRecord,
+  account: CalendarOAuthAccountAuthorized,
 ): string {
   const fromBinding = binding.calendarId;
   if (typeof fromBinding === "string" && fromBinding.trim().length > 0) {
@@ -101,7 +101,7 @@ function resolveGoogleCalendarId(
 
 function resolveCalendlyEventTypeUri(
   binding: Record<string, unknown>,
-  account: CalendarOAuthAccountRecord,
+  account: CalendarOAuthAccountAuthorized,
 ): string {
   const fromBinding = binding.eventTypeUri;
   if (typeof fromBinding === "string" && fromBinding.trim().length > 0) {
@@ -127,19 +127,19 @@ function resolveCalendlyEventUri(providerEventId: string): string {
 export interface CalendarProviderAdapter {
   readonly provider: CalendarProviderType;
   createBooking(
-    account: CalendarOAuthAccountRecord,
+    account: CalendarOAuthAccountAuthorized,
     payload: ProviderBookingPayload,
   ): Promise<ProviderBookingResult>;
   updateBooking(
-    account: CalendarOAuthAccountRecord,
+    account: CalendarOAuthAccountAuthorized,
     payload: ProviderBookingPayload,
   ): Promise<ProviderBookingResult>;
   cancelBooking(
-    account: CalendarOAuthAccountRecord,
+    account: CalendarOAuthAccountAuthorized,
     payload: ProviderBookingPayload,
   ): Promise<ProviderCancelResult>;
   listAvailability(
-    account: CalendarOAuthAccountRecord,
+    account: CalendarOAuthAccountAuthorized,
     args: ProviderAvailabilityArgs,
   ): Promise<string[]>;
 }
@@ -148,7 +148,7 @@ class GoogleCalendarAdapter implements CalendarProviderAdapter {
   readonly provider: CalendarProviderType = "google_calendar";
 
   async createBooking(
-    account: CalendarOAuthAccountRecord,
+    account: CalendarOAuthAccountAuthorized,
     payload: ProviderBookingPayload,
   ): Promise<ProviderBookingResult> {
     const calendarId = resolveGoogleCalendarId(payload.binding, account);
@@ -161,7 +161,7 @@ class GoogleCalendarAdapter implements CalendarProviderAdapter {
       {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${account.encryptedAccessToken}`,
+          Authorization: `Bearer ${account.accessToken}`,
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
@@ -186,7 +186,7 @@ class GoogleCalendarAdapter implements CalendarProviderAdapter {
   }
 
   async updateBooking(
-    account: CalendarOAuthAccountRecord,
+    account: CalendarOAuthAccountAuthorized,
     payload: ProviderBookingPayload,
   ): Promise<ProviderBookingResult> {
     if (!payload.providerEventId) {
@@ -198,7 +198,7 @@ class GoogleCalendarAdapter implements CalendarProviderAdapter {
       {
         method: "PATCH",
         headers: {
-          Authorization: `Bearer ${account.encryptedAccessToken}`,
+          Authorization: `Bearer ${account.accessToken}`,
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
@@ -223,7 +223,7 @@ class GoogleCalendarAdapter implements CalendarProviderAdapter {
   }
 
   async cancelBooking(
-    account: CalendarOAuthAccountRecord,
+    account: CalendarOAuthAccountAuthorized,
     payload: ProviderBookingPayload,
   ): Promise<ProviderCancelResult> {
     if (!payload.providerEventId) {
@@ -235,7 +235,7 @@ class GoogleCalendarAdapter implements CalendarProviderAdapter {
       {
         method: "DELETE",
         headers: {
-          Authorization: `Bearer ${account.encryptedAccessToken}`,
+          Authorization: `Bearer ${account.accessToken}`,
         },
       },
     );
@@ -248,7 +248,7 @@ class GoogleCalendarAdapter implements CalendarProviderAdapter {
   }
 
   async listAvailability(
-    account: CalendarOAuthAccountRecord,
+    account: CalendarOAuthAccountAuthorized,
     args: ProviderAvailabilityArgs,
   ): Promise<string[]> {
     const calendarId = resolveGoogleCalendarId(args.binding, account);
@@ -264,7 +264,7 @@ class GoogleCalendarAdapter implements CalendarProviderAdapter {
 
     const response = await providerRequest(url.toString(), {
       method: "GET",
-      headers: { Authorization: `Bearer ${account.encryptedAccessToken}` },
+      headers: { Authorization: `Bearer ${account.accessToken}` },
     });
     if (!response.ok) {
       throw providerError(this.provider, response.status, response.body);
@@ -295,7 +295,7 @@ class CalendlyAdapter implements CalendarProviderAdapter {
   readonly provider: CalendarProviderType = "calendly";
 
   async createBooking(
-    account: CalendarOAuthAccountRecord,
+    account: CalendarOAuthAccountAuthorized,
     payload: ProviderBookingPayload,
   ): Promise<ProviderBookingResult> {
     const eventTypeUri = resolveCalendlyEventTypeUri(payload.binding, account);
@@ -305,7 +305,7 @@ class CalendlyAdapter implements CalendarProviderAdapter {
     const response = await providerRequest("https://api.calendly.com/invitees", {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${account.encryptedAccessToken}`,
+        Authorization: `Bearer ${account.accessToken}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
@@ -333,7 +333,7 @@ class CalendlyAdapter implements CalendarProviderAdapter {
   }
 
   async updateBooking(
-    account: CalendarOAuthAccountRecord,
+    account: CalendarOAuthAccountAuthorized,
     payload: ProviderBookingPayload,
   ): Promise<ProviderBookingResult> {
     // Calendly does not expose a straightforward patch for invitee start time.
@@ -345,7 +345,7 @@ class CalendlyAdapter implements CalendarProviderAdapter {
   }
 
   async cancelBooking(
-    account: CalendarOAuthAccountRecord,
+    account: CalendarOAuthAccountAuthorized,
     payload: ProviderBookingPayload,
   ): Promise<ProviderCancelResult> {
     if (!payload.providerEventId) {
@@ -355,7 +355,7 @@ class CalendlyAdapter implements CalendarProviderAdapter {
     const response = await providerRequest(`${eventUri}/cancellation`, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${account.encryptedAccessToken}`,
+        Authorization: `Bearer ${account.accessToken}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({ reason: "Cancelled by Rezovo calendar backbone" }),
@@ -367,7 +367,7 @@ class CalendlyAdapter implements CalendarProviderAdapter {
   }
 
   async listAvailability(
-    account: CalendarOAuthAccountRecord,
+    account: CalendarOAuthAccountAuthorized,
     args: ProviderAvailabilityArgs,
   ): Promise<string[]> {
     const eventTypeUri = resolveCalendlyEventTypeUri(args.binding, account);
@@ -379,7 +379,7 @@ class CalendlyAdapter implements CalendarProviderAdapter {
 
     const response = await providerRequest(url.toString(), {
       method: "GET",
-      headers: { Authorization: `Bearer ${account.encryptedAccessToken}` },
+      headers: { Authorization: `Bearer ${account.accessToken}` },
     });
     if (!response.ok) {
       throw providerError(this.provider, response.status, response.body);

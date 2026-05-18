@@ -35,15 +35,49 @@ import { EmptyState } from "@/components/empty-state"
 import { toast } from "@/hooks/use-toast"
 import { getUiCapabilities } from "@/lib/data/capabilities"
 import type { CalendarProviderType } from "@/lib/data/calendar"
+import { ApiError } from "@/lib/api-client"
 import {
   disconnectIntegration,
+  getCalendarOAuthPreflight,
   getIntegrationLogs,
   getIntegrations,
   saveIntegrationConfig,
   setActiveCalendarProvider,
   startIntegrationOAuth,
   testIntegration,
+  type OAuthProviderStatus,
 } from "@/lib/data/integrations"
+
+function describeApiError(error: unknown, fallback: string): { title: string; description: string } {
+  if (error instanceof ApiError) {
+    const body = error.body as { error?: { code?: string; message?: string } } | undefined
+    const code = body?.error?.code
+    const message = body?.error?.message
+    if (code === "oauth_not_configured") {
+      return {
+        title: "Integration not yet enabled",
+        description:
+          "This integration has not been turned on for your workspace yet. Please contact your Rezovo administrator.",
+      }
+    }
+    if (code === "oauth_state_invalid") {
+      return {
+        title: "Connection expired",
+        description: "The connection request expired. Please try again.",
+      }
+    }
+    if (code === "oauth_exchange_failed") {
+      return {
+        title: "Provider rejected the connection",
+        description:
+          message ||
+          "The provider declined the connection. If this keeps happening, contact your Rezovo administrator.",
+      }
+    }
+    return { title: fallback, description: message || `Request failed (${error.status})` }
+  }
+  return { title: fallback, description: error instanceof Error ? error.message : "Unknown error" }
+}
 
 function isCalendarProviderId(id: string): id is CalendarProviderType {
   return id === "google_calendar" || id === "calendly"
@@ -96,6 +130,10 @@ export function IntegrationsPage() {
   const [isTesting, setIsTesting] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
   const [oauthBusyProvider, setOauthBusyProvider] = useState<string | null>(null)
+  const [oauthPreflight, setOauthPreflight] = useState<Record<CalendarProviderType, OAuthProviderStatus | undefined>>({
+    google_calendar: undefined,
+    calendly: undefined,
+  })
   const [caps, setCaps] = useState({
     liveProbe: false,
     logs: false,
@@ -134,6 +172,28 @@ export function IntegrationsPage() {
         configure: c.integrations.configure,
       }),
     )
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    void getCalendarOAuthPreflight()
+      .then((result) => {
+        if (cancelled) return
+        const next: Record<CalendarProviderType, OAuthProviderStatus | undefined> = {
+          google_calendar: undefined,
+          calendly: undefined,
+        }
+        for (const entry of result.providers) {
+          next[entry.provider] = entry
+        }
+        setOauthPreflight(next)
+      })
+      .catch((error) => {
+        console.warn("oauth preflight unavailable", error)
+      })
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   useEffect(() => {
@@ -291,6 +351,17 @@ export function IntegrationsPage() {
     }
 
     const providerId: CalendarProviderType = integration.id
+    const preflight = oauthPreflight[providerId]
+    if (preflight && !preflight.configured) {
+      toast({
+        title: "Integration not yet enabled",
+        description:
+          "This integration has not been turned on for your workspace yet. Contact your Rezovo administrator.",
+        variant: "destructive",
+      })
+      return
+    }
+
     setOauthBusyProvider(providerId)
     try {
       const result = await startIntegrationOAuth(providerId)
@@ -312,14 +383,15 @@ export function IntegrationsPage() {
       }, 700)
     } catch (error) {
       console.error(error)
+      const { title, description } = describeApiError(error, "OAuth start failed")
       toast({
-        title: "OAuth start failed",
-        description: "Could not start provider OAuth flow.",
+        title,
+        description,
         variant: "destructive",
       })
       setOauthBusyProvider(null)
     }
-  }, [loadIntegrations])
+  }, [loadIntegrations, oauthPreflight])
 
   const handleSetActiveProvider = useCallback(async (provider: "google_calendar" | "calendly") => {
     setOauthBusyProvider(provider)
@@ -418,6 +490,18 @@ export function IntegrationsPage() {
                     ) : null}
                   </div>
                 ) : null}
+                {integration.supportsOAuth &&
+                isCalendarProviderId(integration.id) &&
+                oauthPreflight[integration.id] &&
+                !oauthPreflight[integration.id]?.configured ? (
+                  <div className="mb-3 rounded-md border border-amber-300 bg-amber-50 dark:border-amber-900/40 dark:bg-amber-900/20 p-2 text-xs text-amber-900 dark:text-amber-200">
+                    <p className="font-medium">Coming soon</p>
+                    <p className="mt-1 text-[11px] opacity-80">
+                      This integration has not been enabled for your workspace yet. Contact your Rezovo
+                      administrator to turn it on.
+                    </p>
+                  </div>
+                ) : null}
                 {integration.lastSync && (
                   <p className="text-xs text-muted-foreground mb-4">
                     Last sync: {new Date(integration.lastSync).toLocaleString()}
@@ -430,7 +514,12 @@ export function IntegrationsPage() {
                       size="sm"
                       className="flex-1"
                       onClick={() => void handleOAuthConnect(integration)}
-                      disabled={oauthBusyProvider === integration.id}
+                      disabled={
+                        oauthBusyProvider === integration.id ||
+                        (isCalendarProviderId(integration.id) &&
+                          oauthPreflight[integration.id] !== undefined &&
+                          !oauthPreflight[integration.id]?.configured)
+                      }
                     >
                       {oauthBusyProvider === integration.id ? (
                         <Loader2 className="mr-2 h-4 w-4 animate-spin" />

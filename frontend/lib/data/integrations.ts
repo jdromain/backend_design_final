@@ -52,6 +52,20 @@ export async function startIntegrationOAuth(provider: "google_calendar" | "calen
   )
 }
 
+export type OAuthProviderStatus = {
+  provider: "google_calendar" | "calendly"
+  configured: boolean
+  hasClientId: boolean
+  hasClientSecret: boolean
+  redirectUri: string | null
+}
+
+export async function getCalendarOAuthPreflight() {
+  return get<{ providers: OAuthProviderStatus[] }>(
+    appendOrgQuery("/integrations/calendar/oauth/preflight"),
+  )
+}
+
 export async function refreshIntegrationOAuth(provider: "google_calendar" | "calendly") {
   return post<{ ok: boolean }>(
     appendOrgQuery(`/integrations/${encodeURIComponent(provider)}/oauth/refresh`),

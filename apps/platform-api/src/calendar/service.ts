@@ -13,6 +13,7 @@ import {
   CalendarAvailabilitySlot,
   CalendarBookingRecord,
   CalendarBookingSource,
+  CalendarOAuthAccountAuthorized,
   CalendarOAuthAccountRecord,
   CalendarProviderType,
   CalendarResourceRecord,
@@ -58,10 +59,7 @@ export class CalendarDomainError extends Error {
   }
 }
 
-type DecryptedOAuthAccount = CalendarOAuthAccountRecord & {
-  accessToken: string;
-  refreshToken?: string | null;
-};
+type DecryptedOAuthAccount = CalendarOAuthAccountAuthorized;
 
 function parseIsoOrThrow(value: string, field: string): string {
   const d = new Date(value);
@@ -594,24 +592,17 @@ export class CalendarService {
       const adapter = providerAdapter(activeProvider.provider);
       const providerStart = Date.now();
       try {
-        const created = await adapter.createBooking(
-          {
-            ...activeProvider,
-            encryptedAccessToken: activeProvider.accessToken,
-            encryptedRefreshToken: activeProvider.refreshToken ?? null,
-          },
-          {
-            startsAt,
-            endsAt,
-            customerName: input.customerName ?? null,
-            customerPhone: input.customerPhone ?? null,
-            customerEmail: input.customerEmail ?? null,
-            partySize,
-            notes: input.notes ?? null,
-            resource,
-            binding: resource.providerBinding,
-          },
-        );
+        const created = await adapter.createBooking(activeProvider, {
+          startsAt,
+          endsAt,
+          customerName: input.customerName ?? null,
+          customerPhone: input.customerPhone ?? null,
+          customerEmail: input.customerEmail ?? null,
+          partySize,
+          notes: input.notes ?? null,
+          resource,
+          binding: resource.providerBinding,
+        });
         providerEventId = created.providerEventId;
         providerPayload = created.providerPayload;
       } catch (error) {
@@ -737,26 +728,19 @@ export class CalendarService {
       const adapter = providerAdapter(providerType);
       const providerStart = Date.now();
       try {
-        const updated = await adapter.updateBooking(
-          {
-            ...account,
-            encryptedAccessToken: account.accessToken,
-            encryptedRefreshToken: account.refreshToken ?? null,
-          },
-          {
-            bookingId: existing.id,
-            startsAt,
-            endsAt,
-            customerName,
-            customerPhone,
-            customerEmail,
-            partySize,
-            notes,
-            resource,
-            binding: resource.providerBinding,
-            providerEventId: existing.providerEventId ?? null,
-          },
-        );
+        const updated = await adapter.updateBooking(account, {
+          bookingId: existing.id,
+          startsAt,
+          endsAt,
+          customerName,
+          customerPhone,
+          customerEmail,
+          partySize,
+          notes,
+          resource,
+          binding: resource.providerBinding,
+          providerEventId: existing.providerEventId ?? null,
+        });
         nextProviderEventId = updated.providerEventId;
         providerPayload = updated.providerPayload;
       } catch (error) {
@@ -862,26 +846,19 @@ export class CalendarService {
       const adapter = providerAdapter(booking.providerType);
       const providerStart = Date.now();
       try {
-        await adapter.cancelBooking(
-          {
-            ...account,
-            encryptedAccessToken: account.accessToken,
-            encryptedRefreshToken: account.refreshToken ?? null,
-          },
-          {
-            bookingId: booking.id,
-            startsAt: booking.startsAt,
-            endsAt: booking.endsAt,
-            customerName: booking.customerName,
-            customerPhone: booking.customerPhone,
-            customerEmail: booking.customerEmail,
-            partySize: booking.partySize,
-            notes: reason ?? booking.notes ?? null,
-            resource,
-            binding: resource.providerBinding,
-            providerEventId: booking.providerEventId,
-          },
-        );
+        await adapter.cancelBooking(account, {
+          bookingId: booking.id,
+          startsAt: booking.startsAt,
+          endsAt: booking.endsAt,
+          customerName: booking.customerName,
+          customerPhone: booking.customerPhone,
+          customerEmail: booking.customerEmail,
+          partySize: booking.partySize,
+          notes: reason ?? booking.notes ?? null,
+          resource,
+          binding: resource.providerBinding,
+          providerEventId: booking.providerEventId,
+        });
       } catch (error) {
         providerLatencyMs = Date.now() - providerStart;
         await this.insertBookingEvent({
@@ -982,20 +959,13 @@ export class CalendarService {
       let providerAllowed = new Set<string>(slots.map((s) => s.startsAt));
       if (activeProvider) {
         try {
-          const starts = await providerAdapter(activeProvider.provider).listAvailability(
-            {
-              ...activeProvider,
-              encryptedAccessToken: activeProvider.accessToken,
-              encryptedRefreshToken: activeProvider.refreshToken ?? null,
-            },
-            {
-              date,
-              durationMin,
-              intervalMin: resource.slotIntervalMin || DEFAULT_SLOT_INTERVAL_MIN,
-              binding: resource.providerBinding,
-              timezone: resource.timezone,
-            },
-          );
+          const starts = await providerAdapter(activeProvider.provider).listAvailability(activeProvider, {
+            date,
+            durationMin,
+            intervalMin: resource.slotIntervalMin || DEFAULT_SLOT_INTERVAL_MIN,
+            binding: resource.providerBinding,
+            timezone: resource.timezone,
+          });
           providerAllowed = new Set(starts.map((x) => new Date(x).toISOString()));
         } catch (error) {
           logger.warn("provider availability failed; falling back to local", {

@@ -6,45 +6,51 @@ import { sendData, sendError } from "../lib/responses";
 import { PersistenceStore } from "../persistence/store";
 import { CalendarDomainError, CalendarService } from "../calendar/service";
 import { CalendarProviderType, CalendarOAuthAccountRecord } from "../calendar/types";
-import { isProvider } from "../calendar/providers";
+import { isProvider, providerAuthConfig } from "../calendar/providers";
 import { env } from "../env";
 
 const logger = createLogger({ service: "platform-api", module: "integrationRoutes" });
 const persistence = new PersistenceStore();
 const calendar = new CalendarService();
 
-const PROVIDERS: Array<{
+type ProviderDef = {
   id: string;
   name: string;
+  description: string;
   requiredFields: Array<{ key: string; label: string; type: "text" | "password" }>;
   icon: string;
   supportsOAuth?: boolean;
-}> = [
-  {
-    id: "calendly",
-    name: "Calendly",
-    icon: "📅",
-    supportsOAuth: true,
-    requiredFields: [
-      { key: "apiKey", label: "API Key", type: "password" },
-      { key: "eventType", label: "Event Type", type: "text" },
-    ],
-  },
+  enabled: boolean;
+};
+
+const ALL_PROVIDERS: ProviderDef[] = [
   {
     id: "google_calendar",
     name: "Google Calendar",
+    description: "Sync bookings to your Google Calendar with one click.",
     icon: "📆",
     supportsOAuth: true,
-    requiredFields: [
-      { key: "accessToken", label: "Access Token", type: "password" },
-      { key: "calendarId", label: "Calendar ID", type: "text" },
-    ],
+    enabled: true,
+    requiredFields: [],
+  },
+  {
+    id: "calendly",
+    name: "Calendly",
+    description: "Sync bookings via Calendly OAuth.",
+    icon: "📅",
+    supportsOAuth: true,
+    // Hidden by default. Flip CALENDLY_ENABLED=true once the Calendly OAuth
+    // app is wired up. The backend code paths remain intact.
+    enabled: env.CALENDLY_ENABLED,
+    requiredFields: [],
   },
   {
     id: "twilio",
     name: "Twilio",
+    description: "Voice/SMS provider for Rezovo phone lines.",
     icon: "🔌",
     supportsOAuth: false,
+    enabled: true,
     requiredFields: [
       { key: "accountSid", label: "Account SID", type: "text" },
       { key: "authToken", label: "Auth Token", type: "password" },
@@ -52,6 +58,8 @@ const PROVIDERS: Array<{
     ],
   },
 ];
+
+const PROVIDERS: ProviderDef[] = ALL_PROVIDERS.filter((p) => p.enabled);
 
 function resolveOrgId(
   request: FastifyRequest,
@@ -80,14 +88,33 @@ function mapCalendarAccount(account: CalendarOAuthAccountRecord | undefined) {
     };
   }
 
+  // A row may persist after disconnect; treat empty access token as
+  // "not connected" so the UI does not falsely advertise a working session.
+  const hasUsableToken =
+    typeof account.encryptedAccessToken === "string" &&
+    account.encryptedAccessToken.length > 0;
+
   return {
-    connected: true,
-    isActive: account.isActive,
+    connected: hasUsableToken,
+    isActive: account.isActive && hasUsableToken,
     accountId: account.accountId ?? null,
     accountEmail: account.accountEmail ?? null,
     expiresAt: account.tokenExpiresAt ?? null,
     scopes: account.scopes,
     updatedAt: account.updatedAt,
+  };
+}
+
+function oauthProviderStatus(provider: CalendarProviderType) {
+  const cfg = providerAuthConfig(provider);
+  const hasClient = cfg.clientId.length > 0 && cfg.clientSecret.length > 0;
+  const hasRedirect = cfg.redirectUri.length > 0;
+  return {
+    provider,
+    configured: hasClient && hasRedirect,
+    hasClientId: cfg.clientId.length > 0,
+    hasClientSecret: cfg.clientSecret.length > 0,
+    redirectUri: cfg.redirectUri || null,
   };
 }
 
@@ -190,19 +217,19 @@ export function registerIntegrationsRoutes(app: FastifyInstance) {
           provider.id === "calendly" || provider.id === "google_calendar"
             ? accountByProvider.get(provider.id as CalendarProviderType)
             : undefined;
-        const hasOAuth = !!calendarAccount;
-        const connected = hasOAuth || hasCredentials;
+        const oauth = mapCalendarAccount(calendarAccount);
+        const connected = oauth.connected || hasCredentials;
 
         return {
           id: provider.id,
           name: provider.name,
-          description: `${provider.name} integration`,
+          description: provider.description,
           icon: provider.icon,
           status: connected ? "connected" : "disconnected",
           requiredFields: provider.requiredFields,
           supportsOAuth: provider.supportsOAuth ?? false,
-          oauth: mapCalendarAccount(calendarAccount),
-          activeProvider: activeCalendarProvider === provider.id,
+          oauth,
+          activeProvider: activeCalendarProvider === provider.id && oauth.connected,
           activeCalendarProvider,
         };
       }),
@@ -286,6 +313,19 @@ export function registerIntegrationsRoutes(app: FastifyInstance) {
       } catch (error) {
         domainError(reply, error);
       }
+    },
+  );
+
+  app.get(
+    "/integrations/calendar/oauth/preflight",
+    { preHandler },
+    async (_request: FastifyRequest, reply: FastifyReply) => {
+      const providers: CalendarProviderType[] = env.CALENDLY_ENABLED
+        ? ["google_calendar", "calendly"]
+        : ["google_calendar"];
+      sendData(reply, {
+        providers: providers.map((p) => oauthProviderStatus(p)),
+      });
     },
   );
 

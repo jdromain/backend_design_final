@@ -433,7 +433,6 @@ export function CalendarPage() {
                     <SelectItem value="all">All providers</SelectItem>
                     <SelectItem value="local">Local</SelectItem>
                     <SelectItem value="google_calendar">Google</SelectItem>
-                    <SelectItem value="calendly">Calendly</SelectItem>
                   </SelectContent>
                 </Select>
               </div>

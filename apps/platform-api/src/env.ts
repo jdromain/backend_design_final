@@ -108,6 +108,8 @@ export const env = {
   DASHBOARD_UI_URL: optional("DASHBOARD_UI_URL", "http://localhost:3000"),
 
   // Calendly
+  /** When true, the Calendly integration appears in the UI. Default false until Calendly OAuth is fully wired. */
+  CALENDLY_ENABLED: optionalBool("CALENDLY_ENABLED", false),
   CALENDLY_ACCESS_TOKEN: optional("CALENDLY_ACCESS_TOKEN", ""),
   CALENDLY_EVENT_TYPE_URI: optional("CALENDLY_EVENT_TYPE_URI", ""),
   CALENDLY_TIMEZONE: optional("CALENDLY_TIMEZONE", "America/New_York"),

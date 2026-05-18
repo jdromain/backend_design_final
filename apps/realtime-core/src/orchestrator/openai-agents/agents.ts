@@ -393,7 +393,6 @@ const lookupAvailabilitySchema = z.object({
 });
 
 const createBookingSchema = z.object({
-  details: z.record(z.string(), z.any()).optional().nullable(),
   resource_id: z.string().optional().nullable(),
   course: z.string().optional().nullable(),
   starts_at: z.string().optional().nullable(),
@@ -413,7 +412,6 @@ const createBookingSchema = z.object({
 const modifyBookingSchema = z.object({
   booking_id: z.string().optional().nullable(),
   reservation_id: z.string().optional().nullable(),
-  changes: z.record(z.string(), z.any()).optional().nullable(),
   starts_at: z.string().optional().nullable(),
   ends_at: z.string().optional().nullable(),
   new_date: z.string().optional().nullable(),
@@ -501,53 +499,33 @@ async function runCreateBooking(
   args: z.infer<typeof createBookingSchema>,
 ): Promise<string> {
   rememberSlotMemory(cc, args);
-  const details = (args.details ?? {}) as Record<string, unknown>;
   const startInput =
     (typeof args.starts_at === "string" && args.starts_at) ||
     (typeof args.start_time === "string" && args.start_time) ||
-    (typeof details.starts_at === "string" ? details.starts_at : "") ||
-    (typeof details.start_time === "string" ? details.start_time : "");
+    "";
   if (!startInput) {
     return "I need the exact tee time to complete the booking.";
   }
   const startsAt = toIsoDateTime(startInput);
-  const durationMinRaw =
-    (typeof args.duration_min === "number" ? args.duration_min : undefined) ??
-    (typeof details.duration_min === "number" ? Number(details.duration_min) : undefined) ??
-    30;
-  const durationMin = Math.max(5, Math.floor(durationMinRaw));
+  const durationMin = Math.max(
+    5,
+    Math.floor(typeof args.duration_min === "number" ? args.duration_min : 30),
+  );
   const endsAt =
     (typeof args.ends_at === "string" && args.ends_at.length > 0)
       ? toIsoDateTime(args.ends_at)
       : plusMinutes(startsAt, durationMin);
-  const resourceId = await pickResourceId(
-    cc.orgId,
-    args.course ?? (typeof details.course === "string" ? details.course : null),
-    args.resource_id ?? (typeof details.resource_id === "string" ? details.resource_id : null),
-  );
-  const partySizeRaw =
-    args.party_size ??
-    args.players ??
-    (typeof details.party_size === "number" ? Number(details.party_size) : undefined) ??
-    (typeof details.players === "number" ? Number(details.players) : undefined) ??
-    1;
+  const resourceId = await pickResourceId(cc.orgId, args.course ?? null, args.resource_id ?? null);
+  const partySizeRaw = args.party_size ?? args.players ?? 1;
   const created = await createCalendarBooking(cc.orgId, {
     resourceId,
     startsAt,
     endsAt,
-    customerName:
-      args.customer_name ??
-      args.invitee_name ??
-      (typeof details.customer_name === "string" ? details.customer_name : null),
-    customerPhone:
-      args.customer_phone ??
-      (typeof details.customer_phone === "string" ? details.customer_phone : null),
-    customerEmail:
-      args.customer_email ??
-      args.invitee_email ??
-      (typeof details.customer_email === "string" ? details.customer_email : null),
+    customerName: args.customer_name ?? args.invitee_name ?? null,
+    customerPhone: args.customer_phone ?? null,
+    customerEmail: args.customer_email ?? args.invitee_email ?? null,
     partySize: Math.max(1, Math.floor(Number(partySizeRaw))),
-    notes: args.notes ?? (typeof details.notes === "string" ? details.notes : null),
+    notes: args.notes ?? null,
     source: "voice_agent",
     metadata: { callId: cc.callId, via: "openai-agent" },
   });
@@ -591,14 +569,11 @@ async function runModifyBooking(
     return "I need the booking reference before I can modify it.";
   }
 
-  const changes = (args.changes ?? {}) as Record<string, unknown>;
   let startsAt: string | undefined;
   if (typeof args.starts_at === "string" && args.starts_at.length > 0) {
     startsAt = toIsoDateTime(args.starts_at);
   } else if (typeof args.new_date === "string" && typeof args.new_time === "string") {
     startsAt = composeDateTime(args.new_date, args.new_time);
-  } else if (typeof changes.starts_at === "string") {
-    startsAt = toIsoDateTime(changes.starts_at);
   }
 
   const endsAt =
@@ -611,12 +586,8 @@ async function runModifyBooking(
   const updated = await updateCalendarBooking(cc.orgId, bookingId, {
     startsAt,
     endsAt,
-    partySize:
-      args.new_party_size ??
-      (typeof changes.party_size === "number" ? Number(changes.party_size) : undefined),
-    notes:
-      args.notes ??
-      (typeof changes.notes === "string" ? changes.notes : undefined),
+    partySize: args.new_party_size ?? undefined,
+    notes: args.notes ?? undefined,
   });
 
   clearPendingApproval(cc);
